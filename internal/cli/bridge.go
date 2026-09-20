@@ -2,8 +2,8 @@ package cli
 
 import (
 	"context"
-	"debug-handover/internal/agents/codex"
-	"debug-handover/internal/session"
+	"agentdebugger/internal/agents/codex"
+	"agentdebugger/internal/session"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -120,9 +120,17 @@ func bridge(args []string) error {
 		if s.Binding == nil || *s.Binding != cfg.Binding {
 			return nil
 		}
+		if err = deliverQuestions(s, cfg); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		err = stream(context.Background(), s, cfg.Cursor, cfg.Binding.ID, func(event session.Event) error {
 			if event.Binding == nil || *event.Binding != cfg.Binding {
 				return fmt.Errorf("binding changed")
+			}
+			if event.Kind == "question.created" {
+				if err := deliverQuestions(s, cfg); err != nil {
+					return err
+				}
 			}
 			if event.Kind == "control_returned" {
 				if err := deliverCodex(s, cfg, event); err != nil {

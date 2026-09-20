@@ -1,7 +1,7 @@
 package broker
 
 import (
-	"debug-handover/internal/session"
+	"agentdebugger/internal/session"
 	"encoding/json"
 	"fmt"
 	"net/http"

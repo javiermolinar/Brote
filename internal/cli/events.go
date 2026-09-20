@@ -3,7 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
-	"debug-handover/internal/session"
+	"agentdebugger/internal/session"
 	"encoding/json"
 	"errors"
 	"flag"

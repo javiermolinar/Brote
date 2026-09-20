@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"debug-handover/internal/session"
+	"agentdebugger/internal/session"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -60,8 +60,10 @@ func TestSetupRepairAndRemoval(t *testing.T) {
 	if _, e := installation("repair", nil); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := os.Stat(filepath.Join(root, "bin", "debug-handover")); e != nil {
-		t.Fatal(e)
+	for _, name := range []string{"agentdebugger", "delve-llm-adapter", "debug-handover"} {
+		if _, e := os.Stat(filepath.Join(root, "bin", name)); e != nil {
+			t.Fatal(name, e)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(root, "marketplace", ".agents", "plugins", "marketplace.json")); err != nil {
 		t.Fatal("missing Codex marketplace discovery path", err)

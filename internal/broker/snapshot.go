@@ -6,12 +6,16 @@ import (
 	"os"
 	"strings"
 
-	"debug-handover/internal/editors/zed"
+	"agentdebugger/internal/editors/zed"
 )
 
 func (b *broker) snapshot(gid, frame int, brief bool) (obj, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.snapshotLocked(gid, frame, brief)
+}
+
+func (b *broker) snapshotLocked(gid, frame int, brief bool) (obj, error) {
 	s, e := b.state()
 	if e != nil {
 		return nil, e
@@ -21,9 +25,10 @@ func (b *broker) snapshot(gid, frame int, brief bool) (obj, error) {
 	stateView["currentThread"] = pick(asObj(s["currentThread"]), "id", "file", "line", "pc", "function", "goroutineID")
 	stateView["currentGoroutine"] = pick(asObj(s["currentGoroutine"]), "id")
 	v := obj{"id": b.s.ID, "owner": b.owner, "generation": b.generation, "status": status, "state": stateView, "zedConnected": b.owner == "zed" && b.peer != nil, "binary": b.s.Binary, "project": b.s.Project, "error": b.lastError, "dap": b.s.DAP, "label": zed.Label(b.s.ID)}
+	v["historyError"] = b.historyError
 	v["panel"] = b.s.HTTP + "/"
 	v["version"], v["binding"], v["cursor"] = 2, b.s.Binding, b.s.Cursor
-	v["capabilities"] = obj{"events": true, "browserOwner": true, "authentication": false}
+	v["capabilities"] = obj{"events": true, "browserOwner": true, "authentication": false, "comments": true}
 	v["editor"], v["handoverId"] = b.s.Editor, b.s.HandoverID
 	v["editorConnected"], v["editorReady"] = b.peer != nil, b.peer != nil && b.peer.ready
 	v["vscodeConnected"] = b.owner == "vscode" && b.peer != nil
@@ -111,6 +116,7 @@ func (b *broker) snapshot(gid, frame int, brief bool) (obj, error) {
 			v["sourceNewerThanBinary"] = e1 == nil && e2 == nil && ss.ModTime().After(bs.ModTime())
 		}
 	}
+	b.historyInspection(v)
 	return v, nil
 }
 

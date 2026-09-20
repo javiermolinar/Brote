@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"debug-handover/internal/session"
-	"debug-handover/ui/inspector"
+	"agentdebugger/internal/session"
+	"agentdebugger/packages/web"
 )
 
 func (b *broker) handler() http.Handler {
@@ -68,6 +68,25 @@ func (b *broker) handler() http.Handler {
 				write(500, obj{"error": err.Error()})
 			} else {
 				write(200, obj{"sessions": list})
+			}
+			return
+		}
+		if r.URL.Path == "/api/comments" {
+			var input obj
+			if r.Method == "POST" {
+				if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 65536)).Decode(&input); err != nil || input == nil {
+					write(400, obj{"error": "invalid comment request"})
+					return
+				}
+			} else if r.Method != "GET" {
+				write(405, obj{"error": "method not allowed"})
+				return
+			}
+			result, err := b.comments(input)
+			if err != nil {
+				write(409, obj{"error": err.Error()})
+			} else {
+				write(200, result)
 			}
 			return
 		}

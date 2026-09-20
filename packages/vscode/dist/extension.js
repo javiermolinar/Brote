@@ -27,7 +27,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// editors/vscode/src/extension.ts
+// packages/vscode/src/extension.ts
 var extension_exports = {};
 __export(extension_exports, {
   activate: () => activate
@@ -37,7 +37,49 @@ var vscode = __toESM(require("vscode"));
 var fs = __toESM(require("node:fs/promises"));
 var path2 = __toESM(require("node:path"));
 
-// editors/vscode/src/protocol.ts
+// packages/client/src/index.ts
+var PROTOCOL_VERSION = 2;
+function createClient(options) {
+  const base = new URL(options.baseURL);
+  if (base.protocol !== "http:" || base.hostname !== "127.0.0.1" || base.username || base.password || base.pathname !== "/" || base.search || base.hash) throw new Error("Expected a local broker URL");
+  const url = (route) => {
+    if (!/^[a-z][a-z-]*(?:\/[a-z][a-z-]*)*(?:\?.*)?$/.test(route) || route.includes("#")) throw new Error("Invalid API route");
+    const target = new URL("/api/" + route, base);
+    if (options.session) target.searchParams.set("session", options.session);
+    return target;
+  };
+  async function request2(route, body) {
+    const response = await (options.fetch || fetch)(url(route).href, { method: body === void 0 ? "GET" : "POST", headers: { "Content-Type": "application/json", ...options.token ? { Authorization: "Bearer " + options.token } : {} }, body: body === void 0 ? void 0 : JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(options.timeoutMs || 8e3) });
+    const value = await response.json();
+    if (!response.ok) throw new Error(value.error || `Broker returned ${response.status}`);
+    if (value.version !== void 0 && value.version > PROTOCOL_VERSION) throw new Error("Unsupported broker protocol version");
+    return value;
+  }
+  function subscribe(cursor, onEvent, onReset, onOpen) {
+    if (options.token) throw new Error("Live events require protocol v2");
+    const target = url("events");
+    target.searchParams.set("cursor", String(cursor));
+    const stream = new EventSource(target.href);
+    stream.onopen = () => onOpen?.();
+    stream.onmessage = (e) => {
+      let event;
+      try {
+        event = JSON.parse(e.data);
+      } catch {
+        return;
+      }
+      onEvent(event);
+    };
+    stream.addEventListener("reset", () => {
+      stream.close();
+      onReset();
+    });
+    return () => stream.close();
+  }
+  return { request: request2, subscribe };
+}
+
+// packages/vscode/src/protocol.ts
 var path = __toESM(require("node:path"));
 var os = __toESM(require("node:os"));
 function sessionDirectory() {
@@ -67,21 +109,12 @@ function pending(s, v, attempted) {
 }
 async function request(s, route, body) {
   validateSession(s, s.id);
-  const response = await fetch(s.http + route, {
-    method: body === void 0 ? "GET" : "POST",
-    headers: { ...s.token ? { Authorization: `Bearer ${s.token}` } : {}, "Content-Type": "application/json" },
-    body: body === void 0 ? void 0 : JSON.stringify(body),
-    redirect: "error",
-    signal: AbortSignal.timeout(8e3)
-  });
-  const value = await response.json();
-  if (!response.ok) throw new Error(value.error || `Broker returned ${response.status}`);
-  return value;
+  return createClient({ baseURL: s.http, token: s.token }).request(route.slice(5), body);
 }
 
-// editors/vscode/src/extension.ts
+// packages/vscode/src/extension.ts
 function activate(context) {
-  const log = vscode.window.createOutputChannel("Debug Handover");
+  const log = vscode.window.createOutputChannel("AgentDebugger");
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
   status.command = "debugHandover.reclaim";
   const descriptors = /* @__PURE__ */ new Map();
@@ -119,7 +152,7 @@ function activate(context) {
     try {
       const started = await vscode.debug.startDebugging(folder, {
         type: "debug-handover",
-        name: `Debug Handover \xB7 ${s.id}`,
+        name: `AgentDebugger \xB7 ${s.id}`,
         request: "attach",
         handoverSession: s.id,
         handoverId: state.handoverId,
@@ -132,7 +165,7 @@ function activate(context) {
       log.appendLine(`Attached to session ${s.id}`);
     } catch (error) {
       log.appendLine(`Attach ${s.id}: ${message(error)}`);
-      void vscode.window.showErrorMessage(`Debug Handover: ${message(error)}`);
+      void vscode.window.showErrorMessage(`AgentDebugger: ${message(error)}`);
       try {
         const fresh = await request(s, "/api/state?brief=1");
         await request(s, "/api/action", {
@@ -230,7 +263,7 @@ function activate(context) {
         void vscode.window.showInformationMessage(state.binding ? `Control returned to ${state.binding.name}; handback event published.` : state.thread ? "Control returned to Codex; task notification requested." : "Control returned. No notification integration is bound.");
         await scan();
       } catch (error) {
-        void vscode.window.showErrorMessage(`Debug Handover: ${message(error)}`);
+        void vscode.window.showErrorMessage(`AgentDebugger: ${message(error)}`);
       }
     }),
     vscode.commands.registerCommand("debugHandover.inspector", async () => {

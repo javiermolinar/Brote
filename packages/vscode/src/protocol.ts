@@ -1,3 +1,4 @@
+import { createClient } from '../../client/src/index';
 import * as path from 'node:path';
 import * as os from 'node:os';
 
@@ -39,13 +40,5 @@ export function pending(s: Session, v: State, attempted?: string): boolean {
 }
 export async function request<T>(s: Session, route: '/api/state?brief=1' | '/api/action', body?: unknown): Promise<T> {
   validateSession(s, s.id);
-  const response = await fetch(s.http + route, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers: { ...(s.token ? { Authorization: `Bearer ${s.token}` } : {}), 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    redirect: 'error', signal: AbortSignal.timeout(8000),
-  });
-  const value = await response.json() as T & { error?: string };
-  if (!response.ok) throw new Error(value.error || `Broker returned ${response.status}`);
-  return value;
+  return createClient({baseURL:s.http,token:s.token}).request<T>(route.slice(5),body);
 }

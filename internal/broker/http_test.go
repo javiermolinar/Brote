@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"debug-handover/internal/session"
+	"agentdebugger/internal/session"
 )
 
 func TestHTTPBoundary(t *testing.T) {

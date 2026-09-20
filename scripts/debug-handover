@@ -8,7 +8,7 @@ source_hash=$(
   cd "$plugin_root"
   {
     cat go.mod
-    find cmd internal ui/inspector -type f \( -name '*.go' -o -path 'ui/inspector/public/*' \) |
+    find cmd internal packages/web -type f \( -name '*.go' -o -path 'packages/web/public/*' \) |
       LC_ALL=C sort |
       while IFS= read -r source_file; do
         printf '%s\n' "$source_file"

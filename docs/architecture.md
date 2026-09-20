@@ -40,9 +40,9 @@ unknown, or acknowledged. A crash during sending is never blindly retried.
 - `internal/cli`: JSON commands, SSE clients, process launch/recovery, Codex bridge, setup.
 - `internal/agents/codex`: Codex executable capability discovery and queue invocation.
 - `internal/delve`, `internal/dap`: protocol clients and framing.
-- `ui/inspector`: TypeScript sources and committed assets embedded in the Go executable.
+- `packages/web`: TypeScript sources and committed assets embedded in the Go executable.
 - `adapters/pi`: small Pi conversation binding and notification extension.
-- `editors/vscode`, `internal/editors/zed`: optional editor attachment.
+- `packages/vscode`, `internal/editors/zed`: optional editor attachment.
 
 ## Installation
 

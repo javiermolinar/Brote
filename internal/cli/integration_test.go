@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"debug-handover/internal/dap"
-	"debug-handover/internal/editors"
-	"debug-handover/internal/editors/zed"
-	"debug-handover/internal/session"
+	"agentdebugger/internal/dap"
+	"agentdebugger/internal/editors"
+	"agentdebugger/internal/editors/zed"
+	"agentdebugger/internal/session"
 )
 
 type testDAP struct {
@@ -105,6 +105,7 @@ func TestIntegrationRoundTrip(t *testing.T) {
 func testRoundTrip(t *testing.T, worker bool) {
 	dir := t.TempDir()
 	t.Setenv("DEBUG_HANDOVER_HOME", filepath.Join(dir, "sessions"))
+	t.Setenv("AGENTDEBUGGER_DATA_DIR", filepath.Join(dir, "history"))
 	t.Setenv("CODEX_THREAD_ID", "")
 	helper := filepath.Join(dir, "debug-handover")
 	cmd := exec.Command("go", "build", "-race", "-o", helper, "../../cmd/debug-handover")
@@ -225,7 +226,7 @@ func testRoundTrip(t *testing.T, worker bool) {
 		if len(frames) == 0 || num(asObj(frames[0])["line"]) != wantLine {
 			t.Fatalf("wrong stop: %s", pretty(s["state"]))
 		}
-		vars := asList(asObj(frames[0])["Arguments"])
+		vars := append(asList(asObj(frames[0])["Arguments"]), asList(asObj(frames[0])["Locals"])...)
 		found := false
 		for _, v := range vars {
 			if str(asObj(v)["name"]) == "total" {
@@ -487,6 +488,32 @@ func testRoundTrip(t *testing.T, worker bool) {
 	if session.ProcessExists(s.DelvePID) {
 		t.Fatal("stop left a recovered Delve process alive")
 	}
+	events, err := session.ReadHistory(s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, event := range events {
+		seen[event.Type] = true
+		var payload obj
+		if err := json.Unmarshal(event.Data, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if ref := str(payload["snapshot"]); ref != "" {
+			dir, err := session.FindHistory(s.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = os.Stat(filepath.Join(dir, ref)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, kind := range []string{"session.started", "broker.connected", "execution.stopped", "inspection.captured", "inspection.evaluated", "breakpoint.changed", "session.ended"} {
+		if !seen[kind] {
+			t.Errorf("missing history event %s", kind)
+		}
+	}
 	t.Logf("PASS: PID %d retained across RPC → DAP → RPC → DAP, total 21 → 42, both breakpoint sets preserved, binary unchanged", pid)
 }
 
@@ -507,3 +534,69 @@ func num(v any) int {
 func truth(v any) bool { b, _ := v.(bool); return b }
 
 func pretty(v any) string { data, _ := json.MarshalIndent(v, "", "  "); return string(data) }
+
+func TestIntegrationRunningRecovery(t *testing.T) {
+	if os.Getenv("DH_INTEGRATION") != "1" {
+		t.Skip("real Delve")
+	}
+	dir := t.TempDir()
+	t.Setenv("DEBUG_HANDOVER_HOME", filepath.Join(dir, "sessions"))
+	t.Setenv("AGENTDEBUGGER_DATA_DIR", filepath.Join(dir, "history"))
+	t.Setenv("CODEX_THREAD_ID", "")
+	helper := filepath.Join(dir, "agentdebugger")
+	binary := filepath.Join(dir, "demo")
+	file := filepath.Join(dir, "main.go")
+	source := "package main\nimport (\"time\";\"fmt\")\nfunc main(){\ntime.Sleep(4*time.Second)\nfmt.Println(42)\n}\n"
+	if err := os.WriteFile(file, []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []*exec.Cmd{exec.Command("go", "build", "-race", "-o", helper, "../../cmd/agentdebugger"), exec.Command("go", "build", "-gcflags=all=-N -l", "-o", binary, file)} {
+		if out, e := cmd.CombinedOutput(); e != nil {
+			t.Fatalf("%s: %v", out, e)
+		}
+	}
+	run := func(args ...string) obj {
+		t.Helper()
+		out, e := exec.Command(helper, args...).CombinedOutput()
+		if e != nil {
+			t.Fatalf("%v: %s: %v", args, out, e)
+		}
+		v := obj{}
+		if e = json.Unmarshal(out, &v); e != nil {
+			t.Fatal(e)
+		}
+		return v
+	}
+	id := str(run("start", "--binary", binary, "--project", dir)["id"])
+	t.Cleanup(func() {
+		s, e := session.Read(id)
+		if e == nil {
+			_ = syscall.Kill(s.PID, syscall.SIGTERM)
+			_ = syscall.Kill(s.DelvePID, syscall.SIGTERM)
+			time.Sleep(200 * time.Millisecond)
+		}
+	})
+	run("break", id, "--file", file, "--line", "5")
+	run("continue", id)
+	before, e := session.Read(id)
+	if e != nil {
+		t.Fatal(e)
+	}
+	_ = syscall.Kill(before.PID, syscall.SIGKILL)
+	time.Sleep(100 * time.Millisecond)
+	run("recover", id)
+	state := run("state", id, "--summary")
+	if str(state["status"]) != "running" {
+		t.Fatalf("recovery fabricated a stop: %v", state)
+	}
+	for deadline := time.Now().Add(8 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		state = run("state", id, "--summary")
+		if str(state["status"]) == "paused" {
+			break
+		}
+	}
+	if str(state["status"]) != "paused" || num(asObj(state["state"])["Pid"]) != before.TargetPID {
+		t.Fatalf("lost running session: %v", state)
+	}
+	run("end-session", id, "--confirmed")
+}

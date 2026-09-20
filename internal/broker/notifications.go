@@ -1,7 +1,7 @@
 package broker
 
 import (
-	"debug-handover/internal/session"
+	"agentdebugger/internal/session"
 	"fmt"
 	"strconv"
 	"time"
@@ -33,6 +33,14 @@ func (b *broker) emit(kind, note string) error {
 			b.owner = old.Owner
 		}
 		return err
+	}
+	switch kind {
+	case "stopped":
+		b.historyStop(note)
+	case "target_exited", "terminated":
+		b.record("session.ended", "debugger", obj{"reason": kind})
+	default:
+		b.record("session."+kind, "core", event)
 	}
 	if b.changed != nil {
 		close(b.changed)

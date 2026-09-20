@@ -27,7 +27,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// editors/vscode/src/protocol.ts
+// packages/vscode/src/protocol.ts
 var protocol_exports = {};
 __export(protocol_exports, {
   loopbackPort: () => loopbackPort,
@@ -38,6 +38,50 @@ __export(protocol_exports, {
   validateSession: () => validateSession
 });
 module.exports = __toCommonJS(protocol_exports);
+
+// packages/client/src/index.ts
+var PROTOCOL_VERSION = 2;
+function createClient(options) {
+  const base = new URL(options.baseURL);
+  if (base.protocol !== "http:" || base.hostname !== "127.0.0.1" || base.username || base.password || base.pathname !== "/" || base.search || base.hash) throw new Error("Expected a local broker URL");
+  const url = (route) => {
+    if (!/^[a-z][a-z-]*(?:\/[a-z][a-z-]*)*(?:\?.*)?$/.test(route) || route.includes("#")) throw new Error("Invalid API route");
+    const target = new URL("/api/" + route, base);
+    if (options.session) target.searchParams.set("session", options.session);
+    return target;
+  };
+  async function request2(route, body) {
+    const response = await (options.fetch || fetch)(url(route).href, { method: body === void 0 ? "GET" : "POST", headers: { "Content-Type": "application/json", ...options.token ? { Authorization: "Bearer " + options.token } : {} }, body: body === void 0 ? void 0 : JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(options.timeoutMs || 8e3) });
+    const value = await response.json();
+    if (!response.ok) throw new Error(value.error || `Broker returned ${response.status}`);
+    if (value.version !== void 0 && value.version > PROTOCOL_VERSION) throw new Error("Unsupported broker protocol version");
+    return value;
+  }
+  function subscribe(cursor, onEvent, onReset, onOpen) {
+    if (options.token) throw new Error("Live events require protocol v2");
+    const target = url("events");
+    target.searchParams.set("cursor", String(cursor));
+    const stream = new EventSource(target.href);
+    stream.onopen = () => onOpen?.();
+    stream.onmessage = (e) => {
+      let event;
+      try {
+        event = JSON.parse(e.data);
+      } catch {
+        return;
+      }
+      onEvent(event);
+    };
+    stream.addEventListener("reset", () => {
+      stream.close();
+      onReset();
+    });
+    return () => stream.close();
+  }
+  return { request: request2, subscribe };
+}
+
+// packages/vscode/src/protocol.ts
 var path = __toESM(require("node:path"));
 var os = __toESM(require("node:os"));
 function sessionDirectory() {
@@ -67,16 +111,7 @@ function pending(s, v, attempted) {
 }
 async function request(s, route, body) {
   validateSession(s, s.id);
-  const response = await fetch(s.http + route, {
-    method: body === void 0 ? "GET" : "POST",
-    headers: { ...s.token ? { Authorization: `Bearer ${s.token}` } : {}, "Content-Type": "application/json" },
-    body: body === void 0 ? void 0 : JSON.stringify(body),
-    redirect: "error",
-    signal: AbortSignal.timeout(8e3)
-  });
-  const value = await response.json();
-  if (!response.ok) throw new Error(value.error || `Broker returned ${response.status}`);
-  return value;
+  return createClient({ baseURL: s.http, token: s.token }).request(route.slice(5), body);
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

@@ -3,11 +3,12 @@ package cli
 import (
 	"flag"
 
-	"debug-handover/internal/broker"
+	"agentdebugger/internal/broker"
 )
 
 func serve(args []string) error {
 	f := flag.NewFlagSet("serve", flag.ContinueOnError)
+	backend := f.String("backend", "dap", "debug backend")
 	id := f.String("id", "", "session")
 	bin := f.String("binary", "", "binary")
 	project := f.String("project", "", "project")
@@ -19,5 +20,5 @@ func serve(args []string) error {
 	if e := f.Parse(args); e != nil {
 		return e
 	}
-	return broker.Serve(broker.Options{ID: *id, Binary: *bin, Project: *project, Delve: *dlv, Thread: *thread, BindingID: *binding, AgentName: *name, Recover: *recovering, Args: f.Args()})
+	return broker.Serve(broker.Options{Backend: *backend, ID: *id, Binary: *bin, Project: *project, Delve: *dlv, Thread: *thread, BindingID: *binding, AgentName: *name, Recover: *recovering, Args: f.Args()})
 }

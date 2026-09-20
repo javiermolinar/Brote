@@ -1,9 +1,9 @@
 package broker
 
 import (
+	"agentdebugger/internal/session"
 	"bufio"
 	"context"
-	"debug-handover/internal/session"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"

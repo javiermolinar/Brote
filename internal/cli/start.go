@@ -9,12 +9,13 @@ import (
 	"syscall"
 	"time"
 
-	"debug-handover/internal/agents/codex"
-	"debug-handover/internal/session"
+	"agentdebugger/internal/agents/codex"
+	"agentdebugger/internal/session"
 )
 
 func start(args []string) (obj, error) {
 	f := flag.NewFlagSet("start", flag.ContinueOnError)
+	backend := f.String("backend", "dap", "debug backend: dap or legacy rpc")
 	bin := f.String("binary", "", "Existing Go executable or test binary")
 	project := f.String("project", ".", "Project/source directory")
 	dlv := f.String("dlv", "dlv", "Delve executable")
@@ -23,6 +24,9 @@ func start(args []string) (obj, error) {
 	thread := f.String("thread", os.Getenv("CODEX_THREAD_ID"), "Codex task for inspector handovers; empty disables wakeups")
 	if e := f.Parse(args); e != nil {
 		return nil, e
+	}
+	if *backend != "dap" && *backend != "rpc" {
+		return nil, fmt.Errorf("backend must be dap or rpc")
 	}
 	if *bin == "" {
 		return nil, fmt.Errorf("--binary is required; build once with go build -gcflags='all=-N -l'")
@@ -77,7 +81,7 @@ func start(args []string) (obj, error) {
 	if e != nil {
 		return nil, e
 	}
-	childArgs := []string{"serve", "--id", id, "--binary", abs, "--project", root, "--dlv", delve, "--binding", *binding, "--name", *name, "--"}
+	childArgs := []string{"serve", "--backend", *backend, "--id", id, "--binary", abs, "--project", root, "--dlv", delve, "--binding", *binding, "--name", *name, "--"}
 	childArgs = append(childArgs, f.Args()...)
 	cmd := exec.Command(exe, childArgs...)
 	cmd.Stdout = log

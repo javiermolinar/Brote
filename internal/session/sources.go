@@ -1,7 +1,7 @@
 package session
 
 import (
-	"debug-handover/internal/delve"
+	"agentdebugger/internal/delve"
 	"fmt"
 	"io"
 	"net"

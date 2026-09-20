@@ -5,7 +5,7 @@ import { sessionDirectory, validateSession, validID, loopbackPort, pending, requ
 import type { Session, State } from './protocol';
 
 export function activate(context: vscode.ExtensionContext): void {
-  const log = vscode.window.createOutputChannel('Debug Handover');
+  const log = vscode.window.createOutputChannel('AgentDebugger');
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
   status.command = 'debugHandover.reclaim';
   const descriptors = new Map<string, Session>();
@@ -38,7 +38,7 @@ export function activate(context: vscode.ExtensionContext): void {
     await context.workspaceState.update(key, state.handoverId);
     try {
       const started = await vscode.debug.startDebugging(folder, {
-        type: 'debug-handover', name: `Debug Handover · ${s.id}`, request: 'attach',
+        type: 'debug-handover', name: `AgentDebugger · ${s.id}`, request: 'attach',
         handoverSession: s.id, handoverId: state.handoverId,
         mode: 'remote', stopOnEntry: true, showGlobalVariables: false,
         suppressMultipleSessionWarning: true,
@@ -47,7 +47,7 @@ export function activate(context: vscode.ExtensionContext): void {
       log.appendLine(`Attached to session ${s.id}`);
     } catch (error) {
       log.appendLine(`Attach ${s.id}: ${message(error)}`);
-      void vscode.window.showErrorMessage(`Debug Handover: ${message(error)}`);
+      void vscode.window.showErrorMessage(`AgentDebugger: ${message(error)}`);
       try {
         const fresh = await request<State>(s, '/api/state?brief=1');
         await request(s, '/api/action', { action: 'editor-error', actor: 'vscode', generation: fresh.generation,
@@ -123,7 +123,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (result.notificationError) throw new Error(`Control returned, but notification failed: ${result.notificationError}`);
         void vscode.window.showInformationMessage(state.binding ? `Control returned to ${state.binding.name}; handback event published.` : state.thread ? 'Control returned to Codex; task notification requested.' : 'Control returned. No notification integration is bound.');
         await scan();
-      } catch (error) { void vscode.window.showErrorMessage(`Debug Handover: ${message(error)}`); }
+      } catch (error) { void vscode.window.showErrorMessage(`AgentDebugger: ${message(error)}`); }
     }),
     vscode.commands.registerCommand('debugHandover.inspector', async () => {
       const s = await selected();

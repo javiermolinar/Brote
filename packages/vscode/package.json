@@ -1,8 +1,8 @@
 {
   "name": "debug-handover",
-  "displayName": "Debug Handover",
-  "description": "Attach to the same paused Go / Delve process from Codex and give control back.",
-  "version": "0.2.0",
+  "displayName": "AgentDebugger",
+  "description": "Collaborative debugging with humans and agents",
+  "version": "0.3.0",
   "publisher": "debug-handover-local",
   "engines": {
     "vscode": "^1.100.0"
@@ -25,21 +25,21 @@
     "commands": [
       {
         "command": "debugHandover.reclaim",
-        "title": "Debug Handover: Give Control to Agent"
+        "title": "AgentDebugger: Give Control to Agent"
       },
       {
         "command": "debugHandover.attach",
-        "title": "Debug Handover: Attach Pending Session"
+        "title": "AgentDebugger: Attach Pending Session"
       },
       {
         "command": "debugHandover.inspector",
-        "title": "Debug Handover: Open Live Inspector"
+        "title": "AgentDebugger: Open Live Inspector"
       }
     ],
     "debuggers": [
       {
         "type": "debug-handover",
-        "label": "Debug Handover (Go / Delve)",
+        "label": "AgentDebugger (Go / Delve)",
         "languages": [
           "go"
         ],
@@ -51,7 +51,7 @@
             "properties": {
               "handoverSession": {
                 "type": "string",
-                "description": "Existing Debug Handover session ID"
+                "description": "Existing AgentDebugger session ID"
               }
             }
           }
@@ -59,7 +59,7 @@
       }
     ],
     "configuration": {
-      "title": "Debug Handover",
+      "title": "AgentDebugger",
       "properties": {
         "debugHandover.sessionDirectory": {
           "type": "string",

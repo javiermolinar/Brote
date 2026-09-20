@@ -1,91 +1,11 @@
+import { createComments } from './comments';
 import hljs from 'highlight.js/lib/core';
 import go from 'highlight.js/lib/languages/go';
 
 hljs.registerLanguage('go', go);
 
-interface Variable {
-  name: string;
-  type: string;
-  value?: string;
-  unreadable?: string;
-  len?: number;
-  cap?: number;
-  kind?: number;
-  children?: Variable[];
-}
-
-interface StackFrame {
-  file: string;
-  line: number;
-  function?: { name: string };
-  Arguments?: Variable[];
-  Locals?: Variable[];
-}
-
-interface Source {
-  file: string;
-  line: number;
-  start: number;
-  lines: string[];
-}
-
-interface Breakpoint {
-  id: number;
-  name?: string;
-  file: string;
-  line: number;
-  Cond?: string;
-  HitCond?: string;
-}
-
-interface Snapshot {
-  id: string;
-  owner: 'agent' | 'codex' | 'browser' | 'zed' | 'vscode';
-  binding?: {id: string; name: string; revision: number};
-  editor?: 'browser' | 'zed' | 'vscode';
-  editorConnected?: boolean;
-  editorReady?: boolean;
-  generation: number;
-  status: 'paused' | 'running' | 'exited';
-  state: { Pid?: number; stopReason?: string };
-  zedConnected: boolean;
-  project: string;
-  binary: string;
-  label: string;
-  goroutine?: number;
-  goroutines?: { id: number }[];
-  frame: number;
-  frames?: StackFrame[];
-  source?: Source;
-  sourceNewerThanBinary?: boolean;
-  breakpoints?: Breakpoint[];
-  error?: string;
-  inspectionError?: string;
-  thread?: string;
-  notification?: { id: string; kind: string; status: 'pending' | 'sending' | 'queued' | 'acknowledged' | 'failed' | 'unknown'; error?: string };
-  sourceIdentity?: { match: string; changedSinceStart?: boolean; binaryChanged?: boolean };
-  watches?: Evaluation[];
-}
-
-interface Evaluation { expression: string; value?: Variable; error?: string; generation?: number; goroutine?: number; frame?: number }
-
-type Action = 'continue' | 'next' | 'step' | 'stepout' | 'pause' | 'break' | 'clear' | 'handover' | 'reclaim' | 'stop' | 'eval' | 'watch' | 'unwatch' | 'retry-notification';
-interface ActionOptions {
-	 editor?: string;
-  breakpoint?: number;
-  open?: boolean;
-  file?: string;
-  line?: number;
-  condition?: string;
-  notify?: boolean;
-  expression?: string;
-  goroutine?: number;
-  frame?: number;
-  depth?: number;
-  count?: number;
-}
-interface ActionRequest extends ActionOptions { action: Action; generation: number; actor?: string }
-interface ActionResult extends Partial<Evaluation> { Breakpoint?: {file:string;line:number}; instructions?: string; message?: string; notificationError?: string; persistenceError?: string; cleanupError?: string; openError?: string }
+import type { Variable, Source, Snapshot, Evaluation, Action, ActionRequest, ActionOptions, ActionResult } from '../../client/src/models';
+import { createClient } from '../../client/src/index';
 
 function $<T extends HTMLElement = HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -131,16 +51,10 @@ function message(id: string, text?: string): void {
   $(id).hidden = !text;
 }
 
-async function request<T>(path: string, body?: ActionRequest | {id: string; confirmed: boolean}): Promise<T> {
-  const response = await fetch('/api/' + path + (previewSession ? (path.includes('?') ? '&' : '?') + 'session=' + encodeURIComponent(previewSession) : ''), {
-    method: body ? 'POST' : 'GET',
-    headers: { ...(token ? { Authorization: 'Bearer ' + token } : {}), 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || response.statusText);
-  return data as T;
-}
+const api = createClient({baseURL: location.origin, token, session: previewSession || undefined});
+const request = <T>(path: string, body?: ActionRequest | Record<string, unknown>) => api.request<T>(path, body);
+
+const comments = createComments(request, openSourceFile);
 
 function pinIcon(): SVGSVGElement {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -237,7 +151,7 @@ function renderSource(source: Source): void {
       pane.scrollTop = Math.max(0, current.offsetTop - pane.clientHeight / 2);
     }
   };
-  if (key === sourceKey) { selectLine(); paintBreakpoints(); return; }
+  if (key === sourceKey) { selectLine(); paintBreakpoints(); comments.source(source.file); return; }
   displayedSource = source;
   sourceKey = key;
   const pane = $('source');
@@ -274,10 +188,28 @@ function renderSource(source: Source): void {
   } else {
     code.textContent = text;
   }
-  pre.append(code);
+  // Clone each highlighted line while retaining multiline token ancestors.
+  const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+  const texts: Text[] = [];let textNode: Node | null;
+  while ((textNode=walker.nextNode())) texts.push(textNode as Text);
+  let textIndex=0,offset=0;
+  const output=node('code');output.className=code.className;
+  source.lines.forEach((line,index)=>{
+    const row=node('span',undefined,'sourceCodeLine');row.dataset.line=String(source.start+index);
+    if(texts.length){
+      const range=document.createRange();range.setStart(texts[textIndex],offset);
+      let remaining=line.length;
+      while(remaining>0){const available=texts[textIndex].length-offset;if(remaining<=available){offset+=remaining;remaining=0;}else{remaining-=available;textIndex++;offset=0;}}
+      range.setEnd(texts[textIndex],offset);row.append(range.cloneContents());
+      if(index<source.lines.length-1){if(offset===texts[textIndex].length&&textIndex<texts.length-1){textIndex++;offset=0;}offset++;if(offset===texts[textIndex].length&&textIndex<texts.length-1){textIndex++;offset=0;}}
+    }
+    output.append(row);
+  });
+  pre.append(output);
   content.append(highlights, numbers, pre);
   pane.replaceChildren(content);
   pane.scrollLeft = left;
+  comments.source(source.file);
 
   paintBreakpoints();
   // Scroll within the source pane without moving the surrounding inspector.
@@ -399,7 +331,15 @@ function render(state: Snapshot): void {
     pin.title = unavailable ? 'This compiler-generated value cannot be pinned' : `${pinned ? 'Unpin' : 'Pin'} ${value.name}`;
     pin.append(pinIcon());
     pin.onclick = () => { void act(pinned ? 'unwatch' : 'watch', { expression: value.name }); };
-    row.append(pin, inspectable(value, value.name));
+    const valueView=inspectable(value, value.name);
+    const name=valueView.querySelector<HTMLElement>('.name');
+    if(name&&!unavailable){
+      const trigger=node('button',value.name,'name commentName');
+      trigger.type='button';trigger.title='Ask agent about '+value.name;
+      trigger.onclick=event=>{event.preventDefault();if(state.source)comments.suggest(state.source.file,state.source.line,value.name,trigger.getBoundingClientRect(),value.name);};
+      name.replaceWith(trigger);
+    }
+    row.append(pin, valueView);
     $('locals').append(row);
   });
   if (!variables.length) $('locals').append(node('p', 'No readable locals in this frame.', 'empty'));
@@ -454,6 +394,7 @@ async function refresh(): Promise<void> {
     snapshot = await request<Snapshot>(`state?goroutine=${goroutine}&frame=${frame}`);
     if (disconnected) { disconnected = false; message('error', ''); }
     render(snapshot);
+    comments.update(snapshot);
   } catch (error) {
     disconnected = true;
     $('stopReason').textContent = 'Disconnected · showing last pause';

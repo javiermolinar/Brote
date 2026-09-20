@@ -3,7 +3,7 @@ package cli
 import (
 	"context"
 	"crypto/sha256"
-	"debug-handover/internal/session"
+	"agentdebugger/internal/session"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -190,7 +190,7 @@ func installation(verb string, args []string) (any, error) {
 					return nil, fmt.Errorf("session %s is active; core retained", s.ID)
 				}
 			}
-			for _, name := range []string{"delve-llm-adapter", "debug-handover"} {
+			for _, name := range []string{"agentdebugger", "delve-llm-adapter", "debug-handover"} {
 				link := filepath.Join(installBinRoot(root), name)
 				if dest, e := os.Readlink(link); e == nil && strings.HasPrefix(dest, root+"/") {
 					_ = os.Remove(link)
@@ -273,7 +273,7 @@ func installation(verb string, args []string) (any, error) {
 		return nil, err
 	}
 	binDir := installBinRoot(root)
-	for _, name := range []string{"delve-llm-adapter", "debug-handover"} {
+	for _, name := range []string{"agentdebugger", "delve-llm-adapter", "debug-handover"} {
 		if err = managedLink(filepath.Join(root, "current", "bin", "delve-llm-adapter"), filepath.Join(binDir, name), root); err != nil {
 			return nil, err
 		}

@@ -7,11 +7,14 @@ import (
 	"sync"
 	"time"
 
-	"debug-handover/internal/dap"
-	"debug-handover/internal/editors"
+	"agentdebugger/internal/dap"
+	"agentdebugger/internal/editors"
 )
 
 type dapPeer struct {
+	handles     map[int]dapHandle
+	nextHandle  int
+	sequence    int
 	front, back net.Conn
 	wmu         sync.Mutex
 	mu          sync.Mutex
@@ -23,6 +26,13 @@ type dapPeer struct {
 func (p *dapPeer) send(v obj) error {
 	p.wmu.Lock()
 	defer p.wmu.Unlock()
+	p.sequence++
+	copy := obj{}
+	for k, value := range v {
+		copy[k] = value
+	}
+	copy["seq"] = p.sequence
+	v = copy
 	_ = p.front.SetWriteDeadline(time.Now().Add(3 * time.Second))
 	return dap.Write(p.front, v)
 }
@@ -33,7 +43,9 @@ func (p *dapPeer) close() {
 	p.once.Do(func() {
 		_ = p.send(obj{"seq": 1000000000, "type": "event", "event": "terminated", "body": obj{}})
 		_ = p.front.Close()
-		_ = p.back.Close()
+		if p.back != nil {
+			_ = p.back.Close()
+		}
 	})
 }
 
@@ -56,6 +68,10 @@ func (b *broker) acceptDAP(ln net.Listener) {
 }
 
 func (b *broker) connectDAP(front net.Conn) {
+	if b.backend != nil {
+		b.connectSharedDAP(front)
+		return
+	}
 	b.mu.Lock()
 	if !editors.IsOwner(b.owner) || b.peer != nil {
 		b.mu.Unlock()
@@ -70,12 +86,14 @@ func (b *broker) connectDAP(front net.Conn) {
 	}
 	p := &dapPeer{front: front, back: back, pending: map[int]string{}}
 	b.peer = p
+	b.record("editor.connected", "human", obj{"editor": b.owner})
 	b.generation++
 	b.mu.Unlock()
 	defer func() {
 		p.close()
 		b.mu.Lock()
 		defer b.mu.Unlock()
+		b.record("editor.disconnected", "human", obj{})
 		if b.peer == p {
 			b.peer = nil
 			b.generation++
@@ -114,6 +132,7 @@ func (b *broker) connectDAP(front net.Conn) {
 					}
 					b.moving = false
 					b.generation++
+					b.historyStop(str(asObj(v["body"])["reason"]))
 				case "exited", "terminated":
 					b.moving = false
 					b.generation++
@@ -128,6 +147,7 @@ func (b *broker) connectDAP(front net.Conn) {
 				command := p.pending[num(v["request_seq"])]
 				delete(p.pending, num(v["request_seq"]))
 				p.mu.Unlock()
+				b.record("editor."+command, "human", obj{"stop_id": b.stopID, "result": v["body"], "success": v["success"], "error": v["message"]})
 				if command == "configurationDone" && truth(v["success"]) {
 					p.ready = true
 					b.lastError = ""
@@ -194,6 +214,7 @@ func (b *broker) connectDAP(front net.Conn) {
 		p.pending[num(v["seq"])] = command
 		p.mu.Unlock()
 		_ = back.SetWriteDeadline(time.Now().Add(3 * time.Second))
+		b.record("editor.requested", "human", obj{"stop_id": b.stopID, "command": command, "arguments": v["arguments"]})
 		e = dap.Write(back, v)
 		b.mu.Unlock()
 		if e != nil {

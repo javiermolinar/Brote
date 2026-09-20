@@ -1,4 +1,4 @@
-# Delve LLM Adapter
+# AgentDebugger
 
 Pass the same live Go debugger between an agent and a human. Start an existing debug
 binary, set conditional breakpoints, inspect stack and locals, then hand the paused
@@ -42,10 +42,10 @@ Core removal refuses active sessions and installed integrations.
 ## Debug
 
 ```sh
-delve-llm-adapter start --binary /path/to/precompiled-app --project /path/to/source
-delve-llm-adapter break SESSION --file main.go --line 42 --condition 'attempt == 3'
-delve-llm-adapter continue SESSION --wait 20s
-delve-llm-adapter handover SESSION --editor browser --note 'Inspect total'
+agentdebugger start --binary /path/to/precompiled-app --project /path/to/source
+agentdebugger break SESSION --file main.go --line 42 --condition 'attempt == 3'
+agentdebugger continue SESSION --wait 20s
+agentdebugger handover SESSION --editor browser --note 'Inspect total'
 ```
 
 Open the returned panel URL. Take control in the browser, step and inspect, then
@@ -101,3 +101,34 @@ Use **End session** in the session list to explicitly terminate a live target an
 Use **Open file** or **Cmd/Ctrl+P** to search source paths recorded in the running binary. Project files sort first. Files open in separate read-only tabs; browsing does not change the selected frame or locals. **Current frame** returns to the selected stack location, and a new stop follows that location. Click the gutter beside a line number to toggle a breakpoint while the session is paused, regardless of execution owner; right-click an empty gutter line to set a condition. Delve’s returned location is shown after creation.
 
 **Take control here** transfers a settled pause directly to the browser, detaching the editor without emitting an agent handback. Breakpoint edits do not transfer ownership; stepping and resuming still require the execution owner. Existing brokers need recovery with the updated executable to adopt this policy.
+
+### Ask the agent in the debugger
+
+Click the comment bubble beside a source line or local variable. A thread opens
+beside the code, capturing the selected pause, stack, locals and source. Questions
+are delivered to the connected Pi/Codex conversation; replies arrive in that
+thread without transferring execution control. Follow-ups retain the original
+captured context, clearly marked historical. Resolve or reopen discussions, or
+explicitly retry failed/uncertain delivery after checking the agent conversation.
+
+Discussion documents live outside the runtime cache, under the OS configuration
+directory `delve-llm-adapter/discussions`. Read them even after a session ends with
+`agentdebugger comment list SESSION`. CLI/API details are in
+[the discussion protocol](docs/protocol.md#persisted-discussions). Updated brokers
+and agent listeners are required; reconnect Pi after installing an update.
+
+## Monorepo and backend
+
+See [package boundaries](docs/monorepo.md), [frontend API](docs/frontend-api.md),
+and [DAP migration](docs/dap-migration.md). New sessions use DAP for execution and
+inspection. Go metadata discovery and legacy-session recovery retain documented
+RPC compatibility paths. `agentdebugger` is the primary CLI; `delve-llm-adapter`
+and `debug-handover` remain aliases. Storage and extension identifiers are retained
+to preserve existing installations and discussions.
+
+## Session history
+
+New brokers record durable investigation history under a project/date/session directory.
+Use `agentdebugger history` to list saved sessions and `agentdebugger history ID` to read
+their events, even after runtime cleanup. See [Session history](docs/session-history.md)
+for storage, schema, recovery, and captured-context semantics.

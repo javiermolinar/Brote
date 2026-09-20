@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"debug-handover/internal/agents/codex"
-	"debug-handover/internal/session"
+	"agentdebugger/internal/agents/codex"
+	"agentdebugger/internal/session"
 )
 
 func doctor(args []string) (obj, error) {

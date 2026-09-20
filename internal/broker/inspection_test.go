@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"debug-handover/internal/session"
+	"agentdebugger/internal/session"
 )
 
 func TestReadOnlyExpressions(t *testing.T) {

@@ -6,15 +6,16 @@ import (
 	"path/filepath"
 	"time"
 
-	"debug-handover/internal/delve"
-	"debug-handover/internal/editors"
-	"debug-handover/internal/editors/zed"
-	"debug-handover/internal/session"
+	"agentdebugger/internal/delve"
+	"agentdebugger/internal/editors"
+	"agentdebugger/internal/editors/zed"
+	"agentdebugger/internal/session"
 )
 
-func (b *broker) action(a obj) (obj, error) {
+func (b *broker) action(a obj) (result obj, actionErr error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	defer func() { b.historyAction(a, result, actionErr) }()
 	if _, ok := a["generation"]; !ok || num(a["generation"]) != b.generation {
 		return nil, fmt.Errorf("session changed; refresh state before acting")
 	}
@@ -183,9 +184,23 @@ func (b *broker) action(a obj) (obj, error) {
 		b.lastError = ""
 		b.generation++
 		go func() {
-			_, err := delve.Call(b.rpcAddr, "Command", obj{"name": name}, 0)
+			var err error
+			if b.backend != nil {
+				_, err = b.backend.Call("Command", obj{"name": name})
+			} else {
+				_, err = delve.Call(b.rpcAddr, "Command", obj{"name": name}, 0)
+			}
 			b.mu.Lock()
 			defer b.mu.Unlock()
+			if b.backend != nil {
+				if err != nil {
+					b.moving = false
+					b.lastError = err.Error()
+					b.record("execution.failed", "debugger", obj{"command": name, "error": err.Error()})
+					b.generation++
+				}
+				return
+			}
 			b.moving = false
 			b.generation++
 			kind := "stopped"
@@ -218,6 +233,9 @@ func (b *broker) action(a obj) (obj, error) {
 		if e == nil {
 			b.generation++
 			b.notifyBreakpoint("new", asObj(out["Breakpoint"]))
+			if b.backend != nil {
+				e = b.persist()
+			}
 		}
 		return out, e
 	case "clear":
@@ -229,6 +247,9 @@ func (b *broker) action(a obj) (obj, error) {
 		if e == nil {
 			b.generation++
 			b.notifyBreakpoint("removed", asObj(out["Breakpoint"]))
+			if b.backend != nil {
+				e = b.persist()
+			}
 		}
 		return out, e
 	case "handover":

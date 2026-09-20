@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,12 +13,14 @@ import (
 	"syscall"
 	"time"
 
-	"debug-handover/internal/editors/zed"
-	"debug-handover/internal/session"
+	"agentdebugger/internal/backend"
+	"agentdebugger/internal/editors/zed"
+	"agentdebugger/internal/session"
 )
 
 // Options configures a broker process; command-line parsing belongs to the CLI.
 type Options struct {
+	Backend                            string
 	ID, Binary, Project, Delve, Thread string
 	BindingID, AgentName               string
 	Recover                            bool
@@ -26,6 +29,9 @@ type Options struct {
 
 func (b *broker) persist() error {
 	b.s.Owner = b.owner
+	if b.backend != nil {
+		b.s.BreakpointOwners = b.backend.BreakpointOwners()
+	}
 	return session.Write(filepath.Join(b.s.Dir, "session.json"), b.s)
 }
 
@@ -59,7 +65,7 @@ func Serve(options Options) (err error) {
 			_ = os.WriteFile(filepath.Join(dir, "error"), []byte(err.Error()), 0600)
 		}
 	}()
-	s := session.Descriptor{ID: options.ID, PID: os.Getpid(), Binary: options.Binary, Project: options.Project, Dir: dir, Version: 2, Binding: &session.Binding{ID: options.BindingID, Revision: 1, Name: options.AgentName}, Created: time.Now().Format(time.RFC3339), Owner: "agent"}
+	s := session.Descriptor{Backend: options.Backend, ID: options.ID, PID: os.Getpid(), Binary: options.Binary, Project: options.Project, Dir: dir, Version: 2, Binding: &session.Binding{ID: options.BindingID, Revision: 1, Name: options.AgentName}, Created: time.Now().Format(time.RFC3339), Owner: "agent"}
 	var process *exec.Cmd
 	committed := false
 	defer func() {
@@ -143,6 +149,22 @@ func Serve(options Options) (err error) {
 	if b.owner == "" {
 		b.owner = "agent"
 	}
+	if s.Backend == "dap" {
+		b.backend, e = backend.Open(s.RPC, s.BreakpointOwners)
+		if errors.Is(e, backend.ErrRunning) && options.Recover {
+			if !session.ProcessExists(s.DelvePID) || !session.ProcessExists(s.TargetPID) {
+				return fmt.Errorf("recovery process identity unavailable")
+			}
+			b.s.Backend = "rpc"
+		} else if e != nil {
+			return e
+		}
+		if b.backend != nil {
+			defer b.backend.Close()
+		}
+
+	}
+
 	state, e := b.state()
 	if e != nil {
 		return fmt.Errorf("Delve is unavailable; debuggee was not relaunched: %w", e)
@@ -192,6 +214,45 @@ func Serve(options Options) (err error) {
 	if e = b.persist(); e != nil {
 		return e
 	}
+	b.history, e = session.OpenHistory(b.s, options.Args)
+	if e != nil {
+		return fmt.Errorf("open session history: %w", e)
+	}
+	defer b.history.Close()
+	b.record("broker.connected", "core", obj{"recovered": options.Recover})
+	if discussion, err := session.ReadDiscussion(b.s.ID); err != nil {
+		return err
+	} else if len(discussion.Threads) > 0 {
+		b.historyDiscussion(discussion, "restored")
+	}
+	if stateStatus(state, false) == "paused" {
+		b.historyStop("entry")
+	}
+	if b.backend != nil {
+		go func() {
+			for event := range b.backend.Events {
+				b.mu.Lock()
+				switch str(event["event"]) {
+				case "continued":
+					b.moving = true
+					b.generation++
+				case "stopped":
+					b.moving = false
+					b.generation++
+					_ = b.emit("stopped", str(asObj(event["body"])["reason"]))
+				case "exited":
+					b.moving = false
+					b.generation++
+					_ = b.emit("target_exited", "")
+				}
+				if b.peer != nil && b.peer.back == nil {
+					_ = b.peer.send(event)
+				}
+				b.mu.Unlock()
+			}
+		}()
+	}
+
 	committed = true
 	go func() { _ = server.Serve(httpLn) }()
 	go b.acceptDAP(dapListener)
@@ -214,6 +275,7 @@ func Serve(options Options) (err error) {
 			_, _ = b.rpc("Command", obj{"name": "halt"})
 		}
 	}
+	b.record("broker.disconnected", "core", obj{"target_ended": b.s.Stopped})
 	_ = b.persist()
 	stopped := b.s.Stopped
 	b.mu.Unlock()

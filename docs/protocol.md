@@ -83,3 +83,42 @@ new event only for a current failed/unknown handback. Delivery is not exactly-on
 Harness notifications instruct the agent to verify ownership and destination and
 never infer authorization to resume from an event. Forked conversations do not
 inherit bindings. Closed harnesses reconcile pending handback on reconnect.
+
+## Persisted discussions
+
+`GET /api/comments` returns `{discussion:{session,binary,project,threads}}`.
+`POST /api/comments` accepts `action`: `create`, `ask`, `reply`, `resolve`,
+`reopen`, `retry`, or `delivery`. Creation takes `body`, `file`, `line`, optional
+`expression`, and the current `generation`, `goroutine`, `frame`. It requires a
+settled pause and captures stack/locals/source context. Follow-up `ask` takes
+`thread` and `body`, uses that thread's original historical context, and requires
+an answered or resolved question. It does not capture a new pause.
+
+Agent `reply` takes `thread`, `question`, `binding`, `revision`, `messageId`, and
+`body`. An identical `messageId` retry returns the original result; a conflicting
+reuse fails. Replies reject superseded questions, resolved threads, and obsolete
+bindings. `delivery` uses the same routing fields plus `status` and optional
+`error`: pending → sending → queued/failed/unknown. Interrupted sends become
+unknown, never automatically resent. Replies set answered. `retry` explicitly
+routes an undelivered question to the current binding; check the conversation
+first for uncertain deliveries. Resolve/reopen do not trigger an agent turn.
+
+SSE events `question.created`, `reply.added`, `thread.updated`, and
+`thread.resolved` contain the thread ID in `note`. Adapters reconcile pending
+questions from the document on reconnect, independently of the bounded SSE
+journal. Documents are committed before emitting events; an `eventError` means
+the write succeeded but its event could not be persisted. Reconnect reconciles
+pending questions. Discussion operations never change execution ownership or
+its generation, and are separate from control-returned notifications.
+
+Discussions are atomic JSON documents under the OS user configuration directory
+`delve-llm-adapter/discussions/SESSION.json` (or
+`DEBUG_HANDOVER_HOME/discussions` for an isolated install). Files are private and
+survive broker/target termination and runtime-cache deletion. `comment list
+SESSION` reads them without a running broker. V1 does not relaunch archived
+processes or stream partial agent text. Runtime session metadata remains in the
+existing session cache.
+
+Comment delivery supports `thinking`: the agent acknowledges the current question using
+`comment delivery ... --status thinking` before investigating. `queued` confirms harness
+delivery only. A late listener receipt never overwrites `thinking` or `answered`.

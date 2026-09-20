@@ -22,7 +22,7 @@ jobs:
       - run: go install github.com/go-delve/delve/cmd/dlv@v1.27.1
       - run: npm ci
       - run: npm run build && npm test
-      - run: git diff --exit-code -- ui/inspector/public/app.js editors/vscode/dist/extension.js editors/vscode/dist/protocol.cjs
+      - run: git diff --exit-code -- packages/web/public/app.js packages/vscode/dist/extension.js packages/vscode/dist/protocol.cjs
       - run: python3 scripts/test_install.py
       - run: go vet ./...
       - run: go test -race -v ./...

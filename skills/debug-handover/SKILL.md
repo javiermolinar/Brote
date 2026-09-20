@@ -84,3 +84,30 @@ or unrelated goroutine details. Omit it only when those full details are needed.
 Report the stop location, relevant values or changes, and the next useful debugging
 observation. Keep session IDs, binding revisions, event acknowledgements, and setup
 mechanics out of normal replies. Surface them when diagnosing a delivery problem.
+
+## Debugger comment questions
+
+A comment notification is a read-only question, not a control handover or a new
+implementation task. Read `comment list SESSION` for persisted threads and their
+captured stack, locals, source, and timestamps. Check the thread is unresolved,
+its delivery question ID matches the event, and its binding ID/revision still
+matches `state SESSION`. Ignore obsolete questions. Distinguish captured values
+from current execution; do not reclaim or resume to answer a comment.
+
+Before investigating, acknowledge receipt so the debugger shows that you are thinking:
+
+```
+delve-llm-adapter comment delivery SESSION THREAD --question QUESTION --binding BINDING --revision REVISION --status thinking
+```
+
+Write the answer into a UTF-8 file and post it to the debugger:
+
+```
+delve-llm-adapter comment reply SESSION THREAD --question QUESTION --binding BINDING --revision REVISION --message-id QUESTION-answer --body-file /absolute/answer.md
+```
+
+Reuse the same message ID on retries; replies are idempotent. The broker rejects
+stale questions and changed bindings. Reply in the thread instead of only in the
+agent chat. If more execution is needed, explain what to inspect next and let the
+user drive or explicitly hand over control. `comment list` also works after the
+runtime session ends; those contexts remain historical.

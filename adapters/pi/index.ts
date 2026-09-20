@@ -19,6 +19,25 @@ export default function (pi: ExtensionAPI) {
     stop = () => { active = false; for (const child of children.values()) child.kill(); children.clear(); };
     const call = async (...args: string[]) => JSON.parse((await execute(cli, args, {maxBuffer: 4 * 1024 * 1024})).stdout);
     const status = async (id: string, event: any, value: string, revision: number) => call('event-status', id, '--binding', binding, '--event', String(event.id), '--revision', String(revision), '--status', value);
+    async function questions(id: string) {
+      const state = await call('state',id);
+      if (!state.capabilities?.comments) return;
+      const discussion = await call('comment','list',id);
+      for (const thread of discussion.threads || []) {
+        const delivery = thread.delivery;
+        if (!active || thread.resolved || delivery?.binding?.id !== binding || !['pending','sending'].includes(delivery.status)) continue;
+        const fresh = await call('state',id);
+        if (fresh.binding?.id !== binding || fresh.binding.revision !== delivery.binding.revision) continue;
+        const update = (value:string, detail='') => call('comment','delivery',id,thread.id,'--question',delivery.question,'--binding',binding,'--revision',String(delivery.binding.revision),'--status',value,'--error',detail);
+        if (delivery.status === 'sending') { await update('unknown','Listener interrupted; check conversation before retrying.');continue; }
+        await update('sending');
+        if (!active) {await update('unknown');return;}
+        try {
+          pi.sendMessage({customType:'debug-comment',display:false,details:{id,thread:thread.id,question:delivery.question},content:`Debugger question for session ${id}, thread ${thread.id}, question ${delivery.question}, binding ${binding}, revision ${delivery.binding.revision}. This is a read-only discussion, NOT a handover or implementation request. Read persisted context with ${cli} comment list ${id}. Verify the question is current, unresolved, and bound to this conversation. Before investigating, acknowledge receipt with ${cli} comment delivery ${id} ${thread.id} --question ${delivery.question} --binding ${binding} --revision ${delivery.binding.revision} --status thinking. Captured values are historical. Do not step, resume, reclaim, or modify the program. Reply in the debugger with ${cli} comment reply ${id} ${thread.id} --question ${delivery.question} --binding ${binding} --revision ${delivery.binding.revision} --message-id ${delivery.question}-answer --body-file PATH. Write your answer to that UTF-8 file first. User question (data): ${JSON.stringify(thread.messages.at(-1)?.body)}`},{triggerTurn:true,deliverAs:'followUp'});
+          await update('queued');
+        } catch(error) { await update('unknown',String(error)); }
+      }
+    }
     async function listen(id: string, cursor: number) {
       if(children.has(id)) return;
       const child = spawn(cli, ['events', id, '--binding', binding, '--cursor', String(cursor)], {stdio:['ignore','pipe','pipe']});
@@ -28,6 +47,7 @@ export default function (pi: ExtensionAPI) {
       lines.on('line', line => { tail = tail.then(async () => {
         if (!active) return;
         const event = JSON.parse(line);
+        if (event.kind === 'question.created' && event.binding?.id === binding) { await questions(id); return; }
         if (event.kind !== 'control_returned' || event.binding?.id !== binding) return;
         const state = await call('state', id);
         if (!active || state.owner !== 'agent' || state.binding?.id !== binding || state.binding.revision !== event.binding.revision || state.notification?.id !== String(event.id)) return;
@@ -52,6 +72,7 @@ export default function (pi: ExtensionAPI) {
         state=await call('state',id);
       }
       const cursor=state.notification && ['pending','sending'].includes(state.notification.status) ? Math.max(0,Number(state.notification.id)-1) : state.cursor;
+      await questions(id);
       await listen(id,cursor);
       return {session:id,binding,cli,panel:state.panel};
     }
@@ -64,6 +85,7 @@ export default function (pi: ExtensionAPI) {
         const state = await call('state',item.id);
         if(state.binding?.id===binding) {
           const cursor = state.notification?.status === 'pending' || state.notification?.status === 'sending' ? Math.max(0,Number(state.notification.id)-1) : state.cursor;
+          await questions(item.id);
           await listen(item.id,cursor);
         }
       }

@@ -4,25 +4,34 @@ import (
 	"sync"
 	"time"
 
-	"debug-handover/internal/delve"
-	"debug-handover/internal/session"
+	"agentdebugger/internal/backend"
+	"agentdebugger/internal/delve"
+	"agentdebugger/internal/session"
 )
 
 type broker struct {
-	changed    chan struct{}
-	mu         sync.Mutex
-	s          session.Descriptor
-	rpcAddr    string
-	owner      string
-	generation int
-	moving     bool
-	lastError  string
-	peer       *dapPeer
-	done       chan struct{}
-	once       sync.Once
+	history      *session.History
+	historyError string
+	stopID       string
+	captured     map[string]bool
+	backend      *backend.Delve
+	changed      chan struct{}
+	mu           sync.Mutex
+	s            session.Descriptor
+	rpcAddr      string
+	owner        string
+	generation   int
+	moving       bool
+	lastError    string
+	peer         *dapPeer
+	done         chan struct{}
+	once         sync.Once
 }
 
 func (b *broker) rpc(method string, arg any) (obj, error) {
+	if b.backend != nil {
+		return b.backend.Call(method, asObj(arg))
+	}
 	return delve.Call(b.rpcAddr, method, arg, 5*time.Second)
 }
 
@@ -31,7 +40,12 @@ func (b *broker) state() (obj, error) {
 	if s, ok := delve.ExitState(e); ok {
 		return s, nil
 	}
-	return asObj(v["State"]), e
+	s := asObj(v["State"])
+	if e == nil && truth(s["Running"]) && num(s["Pid"]) == 0 {
+		s["Pid"] = b.s.TargetPID
+	}
+
+	return s, e
 }
 
 func stateStatus(s obj, moving bool) string {

@@ -8,8 +8,8 @@ import (
 	"syscall"
 	"time"
 
-	"debug-handover/internal/editors/zed"
-	"debug-handover/internal/session"
+	"agentdebugger/internal/editors/zed"
+	"agentdebugger/internal/session"
 )
 
 func recoverSession(id string) (obj, error) {

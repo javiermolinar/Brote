@@ -12,7 +12,7 @@ import re
 if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]*',a.version):p.error('invalid version')
 r=Path(__file__).resolve().parent.parent
 out=a.output.resolve();out.mkdir(parents=True,exist_ok=True)
-vsix=r/'editors/vscode/debug-handover-0.1.0.vsix'
+vsix=r/'packages/vscode/debug-handover-0.1.0.vsix'
 if not vsix.is_file():p.error('run npm run package:vscode first')
 checks=[]
 for target in a.platforms or ['darwin/arm64','darwin/amd64','linux/arm64','linux/amd64']:
@@ -20,7 +20,8 @@ for target in a.platforms or ['darwin/arm64','darwin/amd64','linux/arm64','linux
     system,arch=target.split('/')
     with tempfile.TemporaryDirectory() as tmp:
         bundle=Path(tmp)/'delve-llm-adapter';(bundle/'bin').mkdir(parents=True)
-        subprocess.run(['go','build','-trimpath','-ldflags',f'-X debug-handover/internal/cli.Version={a.version}','-o',str(bundle/'bin/delve-llm-adapter'),'./cmd/debug-handover'],cwd=r,env={**os.environ,'GOOS':system,'GOARCH':arch,'CGO_ENABLED':'0'},check=True)
+        subprocess.run(['go','build','-trimpath','-ldflags',f'-X agentdebugger/internal/cli.Version={a.version}','-o',str(bundle/'bin/delve-llm-adapter'),'./cmd/agentdebugger'],cwd=r,env={**os.environ,'GOOS':system,'GOARCH':arch,'CGO_ENABLED':'0'},check=True)
+        shutil.copy2(bundle/'bin/delve-llm-adapter',bundle/'bin/agentdebugger')
         for name in ['README.md','LICENSE','THIRD_PARTY_NOTICES.md']:shutil.copy2(r/name,bundle/name)
         shutil.copytree(r/'docs',bundle/'docs')
         shutil.copytree(r/'adapters/pi',bundle/'adapters/pi')

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"debug-handover/internal/session"
+	"agentdebugger/internal/session"
 )
 
 func Label(id string) string { return "Debug Handover · " + id }

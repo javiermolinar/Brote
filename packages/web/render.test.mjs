@@ -5,8 +5,8 @@ import {JSDOM} from 'jsdom';
 import {build} from 'esbuild';
 
 test('stepping retains last pause, expansions and stable source; stale controls are disabled', async t => {
- const html = await readFile('ui/inspector/public/index.html','utf8');
- const js = await build({entryPoints:['ui/inspector/src/app.ts'],bundle:true,write:false,format:'iife',logLevel:'silent'});
+ const html = await readFile('packages/web/public/index.html','utf8');
+ const js = await build({entryPoints:['packages/web/src/app.ts'],bundle:true,write:false,format:'iife',logLevel:'silent'});
  const dom = new JSDOM(html,{url:'http://127.0.0.1:1234',runScripts:'outside-only'});
  t.after(()=>dom.window.close());
  const w=dom.window,d=w.document;
@@ -14,7 +14,7 @@ test('stepping retains last pause, expansions and stable source; stale controls 
  let state={id:'test',owner:'browser',generation:1,status:'paused',state:{Pid:1},project:'/demo',binary:'/demo/bin',sourceIdentity:{match:'mismatch'},frame:0,goroutine:1,goroutines:[{id:1}],frames:[{file:'main.go',line:18,function:{name:'main.process'},Locals:[{name:'value',type:'S',children:[{name:'n',type:'int',value:'21'}]}]}],source:{file:'main.go',start:18,line:18,lines:['total += delta']}};
  w.setInterval=fn=>{tick=fn;return 1;};
  const calls=[];
- w.fetch=async(url,options)=>{calls.push({url,options});if(url==='/api/action')return {ok:true,json:async()=>JSON.parse(options.body).action==='eval'?{value:{name:'value',type:'S',children:[{name:'n',type:'int',value:'42'}]},generation:state.generation,goroutine:state.goroutine,frame:state.frame}:{Breakpoint:{file:'main.go',line:23}}};if(url.startsWith('/api/sources?'))return {ok:true,json:async()=>({file:'/demo/other.go',start:1,line:0,lines:['package main','func other() {}']})};if(url==='/api/sources')return {ok:true,json:async()=>({files:['/demo/other.go']})};if(url==='/api/sessions')return {ok:true,json:async()=>({sessions:[{id:'test',project:'/demo',binary:'/demo/bin',status:'paused',owner:'browser',panel:'http://127.0.0.1:1234/'},{id:'other',project:'/other',binary:'/other/app',status:'paused',owner:'agent',binding:{name:'Pi'},panel:'http://127.0.0.1:5678/'},{id:'offline',project:'/old',binary:'/old/app',status:'offline'}]})};if(fail)throw Error('offline');return {ok:true,json:async()=>structuredClone(state)};};
+ w.fetch=async(url,options)=>{url=new URL(url,w.location.href).pathname+new URL(url,w.location.href).search;calls.push({url,options});if(url==='/api/action')return {ok:true,json:async()=>JSON.parse(options.body).action==='eval'?{value:{name:'value',type:'S',children:[{name:'n',type:'int',value:'42'}]},generation:state.generation,goroutine:state.goroutine,frame:state.frame}:{Breakpoint:{file:'main.go',line:23}}};if(url.startsWith('/api/sources?'))return {ok:true,json:async()=>({file:'/demo/other.go',start:1,line:0,lines:['package main','func other() {}']})};if(url==='/api/sources')return {ok:true,json:async()=>({files:['/demo/other.go']})};if(url==='/api/sessions')return {ok:true,json:async()=>({sessions:[{id:'test',project:'/demo',binary:'/demo/bin',status:'paused',owner:'browser',panel:'http://127.0.0.1:1234/'},{id:'other',project:'/other',binary:'/other/app',status:'paused',owner:'agent',binding:{name:'Pi'},panel:'http://127.0.0.1:5678/'},{id:'offline',project:'/old',binary:'/old/app',status:'offline'}]})};if(fail)throw Error('offline');return {ok:true,json:async()=>structuredClone(state)};};
  const flush=()=>new Promise(r=>setTimeout(r,0));
  w.eval(js.outputFiles[0].text);await flush();
  d.querySelector('#refreshSessions').click();await flush();

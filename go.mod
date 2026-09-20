@@ -1,3 +1,3 @@
-module debug-handover
+module agentdebugger
 
 go 1.23

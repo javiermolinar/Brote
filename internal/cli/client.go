@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"debug-handover/internal/session"
+	"agentdebugger/internal/session"
 )
 
 func api(s session.Descriptor, method, path string, body any) (obj, error) {

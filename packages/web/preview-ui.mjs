@@ -84,7 +84,9 @@ const server = createServer(async (req, res) => {
       } catch (error) { reject(409, 'Source unavailable: ' + (error.stdout || error.message)); }
       return;
     }
+    const eventStream=req.method==='GET' && url.pathname==='/api/events';
     if (!(req.method === 'GET' && url.pathname === '/api/state') &&
+        !(eventStream || (['GET','POST'].includes(req.method) && url.pathname === '/api/comments')) &&
         !(req.method === 'POST' && url.pathname === '/api/action')) {
       return reject(404, 'unknown endpoint');
     }
@@ -99,7 +101,7 @@ const server = createServer(async (req, res) => {
       }
       const proxy = request(new URL(url.pathname + url.search, destination), {
         method: req.method,
-        timeout: 15000,
+        timeout: eventStream ? 0 : 15000,
         headers: {
           ...(upstreamToken ? { Authorization: 'Bearer ' + upstreamToken } : {}),
           'Content-Type': 'application/json',
@@ -107,7 +109,7 @@ const server = createServer(async (req, res) => {
           Origin: destination.origin,
         },
       }, response => {
-        res.writeHead(response.statusCode, { 'Content-Type': 'application/json' });
+        res.writeHead(response.statusCode, { 'Content-Type': response.headers['content-type'] || 'application/json' });
         response.pipe(res);
       });
       proxy.on('timeout', () => proxy.destroy(new Error('broker request timed out')));
@@ -116,6 +118,7 @@ const server = createServer(async (req, res) => {
         else res.destroy();
       });
       req.on('error', () => proxy.destroy());
+      res.on('close',()=>proxy.destroy());
       proxy.end(Buffer.concat(chunks));
     } catch {
       if (!res.headersSent) reject(400, 'invalid request');

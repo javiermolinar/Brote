@@ -6,40 +6,43 @@ import (
 	"fmt"
 	"time"
 
-	"debug-handover/internal/session"
+	"agentdebugger/internal/session"
 )
 
 type obj = map[string]any
 
 func usage() string {
-	return `Debug Handover — persistent Go / Delve sessions
+	return `AgentDebugger — persistent Go / Delve sessions
 
-  debug-handover start --binary PATH --project DIR [--dlv PATH] -- [program args]
-  delve-llm-adapter setup --agent codex|pi [--editor vscode]
-  debug-handover events ID [--cursor N] [--binding ID]  (JSONL stream)
-  debug-handover await-control ID [--cursor N] [--timeout 20s]
-  debug-handover event-status ID --event N --revision N --status acknowledged
-  debug-handover end-session ID --confirmed  (explicit human termination)
-  debug-handover sessions
-  debug-handover state ID [--goroutine N] [--frame N] [--summary]
-  debug-handover eval ID --expression EXPR [--goroutine N] [--frame N] [--depth 3] [--count 64]
-  debug-handover watch|unwatch ID --expression EXPR
-  debug-handover bind ID --thread UUID
-  debug-handover bind ID --binding CLIENT_ID --name DISPLAY_NAME
-  delve-llm-adapter installation|repair
-  delve-llm-adapter uninstall --component codex|pi|vscode|core
-  debug-handover retry-notification ID
-  debug-handover recover ID
-  debug-handover cleanup ID
-  debug-handover doctor [--binary PATH] [--project DIR]
-  debug-handover break ID --file PATH --line N [--condition EXPR] [--hit-condition '== 3']
-  debug-handover break ID --function main.process [--condition EXPR]
-  debug-handover clear ID --breakpoint N
-  debug-handover continue|next|step|stepout ID [--wait 20s] [--summary]
-  debug-handover pause ID
-  debug-handover handover ID [--editor browser|zed|vscode] [--no-open]
-  debug-handover reclaim ID
-  debug-handover stop ID
+  agentdebugger start --binary PATH --project DIR [--dlv PATH] -- [program args]
+  agentdebugger setup --agent codex|pi [--editor vscode]
+  agentdebugger events ID [--cursor N] [--binding ID]  (JSONL stream)
+  agentdebugger await-control ID [--cursor N] [--timeout 20s]
+  agentdebugger event-status ID --event N --revision N --status acknowledged
+  agentdebugger end-session ID --confirmed  (explicit human termination)
+  agentdebugger comment list SESSION
+  agentdebugger comment reply SESSION THREAD --question ID --binding ID --revision N --body-file PATH --message-id KEY
+  agentdebugger sessions
+  agentdebugger history [ID]  (saved sessions or ordered events, works offline)
+  agentdebugger state ID [--goroutine N] [--frame N] [--summary]
+  agentdebugger eval ID --expression EXPR [--goroutine N] [--frame N] [--depth 3] [--count 64]
+  agentdebugger watch|unwatch ID --expression EXPR
+  agentdebugger bind ID --thread UUID
+  agentdebugger bind ID --binding CLIENT_ID --name DISPLAY_NAME
+  agentdebugger installation|repair
+  agentdebugger uninstall --component codex|pi|vscode|core
+  agentdebugger retry-notification ID
+  agentdebugger recover ID
+  agentdebugger cleanup ID
+  agentdebugger doctor [--binary PATH] [--project DIR]
+  agentdebugger break ID --file PATH --line N [--condition EXPR] [--hit-condition '== 3']
+  agentdebugger break ID --function main.process [--condition EXPR]
+  agentdebugger clear ID --breakpoint N
+  agentdebugger continue|next|step|stepout ID [--wait 20s] [--summary]
+  agentdebugger pause ID
+  agentdebugger handover ID [--editor browser|zed|vscode] [--no-open]
+  agentdebugger reclaim ID
+  agentdebugger stop ID
 
 All commands print JSON. start never compiles the target. Closing Zed or the panel
 does not stop the program. stop explicitly terminates the owned debug session.`
@@ -51,6 +54,18 @@ func Run(args []string) (any, error) {
 		return nil, nil
 	}
 	verb := args[0]
+	if verb == "history" {
+		if len(args) == 1 {
+			return session.ListHistory()
+		}
+		if len(args) == 2 {
+			return session.ReadHistory(args[1])
+		}
+		return nil, fmt.Errorf("usage: history [ID]")
+	}
+	if verb == "comment" {
+		return commentCommand(args[1:])
+	}
 	if verb == "sources" {
 		if len(args) < 2 || len(args) > 3 {
 			return nil, fmt.Errorf("usage: sources ID [FILE]")
