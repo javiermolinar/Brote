@@ -51,6 +51,20 @@ func Run(args []string) (any, error) {
 		return nil, nil
 	}
 	verb := args[0]
+	if verb == "sources" {
+		if len(args) < 2 || len(args) > 3 {
+			return nil, fmt.Errorf("usage: sources ID [FILE]")
+		}
+		s, err := session.Read(args[1])
+		if err != nil {
+			return nil, err
+		}
+		file := ""
+		if len(args) == 3 {
+			file = args[2]
+		}
+		return session.Sources(s, file)
+	}
 	if verb == "end-session" {
 		if len(args) != 3 || args[2] != "--confirmed" {
 			return nil, fmt.Errorf("usage: end-session ID --confirmed (terminates the target, regardless of owner)")

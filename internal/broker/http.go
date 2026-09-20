@@ -33,6 +33,18 @@ func (b *broker) handler() http.Handler {
 			b.events(w, r)
 			return
 		}
+		if r.URL.Path == "/api/sources" && r.Method == "GET" {
+			b.mu.Lock()
+			descriptor := b.s
+			b.mu.Unlock()
+			result, err := session.Sources(descriptor, r.URL.Query().Get("file"))
+			if err != nil {
+				write(409, obj{"error": err.Error()})
+			} else {
+				write(200, result)
+			}
+			return
+		}
 		if r.URL.Path == "/api/sessions/stop" && r.Method == "POST" {
 			var input struct {
 				ID        string `json:"id"`

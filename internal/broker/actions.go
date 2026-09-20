@@ -151,7 +151,9 @@ func (b *broker) action(a obj) (obj, error) {
 		out["cursor"] = b.s.Cursor
 		return out, nil
 	}
-	if b.owner != str(a["actor"]) && !(verb == "handover" && str(a["actor"]) == "browser" && b.owner == "agent") && !(verb == "handover" && b.peer == nil && b.owner == "vscode") {
+	sharedBreakpoint := str(a["actor"]) == "browser" && (verb == "break" || verb == "clear")
+	takeBrowser := str(a["actor"]) == "browser" && verb == "handover" && str(a["editor"]) == "browser"
+	if !sharedBreakpoint && !takeBrowser && b.owner != str(a["actor"]) && !(verb == "handover" && str(a["actor"]) == "browser" && b.owner == "agent") && !(verb == "handover" && b.peer == nil && b.owner == "vscode") {
 		return nil, fmt.Errorf("%s owns execution; reclaim the paused session first", editors.Name(b.owner))
 	}
 	if verb == "pause" {
@@ -215,6 +217,7 @@ func (b *broker) action(a obj) (obj, error) {
 		out, e := b.rpc("CreateBreakpoint", obj{"Breakpoint": bp, "LocExpr": loc})
 		if e == nil {
 			b.generation++
+			b.notifyBreakpoint("new", asObj(out["Breakpoint"]))
 		}
 		return out, e
 	case "clear":
@@ -225,6 +228,7 @@ func (b *broker) action(a obj) (obj, error) {
 		out, e := b.rpc("ClearBreakpoint", obj{"Id": id})
 		if e == nil {
 			b.generation++
+			b.notifyBreakpoint("removed", asObj(out["Breakpoint"]))
 		}
 		return out, e
 	case "handover":
@@ -238,11 +242,18 @@ func (b *broker) action(a obj) (obj, error) {
 		if !editors.IsOwner(editor) && editor != "browser" {
 			return nil, fmt.Errorf("editor must be browser, zed or vscode")
 		}
-		if b.owner != "agent" && b.owner != "browser" && editor != b.owner {
+		if !takeBrowser && b.owner != "agent" && b.owner != "browser" && editor != b.owner {
 			return nil, fmt.Errorf("reclaim before changing editors")
 		}
 
 		if editor == "browser" {
+			if b.peer != nil {
+				if b.peer.pendingCount() > 0 {
+					return nil, fmt.Errorf("editor has requests in flight; wait for the pause to settle")
+				}
+				b.peer.close()
+				b.peer = nil
+			}
 			b.owner, b.s.Editor = "browser", "browser"
 			b.generation++
 			if err := b.emit("ownership_changed", str(a["note"])); err != nil {
@@ -296,5 +307,11 @@ func (b *broker) action(a obj) (obj, error) {
 		return out, nil
 	default:
 		return nil, fmt.Errorf("unknown action %q", verb)
+	}
+}
+
+func (b *broker) notifyBreakpoint(reason string, bp obj) {
+	if b.peer != nil && num(bp["id"]) > 0 {
+		_ = b.peer.send(obj{"seq": 1000000001, "type": "event", "event": "breakpoint", "body": obj{"reason": reason, "breakpoint": obj{"id": bp["id"], "verified": true, "line": bp["line"], "source": obj{"path": bp["file"]}}}})
 	}
 }

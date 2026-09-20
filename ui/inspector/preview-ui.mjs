@@ -75,6 +75,15 @@ const server = createServer(async (req, res) => {
       } catch { return reject(404, 'session unavailable'); }
       url.searchParams.delete('session');
     }
+    if (req.method === 'GET' && url.pathname === '/api/sources') {
+      try {
+        const args = ['sources', selected || session.id];
+        if (url.searchParams.has('file')) args.push(url.searchParams.get('file'));
+        const {stdout} = await run(process.env.DELVE_LLM_ADAPTER_BIN || 'delve-llm-adapter', args, {timeout:10000,maxBuffer:8*1024*1024});
+        res.end(stdout);
+      } catch (error) { reject(409, 'Source unavailable: ' + (error.stdout || error.message)); }
+      return;
+    }
     if (!(req.method === 'GET' && url.pathname === '/api/state') &&
         !(req.method === 'POST' && url.pathname === '/api/action')) {
       return reject(404, 'unknown endpoint');

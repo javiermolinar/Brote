@@ -10,6 +10,7 @@ interface Variable {
   unreadable?: string;
   len?: number;
   cap?: number;
+  kind?: number;
   children?: Variable[];
 }
 
@@ -84,7 +85,7 @@ interface ActionOptions {
   count?: number;
 }
 interface ActionRequest extends ActionOptions { action: Action; generation: number; actor?: string }
-interface ActionResult extends Partial<Evaluation> { instructions?: string; message?: string; notificationError?: string; persistenceError?: string; cleanupError?: string; openError?: string }
+interface ActionResult extends Partial<Evaluation> { Breakpoint?: {file:string;line:number}; instructions?: string; message?: string; notificationError?: string; persistenceError?: string; cleanupError?: string; openError?: string }
 
 function $<T extends HTMLElement = HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -112,6 +113,14 @@ let renderKey = '';
 let sourceKey = '';
 let displayedSource: Source | undefined;
 let lastPid: number | undefined;
+const openSources = new Map<string, Source>();
+const sourceScroll = new Map<string, {top:number;left:number}>();
+let activeFile = '';
+let lastLocation = '';
+let renderedLocation = '';
+let navigationTarget: {file:string;line:number} | undefined;
+let fileRequest = 0;
+let knownFiles: string[] = [];
 let disconnected = false;
 let evaluated: Evaluation | undefined;
 const basename = (path: string) => path.split('/').pop() || path;
@@ -133,19 +142,69 @@ async function request<T>(path: string, body?: ActionRequest | {id: string; conf
   return data as T;
 }
 
+function pinIcon(): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', 'M8 3h8l-1 7 4 4v2H5v-2l4-4-1-7Z M12 16v6');
+  svg.append(path);
+  return svg;
+}
+
+function incomplete(value: Variable): boolean {
+  if (value.unreadable) return false;
+  const children = value.children || [];
+  const count = value.kind === 21 ? children.length / 2 : children.length;
+  return ([17, 21, 23, 25].includes(value.kind || 0) && (value.len || 0) > count)
+    || (value.kind === 24 && (value.len || 0) > new TextEncoder().encode(value.value || '').length)
+    || (value.kind === 22 && !children.length && value.value !== 'nil')
+    || children.some(incomplete);
+}
+
+function inspectable(value: Variable, expression: string, loaded = false): HTMLElement {
+  const root = node('div', undefined, 'inspectable');
+  root.append(variable(value));
+  if (incomplete(value) && !expression.startsWith('~')) {
+    const more = node('button', loaded ? 'Value truncated · use a narrower expression' : 'Load more', 'loadMore');
+    if (loaded) { root.append(node('p', more.textContent || '', 'empty')); return root; }
+    const scope = snapshot && { generation: snapshot.generation, goroutine: snapshot.goroutine, frame: snapshot.frame };
+    more.onclick = async () => {
+      if (!scope || busy || snapshot?.status !== 'paused' || snapshot.generation !== scope.generation || snapshot.frame !== scope.frame || snapshot.goroutine !== scope.goroutine) return;
+      more.disabled = true;
+      more.textContent = 'Loading…';
+      try {
+        const result = await request<ActionResult>('action', { action: 'eval', actor: snapshot.owner === 'codex' ? 'agent' : 'browser', expression, ...scope, depth: 6, count: 128 });
+        if (!root.isConnected || snapshot?.status !== 'paused' || snapshot.generation !== scope.generation || snapshot.frame !== scope.frame || snapshot.goroutine !== scope.goroutine) return;
+        if (result.value) {
+          const replacement = inspectable({ ...result.value, name: value.name }, expression, true);
+          const details = replacement.querySelector('details');
+          if (details) details.open = true;
+          root.replaceWith(replacement);
+        }
+      } catch (error) { message('error', errorMessage(error)); }
+      finally { more.disabled = false; more.textContent = 'Load more'; }
+    };
+    root.append(more);
+  }
+  return root;
+}
+
 function variable(value: Variable): HTMLElement {
   const children = value.children || [];
   const root = node(children.length ? 'details' : 'div', undefined, 'variable');
-  const row = children.length ? node('summary') : root;
+  const row = node(children.length ? 'summary' : 'div', undefined, 'variableRow');
   row.append(
     node('span', value.name || '·', 'name'),
     node('span', value.unreadable ? `(unavailable: ${value.unreadable})` : value.value || (value.len !== undefined && (value.type.startsWith('[]') || value.type.startsWith('map[') || value.type.startsWith('[')) ? `len ${value.len}${value.cap ? ` · cap ${value.cap}` : ''}` : children.length ? '{…}' : '—'), 'value'),
     node('span', value.type || '', 'type'),
   );
+  root.append(row);
   if (children.length) {
     const list = node('div', undefined, 'children');
     children.forEach((child, index) => list.append(variable({ ...child, name: child.name || (value.type.startsWith('[') ? `[${index}]` : value.type.startsWith('map[') ? `${index % 2 ? 'value' : 'key'} ${Math.floor(index / 2)}` : '·') })));
-    root.append(row, list);
+    root.append(list);
     if (value.len && value.len > children.length && !value.type.startsWith('map[')) list.append(node('p', `${children.length} of ${value.len} items loaded. Use a slice expression for another range.`, 'empty'));
   }
   return root;
@@ -154,8 +213,11 @@ function variable(value: Variable): HTMLElement {
 function renderSource(source: Source): void {
   $('filename').textContent = source.file;
   $('filename').title = source.file;
-  $('line').textContent = 'line ' + source.line;
+  $('line').textContent = source.line ? 'line ' + source.line : 'Browsing';
 
+  const location = source.file + ':' + source.line;
+  const revealStop = location !== renderedLocation;
+  renderedLocation = location;
   const previous = displayedSource;
   const reusable = previous && previous.file === source.file
     && source.line >= previous.start + 3 && source.line < previous.start + previous.lines.length - 3
@@ -171,11 +233,11 @@ function renderSource(source: Source): void {
     });
     const current = $('source').querySelector<HTMLElement>('.sourceHighlight.current');
     const pane = $('source');
-    if (current && (current.offsetTop < pane.scrollTop || current.offsetTop + current.offsetHeight > pane.scrollTop + pane.clientHeight)) {
+    if (revealStop && current && (current.offsetTop < pane.scrollTop || current.offsetTop + current.offsetHeight > pane.scrollTop + pane.clientHeight)) {
       pane.scrollTop = Math.max(0, current.offsetTop - pane.clientHeight / 2);
     }
   };
-  if (key === sourceKey) { selectLine(); return; }
+  if (key === sourceKey) { selectLine(); paintBreakpoints(); return; }
   displayedSource = source;
   sourceKey = key;
   const pane = $('source');
@@ -184,12 +246,18 @@ function renderSource(source: Source): void {
   const highlights = node('div', undefined, 'sourceHighlights');
   const numbers = node('div', undefined, 'sourceNumbers');
   highlights.setAttribute('aria-hidden', 'true');
-  numbers.setAttribute('aria-hidden', 'true');
+
   source.lines.forEach((_, index) => {
     const line = source.start + index;
     const current = line === source.line ? ' current' : '';
     const highlight = node('div', undefined, 'sourceHighlight' + current);
-    const number = node('div', String(line), 'sourceNumber' + current);
+    const number = node('div', undefined, 'sourceNumber' + current);
+    const gutter = node('button', '', 'breakpointGutter');
+    gutter.dataset.line = String(line);
+    number.append(gutter, node('span', String(line), 'lineLabel'));
+    gutter.setAttribute('aria-label', `Toggle breakpoint at line ${line}`);
+    gutter.onclick = () => { void gutterBreakpoint(source.file,line,false); };
+    gutter.oncontextmenu = event => { event.preventDefault(); void gutterBreakpoint(source.file,line,true); };
     highlight.dataset.line = number.dataset.line = String(line);
     highlights.append(highlight);
     numbers.append(number);
@@ -211,6 +279,7 @@ function renderSource(source: Source): void {
   pane.replaceChildren(content);
   pane.scrollLeft = left;
 
+  paintBreakpoints();
   // Scroll within the source pane without moving the surrounding inspector.
   const current = highlights.querySelector<HTMLElement>('.current');
   if (current) $('source').scrollTop = Math.max(0, current.offsetTop - $('source').clientHeight / 2);
@@ -242,11 +311,13 @@ function render(state: Snapshot): void {
   const handover = $<HTMLButtonElement>('handover');
   handover.textContent = state.owner === 'agent' || state.owner === 'codex' ? `Take control in ${editorSelect.value}` : `Return to ${agentName}`;
   handover.disabled = busy || !paused;
+  $<HTMLButtonElement>('takeBrowser').hidden = state.owner === 'browser';
+  $<HTMLButtonElement>('takeBrowser').disabled = busy || !paused;
   document.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(button => {
     button.disabled = busy || !codex || (button.dataset.action === 'pause' ? state.status !== 'running' : !paused);
   });
   $('breakForm').querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button').forEach(element => {
-    element.disabled = busy || !codex || !paused;
+    element.disabled = busy || !paused;
   });
   $<HTMLButtonElement>('stop').disabled = busy || !codex;
   $('evalForm').querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('input,button,select').forEach(element => { element.disabled = busy || !paused; });
@@ -262,23 +333,30 @@ function render(state: Snapshot): void {
 
   if (evaluated && (evaluated.generation !== state.generation || evaluated.frame !== state.frame || evaluated.goroutine !== state.goroutine || !paused)) { evaluated = undefined; $('evaluation').replaceChildren(); }
 
+  const isPinned = Boolean(evaluated && state.watches?.some(watch => watch.expression === evaluated?.expression));
+  $('addWatch').hidden = !evaluated || isPinned;
+  $('evaluation').hidden = isPinned;
+  $('evaluation').querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = busy || !paused; });
+
   // Keep the last stop visible during execution. Disable its interactions and
   // label it as stale instead of collapsing and rebuilding every panel.
   const disableInspection = () => {
     $('frames').querySelectorAll<HTMLButtonElement>('button').forEach(b => { b.disabled = busy || !paused; });
-    $('locals').querySelectorAll<HTMLButtonElement>('button').forEach(b => { b.disabled = busy || !paused || b.dataset.unavailable === 'true'; });
-    for (const id of ['watches', 'breakpoints']) $(id).querySelectorAll<HTMLButtonElement>('button').forEach(b => { b.disabled = busy || !paused || !codex; });
+    $('locals').querySelectorAll<HTMLButtonElement>('button').forEach(b => { b.disabled = busy || !paused || b.dataset.unavailable === 'true' || (b.classList.contains('pinButton') && !codex); });
+    for (const id of ['watches']) $(id).querySelectorAll<HTMLButtonElement>('button').forEach(b => { b.disabled = busy || !paused || !codex; });
     $<HTMLSelectElement>('goroutines').disabled = busy || !paused;
   };
   disableInspection();
+  $('breakpoints').querySelectorAll<HTMLButtonElement>('button:not(.breakpointLink)').forEach(b => { b.disabled = busy || !paused; });
   if (!paused) return;
   const key = JSON.stringify([state.goroutine, state.frame, state.frames, state.source, state.breakpoints, state.goroutines, state.watches, agentName]);
+  paintBreakpoints();
   if (key === renderKey) return;
   renderKey = key;
   const expanded = new Set(Array.from($('locals').querySelectorAll<HTMLDetailsElement>('details[open]')).map(d => d.dataset.path));
   const positions = new Map(['frames', 'locals', 'watches'].map(id => [id, $(id).scrollTop]));
   for (const id of ['frames', 'locals', 'breakpoints', 'goroutines', 'watches']) $(id).replaceChildren();
-  if (!state.source) {
+  if (!state.source && !activeFile) {
     sourceKey = '';
     displayedSource = undefined;
     $('source').replaceChildren(node('p', 'No source available at this location.'));
@@ -298,41 +376,60 @@ function render(state: Snapshot): void {
     $('frames').append(button);
   });
   if (!state.frames?.length) $('frames').append(node('p', 'No Go stack at this location.', 'empty'));
-  if (state.source) renderSource(state.source);
+  if (state.source) {
+    const location = [state.source.file,state.source.line,state.frame,state.goroutine].join(':');
+    if (!openSources.has(state.source.file)) openSources.set(state.source.file,state.source);
+    else if (openSources.get(state.source.file)!.start !== 1) openSources.set(state.source.file,state.source);
+    if (location !== lastLocation) { navigationTarget=undefined; rememberScroll(); activeFile=state.source.file; lastLocation=location; }
+  }
+  showActiveSource();
 
   const selected = state.frames?.[state.frame];
   $('frameName').textContent = selected?.function?.name || '';
   const variables = [...(selected?.Arguments || []), ...(selected?.Locals || [])];
   variables.forEach(value => {
-    const row = variable(value);
-    const inspect = node('button', 'Inspect', 'inspect');
-    inspect.dataset.unavailable = String(value.name.startsWith('~'));
-    inspect.disabled = busy || value.name.startsWith('~');
-    inspect.onclick = () => { $<HTMLInputElement>('expression').value = value.name; void evaluate(); };
-    (row.querySelector('summary') || row).append(inspect); $('locals').append(row);
+    const row = node('div', undefined, 'localVariable');
+    const pinned = Boolean(state.watches?.some(watch => watch.expression === value.name));
+    const pin = node('button', undefined, 'pinButton');
+    const unavailable = !value.name || value.name.startsWith('~');
+    pin.dataset.unavailable = String(unavailable);
+    pin.disabled = busy || !paused || !codex || unavailable;
+    pin.setAttribute('aria-pressed', String(pinned));
+    pin.setAttribute('aria-label', `${pinned ? 'Unpin' : 'Pin'} ${value.name}`);
+    pin.title = unavailable ? 'This compiler-generated value cannot be pinned' : `${pinned ? 'Unpin' : 'Pin'} ${value.name}`;
+    pin.append(pinIcon());
+    pin.onclick = () => { void act(pinned ? 'unwatch' : 'watch', { expression: value.name }); };
+    row.append(pin, inspectable(value, value.name));
+    $('locals').append(row);
   });
   if (!variables.length) $('locals').append(node('p', 'No readable locals in this frame.', 'empty'));
   for (const watch of state.watches || []) {
     const row = node('div', undefined, 'watch');
-    row.append(node('strong', watch.expression));
-    const remove = node('button', 'Remove'); remove.disabled = busy;
+    const remove = node('button', undefined, 'pinButton'); remove.disabled = busy;
+    remove.setAttribute('aria-pressed', 'true');
+    remove.append(pinIcon());
+    remove.setAttribute('aria-label', `Unpin ${watch.expression}`);
+    remove.title = `Unpin ${watch.expression}`;
     remove.onclick = () => { void act('unwatch', { expression: watch.expression }); };
     row.append(remove);
-    row.append(watch.value ? variable(watch.value) : node('p', watch.error || 'Unavailable in this frame.', 'empty'));
+    row.append(watch.value ? inspectable({ ...watch.value, name: watch.expression }, watch.expression) : node('p', `${watch.expression}: ${watch.error || 'Unavailable in this frame.'}`, 'empty'));
     $('watches').append(row);
   }
-  if (!state.watches?.length) $('watches').append(node('p', 'Add an expression to follow its value across stops.', 'empty'));
 
-  const breakpoints = (state.breakpoints || []).filter(bp => bp.id > 0);
+
+  const breakpoints = (state.breakpoints || []).filter(bp => bp.id > 0).slice().sort((a,b)=>a.file.localeCompare(b.file)||a.line-b.line||a.id-b.id);
   breakpoints.forEach(bp => {
     const row = node('div', undefined, 'bp');
+    const link = node('button', `${basename(bp.file)}:${bp.line}`, 'place breakpointLink');
+    link.title = bp.file + ':' + bp.line;
+    link.onclick = () => { void openSourceFile(bp.file,bp.line); };
     row.append(
       node('span', '●', 'red'),
-      node('span', `${basename(bp.file)}:${bp.line} · ${bp.name?.startsWith('agent') || bp.name?.startsWith('codex') ? agentName : 'Editor'}`, 'place'),
+      link,
       node('span', [bp.Cond, bp.HitCond ? 'hits ' + bp.HitCond : ''].filter(Boolean).join(' · '), 'condition'),
     );
     const remove = node('button', 'Remove');
-    remove.disabled = !codex || busy;
+    remove.disabled = busy || !paused;
     remove.onclick = () => { void act('clear', { breakpoint: bp.id }); };
     row.append(remove);
     $('breakpoints').append(row);
@@ -375,11 +472,15 @@ async function act(action: Action, extra: ActionOptions = {}): Promise<void> {
   message('error', '');
   try {
     const result = await request<ActionResult>('action', { action, actor: snapshot.owner === 'codex' ? 'agent' : 'browser', generation: snapshot.generation, ...extra });
-    message('notice', result.instructions || result.message || (action === 'break' ? 'Breakpoint set in Delve.' : ''));
+    message('notice', result.instructions || result.message || (result.Breakpoint ? `Breakpoint set at ${basename(result.Breakpoint.file)}:${result.Breakpoint.line}` : action === 'break' ? 'Breakpoint set in Delve.' : ''));
     message('error', result.openError || result.notificationError || result.persistenceError || result.cleanupError);
     if (action === 'eval' && result.value) {
       evaluated = { expression: extra.expression || '', value: result.value, generation: result.generation, goroutine: result.goroutine, frame: result.frame };
-      $('evaluation').replaceChildren(node('strong', evaluated.expression), variable(result.value));
+      const resultRow = inspectable({ ...result.value, name: evaluated.expression }, evaluated.expression);
+      const details = resultRow.querySelector('details');
+      if (details) details.open = true;
+      $('evaluation').replaceChildren(resultRow);
+      $('evaluation').scrollIntoView({ block: 'nearest' });
     }
     if (action === 'stop') {
       message('notice', 'Session ended. The debuggee and debugger have been stopped.');
@@ -400,15 +501,17 @@ async function act(action: Action, extra: ActionOptions = {}): Promise<void> {
 document.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(button => {
   button.onclick = () => { void act(button.dataset.action as Action); };
 });
+$('takeBrowser').onclick = () => { void act('handover', {editor:'browser',open:false}); };
 $('handover').onclick = () => {
   if (snapshot) void act(snapshot.owner === 'agent' || snapshot.owner === 'codex' ? 'handover' : 'reclaim', { open: true, editor: $<HTMLSelectElement>('editor').value, notify: Boolean(snapshot.thread) });
 };
 async function evaluate(): Promise<void> {
   if (!snapshot) return;
-  await act('eval', { expression: $<HTMLInputElement>('expression').value, goroutine: snapshot.goroutine, frame: snapshot.frame, depth: Number($<HTMLSelectElement>('depth').value), count: 128 });
+  await act('eval', { expression: $<HTMLInputElement>('expression').value, goroutine: snapshot.goroutine, frame: snapshot.frame, depth: 3, count: 128 });
 }
 $('evalForm').onsubmit = event => { event.preventDefault(); void evaluate(); };
-$('addWatch').onclick = () => { void act('watch', { expression: $<HTMLInputElement>('expression').value }); };
+$('addWatch').append(pinIcon());
+$('addWatch').onclick = () => { if (evaluated) void act('watch', { expression: evaluated.expression }); };
 $('retryNotification').onclick = () => {
   if (snapshot?.notification?.status === 'unknown' && !confirm('Delivery is uncertain. Check your Codex task first. Retry anyway?')) return;
   void act('retry-notification');
@@ -480,3 +583,76 @@ $('refreshSessions').onclick = () => { void loadSessions(); };
 document.querySelector<HTMLDetailsElement>('.sessionPicker')!.ontoggle = event => {
   if ((event.currentTarget as HTMLDetailsElement).open) void loadSessions();
 };
+
+function rememberScroll(): void {
+  if (activeFile) sourceScroll.set(activeFile,{top:$('source').scrollTop,left:$('source').scrollLeft});
+}
+function showActiveSource(): void {
+  const source = openSources.get(activeFile);
+  if (source) renderSource({...source,line:snapshot?.status==='paused' && snapshot.source?.file===activeFile ? snapshot.source.line : 0});
+  $('fileTabs').replaceChildren();
+  for (const [file] of openSources) {
+    const group=node('div',undefined,'fileTab');
+    const button=node('button',basename(file));button.title=file;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(file===activeFile));
+    button.onclick=()=>{rememberScroll();activeFile=file;showActiveSource();const pos=sourceScroll.get(file);if(pos){$('source').scrollTop=pos.top;$('source').scrollLeft=pos.left;}};
+    const close=node('button','×','closeTab');close.setAttribute('aria-label','Close '+basename(file));
+    close.onclick=()=>{openSources.delete(file);sourceScroll.delete(file);if(activeFile===file){activeFile=Array.from(openSources.keys()).pop()||'';sourceKey='';if(!activeFile){$('source').replaceChildren();$('filename').textContent='Open a source file';$('line').textContent='';}}showActiveSource();};
+    group.append(button,close);$('fileTabs').append(group);
+  }
+  paintBreakpoints();
+}
+function paintBreakpoints(): void {
+  $('source').querySelectorAll<HTMLElement>('.sourceHighlight').forEach(el=>el.classList.toggle('navigated',navigationTarget?.file===activeFile && navigationTarget.line===Number(el.dataset.line)));
+  $('gutterHint').textContent = snapshot?.status !== 'paused' ? 'Pause execution to edit breakpoints.' : 'Click beside a line number to toggle a breakpoint · right-click for a condition';
+  const allowed = !busy && snapshot?.status==='paused';
+  $('source').querySelectorAll<HTMLButtonElement>('button.breakpointGutter').forEach(button=>{
+    const bp=snapshot?.breakpoints?.find(bp=>bp.id>0 && bp.file===activeFile && bp.line===Number(button.dataset.line));
+    button.classList.toggle('hasBreakpoint',Boolean(bp));button.disabled=!allowed;
+    button.title=!allowed ? 'Pause execution to edit breakpoints' : bp ? `Breakpoint ${bp.id}${bp.Cond ? ': '+bp.Cond : ''} · click to remove` : 'Click to set breakpoint · right-click for condition';
+    button.setAttribute('aria-pressed',String(Boolean(bp)));
+  });
+}
+async function gutterBreakpoint(file: string,line: number,conditional: boolean): Promise<void> {
+  if (busy || snapshot?.status!=='paused') return;
+  const bp=snapshot.breakpoints?.find(bp=>bp.id>0 && bp.file===file && bp.line===line);
+  if (bp && conditional) { message('notice','Remove this breakpoint first to replace its condition.');return; }
+  const condition=conditional ? prompt('Breakpoint condition (Go expression):','') : '';
+  if (condition===null) return;
+  await act(bp?'clear':'break',bp?{breakpoint:bp.id}:{file,line,condition});
+  paintBreakpoints();
+}
+async function openSourceFile(file: string, targetLine?: number): Promise<void> {
+  const revision=++fileRequest;
+  try {
+    const source=await request<Source>('sources?file='+encodeURIComponent(file));
+    if(revision!==fileRequest)return;
+    rememberScroll();openSources.set(file,source);activeFile=file;navigationTarget=targetLine ? {file,line:targetLine} : undefined;showActiveSource();
+    if (targetLine) {
+      const target=$('source').querySelector<HTMLElement>(`.sourceHighlight[data-line="${targetLine}"]`);
+      if(target) $('source').scrollTop=Math.max(0,target.offsetTop-$('source').clientHeight/2);
+      $('line').textContent='line '+targetLine;
+    } else $('source').scrollTop=0;
+    $<HTMLDialogElement>('filePicker').close();
+  } catch(error){$('fileSearchStatus').textContent=errorMessage(error);message('error',errorMessage(error));}
+}
+function filterFiles(): void {
+  const query=$<HTMLInputElement>('fileSearch').value.toLowerCase().replace(/^@/,'');
+  const matches=knownFiles.filter(file=>file.toLowerCase().includes(query));
+  matches.sort((a,b)=>Number(!a.startsWith((snapshot?.project||'')+'/'))-Number(!b.startsWith((snapshot?.project||'')+'/')) || a.localeCompare(b));
+  $('fileResults').replaceChildren();
+  for(const file of matches.slice(0,100)){
+    const button=node('button',undefined,'fileResult');button.append(node('strong',basename(file)),node('small',file));button.onclick=()=>{void openSourceFile(file);};$('fileResults').append(button);
+  }
+  $('fileSearchStatus').textContent=`${matches.length} files${matches.length>100?' · type to narrow results':''}`;
+}
+async function showFilePicker(): Promise<void> {
+  const dialog=$<HTMLDialogElement>('filePicker');if(!dialog.open)dialog.showModal();
+  $<HTMLInputElement>('fileSearch').focus();$('fileSearchStatus').textContent='Loading source files…';
+  try {knownFiles=(await request<{files:string[]}>('sources')).files;filterFiles();}catch(error){$('fileSearchStatus').textContent=errorMessage(error);}
+}
+$('openFile').onclick=()=>{void showFilePicker();};
+$('closePicker').onclick=()=>{$<HTMLDialogElement>('filePicker').close();};
+$('fileSearch').oninput=filterFiles;
+$('fileSearch').onkeydown=event=>{if(event.key==='ArrowDown'||event.key==='Enter'){event.preventDefault();$('fileResults').querySelector<HTMLButtonElement>('button')?.focus();}};
+$('followSource').onclick=()=>{if(snapshot?.source){rememberScroll();activeFile=snapshot.source.file;openSources.set(activeFile,snapshot.source);showActiveSource();}};
+document.addEventListener('keydown',event=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='p'){event.preventDefault();void showFilePicker();}});

@@ -95,3 +95,9 @@ See [architecture](docs/architecture.md), [protocol](docs/protocol.md), and
 Expand **Sessions** in the browser inspector and select **Open session**. The list shows project, binary, status, and execution owner. Opening another session does not step, stop, transfer control, or rebind an agent conversation. Offline sessions show recovery guidance; ended sessions cannot be opened. Use the selected inspector’s existing handover controls for VS Code or Zed, or Pi’s `debug_connect` to explicitly bind an existing session.
 
 Use **End session** in the session list to explicitly terminate a live target and its debugger, regardless of which frontend owns execution. This asks for confirmation. Offline brokers must be recovered before ending; the manager does not kill saved PIDs. Closing Pi alone preserves the debugger: restart in the same project with `pi -c` or choose the conversation with `pi -r`. The Pi adapter reconnects matching session bindings on startup.
+
+### Source tabs and gutter breakpoints
+
+Use **Open file** or **Cmd/Ctrl+P** to search source paths recorded in the running binary. Project files sort first. Files open in separate read-only tabs; browsing does not change the selected frame or locals. **Current frame** returns to the selected stack location, and a new stop follows that location. Click the gutter beside a line number to toggle a breakpoint while the session is paused, regardless of execution owner; right-click an empty gutter line to set a condition. Delve’s returned location is shown after creation.
+
+**Take control here** transfers a settled pause directly to the browser, detaching the editor without emitting an agent handback. Breakpoint edits do not transfer ownership; stepping and resuming still require the execution owner. Existing brokers need recovery with the updated executable to adopt this policy.
