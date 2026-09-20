@@ -4,10 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test scripts/preview-ui.test.mjs vscode/test/*.test.cjs",
-    "check": "tsc --noEmit && tsc -p vscode/tsconfig.json",
-    "build": "npm run check && esbuild web/app.ts --bundle --minify --target=es2022 --outfile=web/app.js --legal-comments=eof && esbuild vscode/src/extension.ts --bundle --platform=node --format=cjs --external:vscode --target=node20 --outfile=vscode/dist/extension.js && esbuild vscode/src/protocol.ts --bundle --platform=node --format=cjs --target=node20 --outfile=vscode/dist/protocol.cjs",
-    "preview": "node scripts/preview-ui.mjs"
+    "test": "node --test ui/inspector/preview-ui.test.mjs editors/vscode/test/*.test.cjs",
+    "check": "tsc -p ui/inspector/tsconfig.json && tsc -p editors/vscode/tsconfig.json",
+    "build": "npm run check && npm run build:inspector && npm run build:vscode",
+    "build:inspector": "esbuild ui/inspector/src/app.ts --bundle --minify --target=es2022 --outfile=ui/inspector/public/app.js --legal-comments=eof",
+    "build:vscode": "esbuild editors/vscode/src/extension.ts --bundle --platform=node --format=cjs --external:vscode --target=node20 --outfile=editors/vscode/dist/extension.js && esbuild editors/vscode/src/protocol.ts --bundle --platform=node --format=cjs --target=node20 --outfile=editors/vscode/dist/protocol.cjs",
+    "preview": "node ui/inspector/preview-ui.mjs",
+    "package:vscode": "cd editors/vscode && npm exec --yes --package=@vscode/vsce@4.0.0 -- vsce package --no-dependencies --allow-missing-repository --skip-license --out debug-handover-0.1.0.vsix"
   },
   "dependencies": {
     "highlight.js": "11.12.0"

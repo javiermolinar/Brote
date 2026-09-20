@@ -1,6 +1,6 @@
 {
   "name": "debug-handover",
-  "version": "0.1.0+codex.20260920090247",
+  "version": "0.1.0+codex.20260920090611",
   "description": "Share a persistent Go / Delve debug session between Codex, Zed, and VS Code, with a live inspector.",
   "author": {
     "name": "Local developer"

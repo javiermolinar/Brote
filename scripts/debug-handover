@@ -4,12 +4,23 @@ plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/debug-handover"
 mkdir -p "$cache_root"
 # Cache by source content, avoiding rebuilds of both the helper and target.
-source_hash=$(cd "$plugin_root" && cat go.mod ./*.go web/index.html web/app.js web/style.css | shasum -a 256 | cut -d ' ' -f 1)
+source_hash=$(
+  cd "$plugin_root"
+  {
+    cat go.mod
+    find cmd internal ui/inspector -type f \( -name '*.go' -o -path 'ui/inspector/public/*' \) |
+      LC_ALL=C sort |
+      while IFS= read -r source_file; do
+        printf '%s\n' "$source_file"
+        cat "$source_file"
+      done
+  } | shasum -a 256 | cut -d ' ' -f 1
+)
 helper="$cache_root/debug-handover-$source_hash"
 if [ ! -x "$helper" ]; then
   temp="$helper.$$"
   trap 'rm -f "$temp"' EXIT INT TERM
-  (cd "$plugin_root" && go build -o "$temp" .)
+  (cd "$plugin_root" && go build -buildvcs=false -o "$temp" ./cmd/debug-handover)
   mv "$temp" "$helper"
   trap - EXIT INT TERM
 fi

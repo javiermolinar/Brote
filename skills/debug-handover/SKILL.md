@@ -3,7 +3,7 @@ name: debug-handover
 description: Debug Go programs with Delve, then pass the same paused process between Codex and Zed or VS Code. Use for conditional breakpoints, live stack and locals inspection, precompiled executables or test binaries, and taking back a session after the user has stepped in either editor.
 ---
 
-Use the bundled CLI at `../../scripts/debug-handover`, resolved from this skill directory. It builds and caches its own helper; it never compiles the user's target. Requires Go 1.23+, Delve, and the selected editor's CLI (`zed` or `code`) for opening it. Run `doctor` to diagnose versions, optional binary debug information, and Codex queue support. Go / Delve versions must be compatible. Read `../../README.md` for architecture and prototype limits.
+Use the bundled CLI at `../../scripts/debug-handover`, resolved from this skill directory. It builds and caches its own helper; it never compiles the user's target. Requires Go 1.23+, Delve, and the selected editor's CLI (`zed` or `code`) for opening it. Run `doctor` to diagnose versions, optional binary debug information, and Codex queue support. Go / Delve versions must be compatible. Read `../../docs/debugging.md` for workflows and prototype limits, and `../../docs/architecture.md` for component boundaries.
 
 ## Start or resume
 
@@ -39,7 +39,7 @@ Use the user's requested editor, or the session's previous editor. `handover ID 
 
 ### VS Code
 
-Install the companion VSIX if missing (`code --install-extension ../../vscode/debug-handover-0.1.0.vsix`). The plugin README explains packaging it from source. Run `handover ID --editor vscode`; the companion starts attachment through VS Code's public debugger API without a picker or launch.json. Verify `owner=vscode`, `editorConnected=true`, `editorReady=true`, `status=paused`, and the same PID/goroutine/PC. Inspect the native stack and source when desktop tools are available.
+The VS Code companion is optional and packaged separately. If it is not installed, use `code --install-extension ../../editors/vscode/debug-handover-0.1.0.vsix` when that artifact is bundled; otherwise build it from the plugin root with `npm ci`, `npm run build`, and `npm run package:vscode`. Run `handover ID --editor vscode`; the companion starts attachment through VS Code's public debugger API without a picker or launch.json. Verify `owner=vscode`, `editorConnected=true`, `editorReady=true`, `status=paused`, and the same PID/goroutine/PC. Inspect the native stack and source when desktop tools are available.
 
 Automatic attachment requires an exact trusted local workspace and a fresh request. If it fails, inspect the error, companion installation, project window, and workspace trust. **Debug Handover: Attach Pending Session** retries, as does another `handover ID --editor vscode` while VS Code owns a disconnected pause. Do not create another target. A deliberate disconnect stays disconnected until retry or a fresh handover. Do not restart to restore a location if the user stepped during attachment.
 

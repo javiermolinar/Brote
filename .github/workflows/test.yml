@@ -22,12 +22,11 @@ jobs:
       - run: go install github.com/go-delve/delve/cmd/dlv@v1.27.1
       - run: npm ci
       - run: npm run build && npm test
-      - run: git diff --exit-code -- web/app.js vscode/dist/extension.js
+      - run: git diff --exit-code -- ui/inspector/public/app.js editors/vscode/dist/extension.js editors/vscode/dist/protocol.cjs
       - run: go vet ./...
       - run: go test -race -v ./...
         env:
           DH_INTEGRATION: '1'
           CODEX_THREAD_ID: ''
-      - run: npm exec --yes --package=@vscode/vsce@4.0.0 -- vsce package --no-dependencies --allow-missing-repository --skip-license --out debug-handover-0.1.0.vsix
-        working-directory: vscode
-      - run: python3 scripts/package.py --output /tmp/debug-handover.zip
+      - run: npm run package:vscode
+      - run: python3 scripts/package.py --include-vsix --output /tmp/debug-handover.zip
