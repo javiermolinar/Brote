@@ -1,0 +1,35 @@
+{
+  "name": "debug-handover",
+  "displayName": "Debug Handover",
+  "description": "Attach to the same paused Go / Delve process from Codex and give control back.",
+  "version": "0.1.0",
+  "publisher": "debug-handover-local",
+  "engines": { "vscode": "^1.100.0" },
+  "categories": ["Debuggers"],
+  "activationEvents": ["onStartupFinished", "onDebug:debug-handover"],
+  "main": "./dist/extension.js",
+  "capabilities": { "untrustedWorkspaces": { "supported": false }, "virtualWorkspaces": false },
+  "contributes": {
+    "commands": [
+      { "command": "debugHandover.reclaim", "title": "Debug Handover: Give Control to Codex" },
+      { "command": "debugHandover.attach", "title": "Debug Handover: Attach Pending Session" },
+      { "command": "debugHandover.inspector", "title": "Debug Handover: Open Live Inspector" }
+    ],
+    "debuggers": [{
+      "type": "debug-handover", "label": "Debug Handover (Go / Delve)", "languages": ["go"],
+      "configurationAttributes": { "attach": {
+        "required": ["handoverSession"],
+        "properties": { "handoverSession": { "type": "string", "description": "Existing Debug Handover session ID" } }
+      } }
+    }],
+    "configuration": {
+      "title": "Debug Handover",
+      "properties": {
+        "debugHandover.sessionDirectory": {
+          "type": "string", "default": "", "scope": "application",
+          "description": "Override the local session directory (for DEBUG_HANDOVER_HOME). Empty uses the OS cache directory."
+        }
+      }
+    }
+  }
+}

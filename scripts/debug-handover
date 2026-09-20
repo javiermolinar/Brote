@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/debug-handover"
+mkdir -p "$cache_root"
+# Cache by source content, avoiding rebuilds of both the helper and target.
+source_hash=$(cd "$plugin_root" && cat go.mod ./*.go web/index.html web/app.js web/style.css | shasum -a 256 | cut -d ' ' -f 1)
+helper="$cache_root/debug-handover-$source_hash"
+if [ ! -x "$helper" ]; then
+  temp="$helper.$$"
+  trap 'rm -f "$temp"' EXIT INT TERM
+  (cd "$plugin_root" && go build -o "$temp" .)
+  mv "$temp" "$helper"
+  trap - EXIT INT TERM
+fi
+exec "$helper" "$@"

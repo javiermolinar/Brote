@@ -1,0 +1,18 @@
+{
+  "name": "debug-handover",
+  "version": "0.1.0+codex.20260920090247",
+  "description": "Share a persistent Go / Delve debug session between Codex, Zed, and VS Code, with a live inspector.",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Debug Handover",
+    "shortDescription": "Pass a live Go debugger between Codex and your editor.",
+    "longDescription": "Launch precompiled Go binaries, stop on conditional breakpoints, inspect the call stack and locals, and pass the same paused process between Codex and Zed or VS Code. Includes a local browser inspector and a CLI-backed skill. Prototype for local macOS and Linux workflows.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Use Debug Handover to stop my Go program at a breakpoint and hand the live session to me in Zed."
+  }
+}

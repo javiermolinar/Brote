@@ -1,0 +1,10 @@
+/bin/
+/examples/demo/demo
+/examples/demo/.zed/
+*.test
+.DS_Store
+/node_modules/
+/dist/
+*.vsix
+__pycache__/
+*.pyc

@@ -1,0 +1,21 @@
+{
+  "name": "debug-handover-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test scripts/preview-ui.test.mjs vscode/test/*.test.cjs",
+    "check": "tsc --noEmit && tsc -p vscode/tsconfig.json",
+    "build": "npm run check && esbuild web/app.ts --bundle --minify --target=es2022 --outfile=web/app.js --legal-comments=eof && esbuild vscode/src/extension.ts --bundle --platform=node --format=cjs --external:vscode --target=node20 --outfile=vscode/dist/extension.js && esbuild vscode/src/protocol.ts --bundle --platform=node --format=cjs --target=node20 --outfile=vscode/dist/protocol.cjs",
+    "preview": "node scripts/preview-ui.mjs"
+  },
+  "dependencies": {
+    "highlight.js": "11.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "@types/vscode": "^1.138.0",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
+}
