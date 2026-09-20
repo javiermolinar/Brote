@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"debug-handover/internal/agents/codex"
 	"debug-handover/internal/editors/zed"
 	"debug-handover/internal/session"
 )
@@ -20,6 +19,7 @@ import (
 // Options configures a broker process; command-line parsing belongs to the CLI.
 type Options struct {
 	ID, Binary, Project, Delve, Thread string
+	BindingID, AgentName               string
 	Recover                            bool
 	Args                               []string
 }
@@ -59,7 +59,7 @@ func Serve(options Options) (err error) {
 			_ = os.WriteFile(filepath.Join(dir, "error"), []byte(err.Error()), 0600)
 		}
 	}()
-	s := session.Descriptor{ID: options.ID, PID: os.Getpid(), Binary: options.Binary, Project: options.Project, Dir: dir, Token: session.NewID(32), Created: time.Now().Format(time.RFC3339), Owner: "codex", Thread: options.Thread}
+	s := session.Descriptor{ID: options.ID, PID: os.Getpid(), Binary: options.Binary, Project: options.Project, Dir: dir, Version: 2, Binding: &session.Binding{ID: options.BindingID, Revision: 1, Name: options.AgentName}, Created: time.Now().Format(time.RFC3339), Owner: "agent"}
 	var process *exec.Cmd
 	committed := false
 	defer func() {
@@ -87,18 +87,9 @@ func Serve(options Options) (err error) {
 		// and require an explicit retry instead of replaying an event automatically.
 		if n := s.Notification; n != nil && (n.Status == "pending" || n.Status == "sending") {
 			n.Status = "unknown"
-			n.Error = "broker stopped during delivery; check the Codex task before retrying"
+			n.Error = "broker stopped during delivery; check the bound conversation before retrying"
 		}
 	} else {
-		if s.Thread != "" {
-			if !codex.ValidThread(s.Thread) {
-				return fmt.Errorf("invalid task UUID")
-			}
-			s.Codex, e = codex.Find()
-			if e != nil {
-				return e
-			}
-		}
 		log, e := os.OpenFile(filepath.Join(dir, "delve.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if e != nil {
 			return e
@@ -133,9 +124,24 @@ func Serve(options Options) (err error) {
 		}
 		s.Fingerprint = session.CaptureFingerprint(s.Binary, s.Project)
 	}
-	b := &broker{s: s, rpcAddr: s.RPC, owner: s.Owner, generation: int(time.Now().UnixMilli()), done: make(chan struct{})}
+	if s.Binding == nil {
+		s.Binding = &session.Binding{ID: session.NewID(16), Revision: 1, Name: "Agent"}
+	}
+	if s.Binding.ID == "" {
+		s.Binding.ID = session.NewID(16)
+	}
+	if s.Binding.Name == "" {
+		s.Binding.Name = "Agent"
+	}
+	s.Version = 2
+	s.Token = ""
+	s.Thread, s.Codex = "", ""
+	if s.Owner == "codex" {
+		s.Owner = "agent"
+	}
+	b := &broker{changed: make(chan struct{}), s: s, rpcAddr: s.RPC, owner: s.Owner, generation: int(time.Now().UnixMilli()), done: make(chan struct{})}
 	if b.owner == "" {
-		b.owner = "codex"
+		b.owner = "agent"
 	}
 	state, e := b.state()
 	if e != nil {

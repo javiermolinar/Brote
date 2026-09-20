@@ -13,9 +13,11 @@ func serve(args []string) error {
 	project := f.String("project", "", "project")
 	dlv := f.String("dlv", "dlv", "Delve")
 	recovering := f.Bool("recover", false, "reattach broker")
+	binding := f.String("binding", "", "client binding")
+	name := f.String("name", "Agent", "agent name")
 	thread := f.String("thread", "", "Codex task")
 	if e := f.Parse(args); e != nil {
 		return e
 	}
-	return broker.Serve(broker.Options{ID: *id, Binary: *bin, Project: *project, Delve: *dlv, Thread: *thread, Recover: *recovering, Args: f.Args()})
+	return broker.Serve(broker.Options{ID: *id, Binary: *bin, Project: *project, Delve: *dlv, Thread: *thread, BindingID: *binding, AgentName: *name, Recover: *recovering, Args: f.Args()})
 }

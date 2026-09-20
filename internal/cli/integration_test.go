@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"net"
@@ -162,7 +163,7 @@ func testRoundTrip(t *testing.T, worker bool) {
 	t.Cleanup(func() {
 		v, e := api(s, "GET", "/api/state?brief=1", nil)
 		if e == nil {
-			_, _ = api(s, "POST", "/api/action", obj{"action": "stop", "generation": v["generation"]})
+			_, _ = api(s, "POST", "/api/action", obj{"action": "stop", "actor": v["owner"], "binding": s.Binding.ID, "generation": v["generation"]})
 		}
 		time.Sleep(300 * time.Millisecond)
 		log, _ := os.ReadFile(filepath.Join(s.Dir, "broker.log"))
@@ -186,6 +187,7 @@ func testRoundTrip(t *testing.T, worker bool) {
 		}
 		a["action"] = name
 		a["generation"] = v["generation"]
+		a["binding"] = s.Binding.ID
 		r, e := api(s, "POST", "/api/action", a)
 		if e != nil {
 			t.Fatalf("%s: %v", name, e)
@@ -250,7 +252,7 @@ func testRoundTrip(t *testing.T, worker bool) {
 		t.Fatal("function call accepted")
 	}
 	action("watch", obj{"expression": "total"})
-	if _, err := api(s, "POST", "/api/action", obj{"action": "handover", "generation": state()["generation"], "editor": "unknown"}); err == nil {
+	if _, err := api(s, "POST", "/api/action", obj{"action": "handover", "binding": s.Binding.ID, "generation": state()["generation"], "editor": "unknown"}); err == nil {
 		t.Fatal("invalid editor accepted")
 	}
 	editor := "zed"
@@ -301,7 +303,7 @@ func testRoundTrip(t *testing.T, worker bool) {
 	if count != 2 {
 		t.Fatalf("breakpoints not preserved: %v", attached["breakpoints"])
 	}
-	if _, e = api(s, "POST", "/api/action", obj{"action": "next", "generation": attached["generation"]}); e == nil || !strings.Contains(e.Error(), editors.Name(editor)+" owns") {
+	if _, e = api(s, "POST", "/api/action", obj{"action": "next", "binding": s.Binding.ID, "generation": attached["generation"]}); e == nil || !strings.Contains(e.Error(), editors.Name(editor)+" owns") {
 		t.Fatalf("Codex executed during Zed ownership: %v", e)
 	}
 	d.ok("next", obj{"threadId": gid})
@@ -312,12 +314,76 @@ func testRoundTrip(t *testing.T, worker bool) {
 	d.event("terminated")
 	returned := state()
 	check(returned, stepLine, "42")
-	if str(returned["owner"]) != "codex" || truth(returned["editorConnected"]) {
+	if str(returned["owner"]) != "agent" || truth(returned["editorConnected"]) {
 		t.Fatal("ownership did not return")
 	}
 	if str(asObj(asObj(asList(returned["watches"])[0])["value"])["value"]) != "42" {
 		t.Fatal("watch did not refresh after stepping")
 	}
+
+	// Run the actual detached listener with a Codex stub, never a real task.
+	stubDir := filepath.Join(dir, "bridge-stub")
+	if e = os.MkdirAll(stubDir, 0700); e != nil {
+		t.Fatal(e)
+	}
+	queueLog := filepath.Join(dir, "queue.log")
+	t.Setenv("DH_QUEUE_LOG", queueLog)
+	if e = os.WriteFile(filepath.Join(stubDir, "codex"), []byte("#!/bin/sh\nif [ \"$2\" = --help ]; then echo --thread; exit 0; fi\nprintf '%s\\n' \"$*\" >> \"$DH_QUEUE_LOG\"\n"), 0700); e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	bind := exec.Command(helper, "bind", s.ID, "--thread", "11111111-1111-1111-1111-111111111111")
+	if output, err := bind.CombinedOutput(); err != nil {
+		t.Fatalf("bind bridge: %s: %v", output, err)
+	}
+	// Browser takes genuine ownership. Agent mutations are rejected; SSE returns
+	// the human handback and a fresh state without changing PID or memory.
+	browser := action("handover", obj{"editor": "browser", "open": false})
+	if str(browser["owner"]) != "browser" {
+		t.Fatal(browser)
+	}
+	if _, err := api(s, "POST", "/api/action", obj{"action": "next", "binding": s.Binding.ID, "generation": state()["generation"]}); err == nil {
+		t.Fatal("agent stepped during browser ownership")
+	}
+	eventResult := make(chan session.Event, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go func() {
+		_ = stream(ctx, s, uint64(num(browser["cursor"])), s.Binding.ID, func(event session.Event) error {
+			if event.Kind == "control_returned" {
+				eventResult <- event
+				return eventDone
+			}
+			return nil
+		})
+	}()
+	action("reclaim", obj{"actor": "browser", "note": "check total"})
+	select {
+	case event := <-eventResult:
+		if event.Note != "check total" || event.Owner != "agent" {
+			t.Error(event)
+		}
+	case <-ctx.Done():
+		t.Fatal("missing streamed handback")
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		current := state()
+		if str(asObj(current["notification"])["status"]) == "queued" {
+			break
+		}
+		if time.Now().After(deadline) {
+			data, _ := os.ReadFile(filepath.Join(s.Dir, "bridge.log"))
+			t.Fatalf("bridge not queued: %s %s", pretty(current["notification"]), data)
+		}
+	}
+	queued, _ := os.ReadFile(queueLog)
+	if !strings.Contains(string(queued), s.ID) {
+		t.Fatal("bridge did not deliver session event")
+	}
+	check(state(), stepLine, "42")
+	// Restore the previous preferred editor for the remaining recovery checks.
+	action("handover", obj{"editor": editor, "open": false})
+	action("reclaim", nil)
 	// Kill only the broker. Delve and its paused target must survive, and the
 	// replacement broker must retain watches, breakpoints, token, and stop PC.
 	pc := asObj(asObj(returned["state"])["currentThread"])["pc"]

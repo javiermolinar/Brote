@@ -8,3 +8,6 @@
 *.vsix
 __pycache__/
 *.pyc
+
+# Local agent conversation exports
+/examples/demo/pi-session-*.html

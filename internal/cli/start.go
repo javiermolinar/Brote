@@ -18,6 +18,8 @@ func start(args []string) (obj, error) {
 	bin := f.String("binary", "", "Existing Go executable or test binary")
 	project := f.String("project", ".", "Project/source directory")
 	dlv := f.String("dlv", "dlv", "Delve executable")
+	binding := f.String("binding", "", "opaque client binding ID")
+	name := f.String("name", "Agent", "agent display name")
 	thread := f.String("thread", os.Getenv("CODEX_THREAD_ID"), "Codex task for inspector handovers; empty disables wakeups")
 	if e := f.Parse(args); e != nil {
 		return nil, e
@@ -27,6 +29,12 @@ func start(args []string) (obj, error) {
 	}
 	if *thread != "" && !codex.ValidThread(*thread) {
 		return nil, fmt.Errorf("--thread must be a Codex task UUID")
+	}
+	if *binding == "" {
+		*binding = session.NewID(16)
+	}
+	if *thread != "" {
+		*name = "Codex"
 	}
 	abs, e := filepath.Abs(*bin)
 	if e != nil {
@@ -69,7 +77,7 @@ func start(args []string) (obj, error) {
 	if e != nil {
 		return nil, e
 	}
-	childArgs := []string{"serve", "--id", id, "--binary", abs, "--project", root, "--dlv", delve, "--thread", *thread, "--"}
+	childArgs := []string{"serve", "--id", id, "--binary", abs, "--project", root, "--dlv", delve, "--binding", *binding, "--name", *name, "--"}
 	childArgs = append(childArgs, f.Args()...)
 	cmd := exec.Command(exe, childArgs...)
 	cmd.Stdout = log
@@ -82,6 +90,11 @@ func start(args []string) (obj, error) {
 	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
 		s, e := session.Read(id)
 		if e == nil {
+			if *thread != "" {
+				if err := configureBridge(s, *thread); err != nil {
+					return obj{"id": id, "panel": s.HTTP, "notificationError": err.Error()}, nil
+				}
+			}
 			return obj{"id": id, "panel": s.HTTP + "/#" + s.Token, "binary": abs, "project": root, "status": "paused at launch", "log": filepath.Join(dir, "delve.log")}, nil
 		}
 		if data, e := os.ReadFile(filepath.Join(dir, "error")); e == nil {

@@ -1,63 +1,61 @@
 package broker
 
 import (
+	"debug-handover/internal/session"
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
-	"time"
-
-	"debug-handover/internal/session"
 )
 
-func TestNotificationDeliveryAndFailure(t *testing.T) {
-	dir := t.TempDir()
-	script := filepath.Join(dir, "codex-stub")
-	// Exercise the real argv-based execution path without sending test messages to
-	// the user's task. The end-to-end app smoke test is a separate manual check.
-	if e := os.WriteFile(script, []byte("#!/bin/sh\n[ \"$1\" = queue ] && [ \"$2\" = --thread ] && [ \"$4\" = --message ] || exit 3\nexit 0\n"), 0700); e != nil {
-		t.Fatal(e)
+func TestDurableHandbackAndDeliveryTransitions(t *testing.T) {
+	b := &broker{s: session.Descriptor{ID: "test", Dir: t.TempDir(), Binding: &session.Binding{ID: "client", Revision: 1, Name: "Pi"}}, owner: "agent"}
+	if err := b.emit("control_returned", "inspect total"); err != nil {
+		t.Fatal(err)
 	}
-	b := &broker{s: session.Descriptor{ID: "test", Dir: dir, Thread: "11111111-1111-1111-1111-111111111111", Codex: script}, owner: "codex"}
-	wait := func(want string) {
-		t.Helper()
-		for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-			b.mu.Lock()
-			status := b.s.Notification.Status
-			b.mu.Unlock()
-			if status == want {
-				return
-			}
+	data, err := os.ReadFile(filepath.Join(b.s.Dir, "session.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved session.Descriptor
+	if err = json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Events) != 1 || saved.Events[0].Note != "inspect total" || saved.Notification.Status != "pending" {
+		t.Fatalf("%+v", saved)
+	}
+	set := func(binding, status string) error {
+		_, err := b.eventStatus(obj{"event": "1", "binding": binding, "revision": 1, "status": status})
+		return err
+	}
+	if err = set("other", "sending"); err == nil {
+		t.Fatal("wrong binding accepted")
+	}
+	if err = set("client", "sending"); err != nil {
+		t.Fatal(err)
+	}
+	if err = set("client", "sending"); err == nil {
+		t.Fatal("duplicate claim accepted")
+	}
+	if err = set("client", "queued"); err != nil {
+		t.Fatal(err)
+	}
+	if err = set("client", "acknowledged"); err != nil {
+		t.Fatal(err)
+	}
+	b.owner = "browser"
+	if err = set("client", "acknowledged"); err == nil {
+		t.Fatal("stale ownership accepted")
+	}
+}
+func TestBoundedJournal(t *testing.T) {
+	b := &broker{s: session.Descriptor{Dir: t.TempDir()}, owner: "agent"}
+	for i := 0; i < 260; i++ {
+		if err := b.emit("ownership_changed", ""); err != nil {
+			t.Fatal(err)
 		}
-		t.Fatalf("notification did not reach %s", want)
 	}
-	b.mu.Lock()
-	e := b.queueNotification("reclaim")
-	b.mu.Unlock()
-	if e != nil {
-		t.Fatal(e)
-	}
-	wait("queued")
-	if e = os.WriteFile(script, []byte("#!/bin/sh\necho 'task unavailable' >&2\nexit 1\n"), 0700); e != nil {
-		t.Fatal(e)
-	}
-	b.mu.Lock()
-	e = b.queueNotification("handover")
-	b.mu.Unlock()
-	if e != nil {
-		t.Fatal(e)
-	}
-	wait("failed")
-	saved, e := os.ReadFile(filepath.Join(dir, "session.json"))
-	if e != nil {
-		t.Fatal(e)
-	}
-	var s session.Descriptor
-	if e = json.Unmarshal(saved, &s); e != nil {
-		t.Fatal(e)
-	}
-	if s.Notification.Status != "failed" || !strings.Contains(s.Notification.Error, "task unavailable") {
-		t.Fatalf("failure not persisted: %s", saved)
+	if len(b.s.Events) != 256 || b.s.Events[0].ID != 5 || b.s.Cursor != 260 {
+		t.Fatal("journal bound")
 	}
 }

@@ -1,9 +1,13 @@
 // Serve current UI assets against an existing broker without restarting Delve.
 import { createServer, request } from 'node:http';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { dirname, join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
+const run = promisify(execFile);
 const descriptor = process.argv[2];
 if (!descriptor) {
   console.error('Usage: npm run preview -- /absolute/path/to/session.json');
@@ -11,10 +15,10 @@ if (!descriptor) {
 }
 const session = JSON.parse(await readFile(descriptor, 'utf8'));
 const upstream = new URL(session.http);
-if (upstream.protocol !== 'http:' || upstream.hostname !== '127.0.0.1' || !session.token) {
+if (upstream.protocol !== 'http:' || upstream.hostname !== '127.0.0.1' || (!session.token && session.version !== 2)) {
   throw new Error('Expected a local Debug Handover session descriptor');
 }
-const expectedToken = Buffer.from('Bearer ' + session.token);
+const expectedToken = session.token ? Buffer.from('Bearer ' + session.token) : null;
 const assets = new Map([
   ['/', ['index.html', 'text/html']],
   ['/index.html', ['index.html', 'text/html']],
@@ -38,13 +42,44 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, origin);
   if (url.pathname.startsWith('/api/')) {
     const token = Buffer.from(req.headers.authorization || '');
-    if (token.length !== expectedToken.length || !timingSafeEqual(token, expectedToken)) {
+    if (expectedToken && (token.length !== expectedToken.length || !timingSafeEqual(token, expectedToken))) {
       return reject(401, 'session token required');
+    }
+    if (req.method === 'POST' && url.pathname === '/api/sessions/stop') {
+      if (!req.headers['content-type']?.startsWith('application/json')) return reject(415, 'JSON required');
+      try {
+        let data = ''; for await (const chunk of req) { data += chunk; if (data.length > 4096) return reject(413, 'request too large'); }
+        const input = JSON.parse(data);
+        if (!/^[a-f0-9]+$/.test(input.id) || input.confirmed !== true) return reject(400, 'session ID and confirmation required');
+        const {stdout} = await run(process.env.DELVE_LLM_ADAPTER_BIN || 'delve-llm-adapter', ['end-session',input.id,'--confirmed'], {timeout:20000});
+        res.end(stdout);
+      } catch (error) { reject(409, 'Could not end session: ' + (error.stdout || error.message)); }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/sessions') {
+      try {
+        const {stdout} = await run(process.env.DELVE_LLM_ADAPTER_BIN || 'delve-llm-adapter', ['sessions'], {timeout:15000});
+        const sessions = JSON.parse(stdout).map(s => ({...s, panel: s.panel ? origin + '/?session=' + encodeURIComponent(s.id) : undefined}));
+        res.end(JSON.stringify({sessions}));
+      } catch { reject(502, 'Could not list sessions'); }
+      return;
+    }
+    let destination = upstream, upstreamToken = session.token;
+    const selected = url.searchParams.get('session');
+    if (selected) {
+      if (!/^[a-f0-9]+$/.test(selected)) return reject(400, 'invalid session');
+      try {
+        const other = JSON.parse(await readFile(join(dirname(dirname(descriptor)), selected, 'session.json'), 'utf8'));
+        destination = new URL(other.http); upstreamToken = other.token;
+        if (other.id !== selected || destination.protocol !== 'http:' || destination.hostname !== '127.0.0.1' || destination.username || destination.password) return reject(400, 'invalid session endpoint');
+      } catch { return reject(404, 'session unavailable'); }
+      url.searchParams.delete('session');
     }
     if (!(req.method === 'GET' && url.pathname === '/api/state') &&
         !(req.method === 'POST' && url.pathname === '/api/action')) {
       return reject(404, 'unknown endpoint');
     }
+    if (req.method === 'POST' && !req.headers['content-type']?.startsWith('application/json')) return reject(415, 'JSON required');
     try {
       const chunks = [];
       let size = 0;
@@ -53,14 +88,14 @@ const server = createServer(async (req, res) => {
         if (size > 65536) return reject(413, 'request too large');
         chunks.push(chunk);
       }
-      const proxy = request(new URL(url.pathname + url.search, upstream), {
+      const proxy = request(new URL(url.pathname + url.search, destination), {
         method: req.method,
         timeout: 15000,
         headers: {
-          Authorization: req.headers.authorization,
+          ...(upstreamToken ? { Authorization: 'Bearer ' + upstreamToken } : {}),
           'Content-Type': 'application/json',
           // Only our own validated origin is translated for the upstream broker.
-          Origin: upstream.origin,
+          Origin: destination.origin,
         },
       }, response => {
         res.writeHead(response.statusCode, { 'Content-Type': 'application/json' });
@@ -91,9 +126,9 @@ const server = createServer(async (req, res) => {
 });
 server.requestTimeout = 15000;
 server.headersTimeout = 5000;
-server.listen(0, '127.0.0.1', () => {
+server.listen(Number(process.env.PORT || 0), '127.0.0.1', () => {
   origin = `http://127.0.0.1:${server.address().port}`;
-  console.log(JSON.stringify({ panel: origin + '/#' + session.token, session: session.id, broker: upstream.origin }));
+  console.log(JSON.stringify({ panel: origin + '/' + (session.token ? '#' + session.token : ''), session: session.id, broker: upstream.origin }));
 });
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => { server.close(); server.closeAllConnections(); });

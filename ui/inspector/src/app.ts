@@ -39,8 +39,9 @@ interface Breakpoint {
 
 interface Snapshot {
   id: string;
-  owner: 'codex' | 'zed' | 'vscode';
-  editor?: 'zed' | 'vscode';
+  owner: 'agent' | 'codex' | 'browser' | 'zed' | 'vscode';
+  binding?: {id: string; name: string; revision: number};
+  editor?: 'browser' | 'zed' | 'vscode';
   editorConnected?: boolean;
   editorReady?: boolean;
   generation: number;
@@ -60,7 +61,7 @@ interface Snapshot {
   error?: string;
   inspectionError?: string;
   thread?: string;
-  notification?: { id: string; kind: string; status: 'pending' | 'sending' | 'queued' | 'failed' | 'unknown'; error?: string };
+  notification?: { id: string; kind: string; status: 'pending' | 'sending' | 'queued' | 'acknowledged' | 'failed' | 'unknown'; error?: string };
   sourceIdentity?: { match: string; changedSinceStart?: boolean; binaryChanged?: boolean };
   watches?: Evaluation[];
 }
@@ -82,7 +83,7 @@ interface ActionOptions {
   depth?: number;
   count?: number;
 }
-interface ActionRequest extends ActionOptions { action: Action; generation: number }
+interface ActionRequest extends ActionOptions { action: Action; generation: number; actor?: string }
 interface ActionResult extends Partial<Evaluation> { instructions?: string; message?: string; notificationError?: string; persistenceError?: string; cleanupError?: string; openError?: string }
 
 function $<T extends HTMLElement = HTMLElement>(id: string): T {
@@ -98,9 +99,9 @@ function node<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, cls?
   return element;
 }
 
-const token = location.hash.slice(1) || sessionStorage.getItem('debug-handover-token');
-if (token) sessionStorage.setItem('debug-handover-token', token);
-history.replaceState(null, '', location.pathname);
+const token = location.hash.slice(1); // Only older broker URLs carry a token.
+const previewSession = new URLSearchParams(location.search).get('session');
+history.replaceState(null, '', location.pathname + location.search);
 
 let snapshot: Snapshot | undefined;
 let goroutine = 0;
@@ -108,6 +109,9 @@ let frame = 0;
 let busy = false;
 let fetching = false;
 let renderKey = '';
+let sourceKey = '';
+let displayedSource: Source | undefined;
+let lastPid: number | undefined;
 let disconnected = false;
 let evaluated: Evaluation | undefined;
 const basename = (path: string) => path.split('/').pop() || path;
@@ -118,10 +122,10 @@ function message(id: string, text?: string): void {
   $(id).hidden = !text;
 }
 
-async function request<T>(path: string, body?: ActionRequest): Promise<T> {
-  const response = await fetch('/api/' + path, {
+async function request<T>(path: string, body?: ActionRequest | {id: string; confirmed: boolean}): Promise<T> {
+  const response = await fetch('/api/' + path + (previewSession ? (path.includes('?') ? '&' : '?') + 'session=' + encodeURIComponent(previewSession) : ''), {
     method: body ? 'POST' : 'GET',
-    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    headers: { ...(token ? { Authorization: 'Bearer ' + token } : {}), 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await response.json();
@@ -152,6 +156,30 @@ function renderSource(source: Source): void {
   $('filename').title = source.file;
   $('line').textContent = 'line ' + source.line;
 
+  const previous = displayedSource;
+  const reusable = previous && previous.file === source.file
+    && source.line >= previous.start + 3 && source.line < previous.start + previous.lines.length - 3
+    && source.lines.every((line, i) => {
+      const oldIndex = source.start + i - previous.start;
+      return oldIndex < 0 || oldIndex >= previous.lines.length || previous.lines[oldIndex] === line;
+    });
+  if (reusable) source = { ...previous, line: source.line };
+  const key = JSON.stringify([source.file, source.start, source.lines]);
+  const selectLine = () => {
+    $('source').querySelectorAll<HTMLElement>('.sourceHighlight, .sourceNumber').forEach(el => {
+      el.classList.toggle('current', Number(el.dataset.line) === source.line);
+    });
+    const current = $('source').querySelector<HTMLElement>('.sourceHighlight.current');
+    const pane = $('source');
+    if (current && (current.offsetTop < pane.scrollTop || current.offsetTop + current.offsetHeight > pane.scrollTop + pane.clientHeight)) {
+      pane.scrollTop = Math.max(0, current.offsetTop - pane.clientHeight / 2);
+    }
+  };
+  if (key === sourceKey) { selectLine(); return; }
+  displayedSource = source;
+  sourceKey = key;
+  const pane = $('source');
+  const left = pane.scrollLeft;
   const content = node('div', undefined, 'sourceContent');
   const highlights = node('div', undefined, 'sourceHighlights');
   const numbers = node('div', undefined, 'sourceNumbers');
@@ -160,8 +188,11 @@ function renderSource(source: Source): void {
   source.lines.forEach((_, index) => {
     const line = source.start + index;
     const current = line === source.line ? ' current' : '';
-    highlights.append(node('div', undefined, 'sourceHighlight' + current));
-    numbers.append(node('div', String(line), 'sourceNumber' + current));
+    const highlight = node('div', undefined, 'sourceHighlight' + current);
+    const number = node('div', String(line), 'sourceNumber' + current);
+    highlight.dataset.line = number.dataset.line = String(line);
+    highlights.append(highlight);
+    numbers.append(number);
   });
 
   const pre = node('pre', undefined, 'sourceCode');
@@ -177,7 +208,8 @@ function renderSource(source: Source): void {
   }
   pre.append(code);
   content.append(highlights, numbers, pre);
-  $('source').append(content);
+  pane.replaceChildren(content);
+  pane.scrollLeft = left;
 
   // Scroll within the source pane without moving the surrounding inspector.
   const current = highlights.querySelector<HTMLElement>('.current');
@@ -186,32 +218,29 @@ function renderSource(source: Source): void {
 
 function render(state: Snapshot): void {
   const paused = state.status === 'paused';
-  const codex = state.owner === 'codex';
+  document.querySelector('main')!.dataset.executing = String(busy || state.status === 'running');
+  lastPid = state.state.Pid || lastPid;
+  const codex = state.owner === 'browser' || state.owner === 'codex';
+  const agentName = state.binding?.name || 'Agent';
   $('status').textContent = state.status[0].toUpperCase() + state.status.slice(1);
   $('status').className = 'badge ' + state.status;
-  $('session').textContent = `${state.id} · PID ${state.state.Pid || '—'} · ${basename(state.project)}`;
+  $('session').textContent = `${state.id} · PID ${lastPid || '—'} · ${basename(state.project)}`;
   const editorSelect = $<HTMLSelectElement>('editor');
-  if (!editorSelect.dataset.chosen) editorSelect.value = state.editor || 'zed';
-  editorSelect.disabled = busy || !codex;
-  const editor = state.owner === 'vscode' ? 'VS Code' : 'Zed';
-  $('owner').textContent = codex ? 'Codex has control' : `You have control in ${editor}`;
-  $('connection').textContent = codex
-    ? 'You and Codex can inspect, set breakpoints, and step here.'
-    : (state.editorConnected ?? state.zedConnected)
-      ? `${editor} is ${state.editorReady === false ? 'finishing attachment' : 'connected'}. This inspector follows the same session.`
-      : state.owner === 'vscode' ? 'Waiting for the Debug Handover extension in VS Code. Use Attach Pending Session to retry.'
-      : state.thread ? `Waiting for Codex to attach Zed to “${state.label}”.` : `Ready for Zed. Press F4 and choose “${state.label}”.`;
+  if (!editorSelect.dataset.chosen) editorSelect.value = state.editor || 'browser';
+  editorSelect.disabled = busy || !paused || (state.owner !== 'agent' && state.owner !== 'codex');
+  const editor = state.owner === 'vscode' ? 'VS Code' : state.owner === 'browser' ? 'browser' : 'Zed';
+  $('owner').textContent = state.owner === 'agent' || state.owner === 'codex' ? `${agentName} has control` : `You have control in ${editor}`;
+  $('connection').textContent = state.owner === 'browser' ? 'Use the controls here, then return control to your agent.'
+    : state.owner === 'agent' ? 'Choose browser or an editor to take control at this pause.'
+    : state.editorConnected ? `${editor} is connected to the same process.` : `Attach ${editor} to the paused session. Zed: F4 → ${state.label}.`;
   const delivery = state.notification;
-  $('delivery').textContent = delivery
-    ? delivery.status === 'queued' ? 'Notification queued to your Codex task.'
-      : delivery.status === 'failed' || delivery.status === 'unknown' ? `Codex notification ${delivery.status}: ${delivery.error || 'Check the task before retrying.'}`
-      : 'Sending a notification to your Codex task…'
-    : state.thread ? 'Inspector handovers notify your Codex task automatically.' : 'No Codex task is linked. Handover requires manual attachment or a message to Codex.';
+  $('delivery').textContent = delivery ? `Handback ${delivery.status}${delivery.error ? ': ' + delivery.error : ''}`
+    : `Handback events go to the bound ${agentName} listener when available.`;
   const retry = $<HTMLButtonElement>('retryNotification');
   retry.hidden = !delivery || !['failed', 'unknown'].includes(delivery.status);
   retry.disabled = busy;
   const handover = $<HTMLButtonElement>('handover');
-  handover.textContent = codex ? `Hand over to ${editorSelect.value === 'vscode' ? 'VS Code' : 'Zed'} ↗` : 'Give control to Codex';
+  handover.textContent = state.owner === 'agent' || state.owner === 'codex' ? `Take control in ${editorSelect.value}` : `Return to ${agentName}`;
   handover.disabled = busy || !paused;
   document.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(button => {
     button.disabled = busy || !codex || (button.dataset.action === 'pause' ? state.status !== 'running' : !paused);
@@ -219,33 +248,43 @@ function render(state: Snapshot): void {
   $('breakForm').querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button').forEach(element => {
     element.disabled = busy || !codex || !paused;
   });
-  $<HTMLButtonElement>('stop').disabled = busy;
+  $<HTMLButtonElement>('stop').disabled = busy || !codex;
   $('evalForm').querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('input,button,select').forEach(element => { element.disabled = busy || !paused; });
-  $('stopReason').textContent = paused ? state.state.stopReason || 'Paused at launch' : state.status === 'running' ? 'Waiting for next stop…' : 'Program exited';
+  $<HTMLButtonElement>('addWatch').disabled = busy || !paused || !codex;
+  $('stopReason').textContent = paused ? state.state.stopReason || 'Paused at launch' : state.status === 'running' ? 'Running · showing last pause' : 'Program exited';
   $('binary').textContent = 'BINARY  ' + state.binary;
   if (state.error || state.inspectionError) message('error', state.error || state.inspectionError);
   const identity = state.sourceIdentity;
-  message('sourceWarning', identity?.binaryChanged ? 'The executable on disk changed. This process still runs the original binary.'
+  if (paused) message('sourceWarning', identity?.binaryChanged ? 'The executable on disk changed. This process still runs the original binary.'
     : identity?.changedSinceStart ? 'This source file changed since the session started. Line numbers may no longer match the running code.'
       : identity?.match === 'mismatch' ? 'The executable build revision or working tree differs from the current source.'
         : state.sourceNewerThanBinary ? 'This source is newer than the executable. The source/build match is unverified.' : '');
 
   if (evaluated && (evaluated.generation !== state.generation || evaluated.frame !== state.frame || evaluated.goroutine !== state.goroutine || !paused)) { evaluated = undefined; $('evaluation').replaceChildren(); }
 
-  const key = [state.generation, state.status, state.goroutine, state.frame, state.owner].join(':');
+  // Keep the last stop visible during execution. Disable its interactions and
+  // label it as stale instead of collapsing and rebuilding every panel.
+  const disableInspection = () => {
+    $('frames').querySelectorAll<HTMLButtonElement>('button').forEach(b => { b.disabled = busy || !paused; });
+    $('locals').querySelectorAll<HTMLButtonElement>('button').forEach(b => { b.disabled = busy || !paused || b.dataset.unavailable === 'true'; });
+    for (const id of ['watches', 'breakpoints']) $(id).querySelectorAll<HTMLButtonElement>('button').forEach(b => { b.disabled = busy || !paused || !codex; });
+    $<HTMLSelectElement>('goroutines').disabled = busy || !paused;
+  };
+  disableInspection();
+  if (!paused) return;
+  const key = JSON.stringify([state.goroutine, state.frame, state.frames, state.source, state.breakpoints, state.goroutines, state.watches, agentName]);
   if (key === renderKey) return;
   renderKey = key;
-  for (const id of ['frames', 'source', 'locals', 'breakpoints', 'goroutines', 'watches']) $(id).replaceChildren();
-  $('filename').textContent = paused ? 'No source available' : 'Source is available when paused';
-  $('line').textContent = '—';
-  $('frameName').textContent = '';
-  if (!paused) {
-    $('frames').append(node('p', 'Execution is ' + state.status + '.', 'empty'));
-    $('source').append(node('p', 'The previous stack and variables have been cleared.'));
-    $('breakpoints').append(node('p', 'Pause to inspect breakpoints.', 'empty'));
-    return;
+  const expanded = new Set(Array.from($('locals').querySelectorAll<HTMLDetailsElement>('details[open]')).map(d => d.dataset.path));
+  const positions = new Map(['frames', 'locals', 'watches'].map(id => [id, $(id).scrollTop]));
+  for (const id of ['frames', 'locals', 'breakpoints', 'goroutines', 'watches']) $(id).replaceChildren();
+  if (!state.source) {
+    sourceKey = '';
+    displayedSource = undefined;
+    $('source').replaceChildren(node('p', 'No source available at this location.'));
+    $('filename').textContent = 'No source available';
+    $('line').textContent = '—';
   }
-
   (state.goroutines || []).forEach(g => {
     const option = node('option', 'Goroutine ' + g.id);
     option.value = String(g.id);
@@ -267,6 +306,7 @@ function render(state: Snapshot): void {
   variables.forEach(value => {
     const row = variable(value);
     const inspect = node('button', 'Inspect', 'inspect');
+    inspect.dataset.unavailable = String(value.name.startsWith('~'));
     inspect.disabled = busy || value.name.startsWith('~');
     inspect.onclick = () => { $<HTMLInputElement>('expression').value = value.name; void evaluate(); };
     (row.querySelector('summary') || row).append(inspect); $('locals').append(row);
@@ -288,7 +328,7 @@ function render(state: Snapshot): void {
     const row = node('div', undefined, 'bp');
     row.append(
       node('span', '●', 'red'),
-      node('span', `${basename(bp.file)}:${bp.line} · ${bp.name?.startsWith('codex') ? 'Codex' : 'Editor'}`, 'place'),
+      node('span', `${basename(bp.file)}:${bp.line} · ${bp.name?.startsWith('agent') || bp.name?.startsWith('codex') ? agentName : 'Editor'}`, 'place'),
       node('span', [bp.Cond, bp.HitCond ? 'hits ' + bp.HitCond : ''].filter(Boolean).join(' · '), 'condition'),
     );
     const remove = node('button', 'Remove');
@@ -298,6 +338,16 @@ function render(state: Snapshot): void {
     $('breakpoints').append(row);
   });
   if (!breakpoints.length) $('breakpoints').append(node('p', 'No user breakpoints.', 'empty'));
+  const restoreDetails = (parent: Element, prefix: string) => {
+    Array.from(parent.children).forEach((child, index) => {
+      const path = prefix + '/' + index;
+      if (child instanceof HTMLDetailsElement) { child.dataset.path = path; child.open = expanded.has(path); }
+      restoreDetails(child, path);
+    });
+  };
+  restoreDetails($('locals'), `${state.goroutine}:${state.frame}:${selected?.function?.name}`);
+  positions.forEach((top, id) => { $(id).scrollTop = top; });
+  disableInspection();
 }
 
 async function refresh(): Promise<void> {
@@ -305,11 +355,11 @@ async function refresh(): Promise<void> {
   fetching = true;
   try {
     snapshot = await request<Snapshot>(`state?goroutine=${goroutine}&frame=${frame}`);
-    if (disconnected) { renderKey = ''; disconnected = false; message('error', ''); }
+    if (disconnected) { disconnected = false; message('error', ''); }
     render(snapshot);
   } catch (error) {
-    disconnected = true; evaluated = undefined; renderKey = '';
-    for (const id of ['frames', 'locals', 'evaluation', 'watches', 'source']) $(id).replaceChildren();
+    disconnected = true;
+    $('stopReason').textContent = 'Disconnected · showing last pause';
     message('error', errorMessage(error));
     $('status').textContent = 'Disconnected';
     document.querySelectorAll('button').forEach(button => { button.disabled = true; });
@@ -324,7 +374,7 @@ async function act(action: Action, extra: ActionOptions = {}): Promise<void> {
   render(snapshot);
   message('error', '');
   try {
-    const result = await request<ActionResult>('action', { action, generation: snapshot.generation, ...extra });
+    const result = await request<ActionResult>('action', { action, actor: snapshot.owner === 'codex' ? 'agent' : 'browser', generation: snapshot.generation, ...extra });
     message('notice', result.instructions || result.message || (action === 'break' ? 'Breakpoint set in Delve.' : ''));
     message('error', result.openError || result.notificationError || result.persistenceError || result.cleanupError);
     if (action === 'eval' && result.value) {
@@ -342,7 +392,7 @@ async function act(action: Action, extra: ActionOptions = {}): Promise<void> {
     message('error', errorMessage(error));
   } finally {
     busy = false;
-    renderKey = '';
+    if (snapshot) render(snapshot);
   }
   await refresh();
 }
@@ -351,7 +401,7 @@ document.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(button => 
   button.onclick = () => { void act(button.dataset.action as Action); };
 });
 $('handover').onclick = () => {
-  if (snapshot) void act(snapshot.owner === 'codex' ? 'handover' : 'reclaim', { open: true, editor: $<HTMLSelectElement>('editor').value, notify: Boolean(snapshot.thread) });
+  if (snapshot) void act(snapshot.owner === 'agent' || snapshot.owner === 'codex' ? 'handover' : 'reclaim', { open: true, editor: $<HTMLSelectElement>('editor').value, notify: Boolean(snapshot.thread) });
 };
 async function evaluate(): Promise<void> {
   if (!snapshot) return;
@@ -379,3 +429,54 @@ const timer = setInterval(() => { void refresh(); }, 800);
 void refresh();
 
 $('editor').onchange = () => { $('editor').dataset.chosen = 'true'; if (snapshot) render(snapshot); };
+
+interface SessionSummary { id: string; project: string; binary: string; status: string; owner?: string; panel?: string; binding?: { name: string }; recoverable?: boolean }
+async function loadSessions(): Promise<void> {
+  $<HTMLButtonElement>('refreshSessions').disabled = true;
+  try {
+    const result = await request<{sessions: SessionSummary[]}>('sessions');
+    $('sessionList').replaceChildren();
+    $('sessionCount').textContent = `(${result.sessions.length})`;
+    for (const item of result.sessions) {
+      const row = node('div', undefined, 'sessionRow');
+      const title = node('strong', `${basename(item.project)} · ${basename(item.binary)}`);
+      title.title = item.project + '\n' + item.binary;
+      const owner = item.owner === 'agent' || item.owner === 'codex' ? item.binding?.name || 'Agent' : item.owner;
+      row.append(title, node('span', `${item.id} · ${item.status}${owner ? ' · ' + owner : ''}`));
+      if (item.id === snapshot?.id) row.append(node('span', 'Current', 'currentSession'));
+      else if (item.panel && ['paused', 'running', 'exited'].includes(item.status)) {
+        const url = new URL(item.panel);
+        if (url.protocol === 'http:' && url.hostname === '127.0.0.1' && !url.username && !url.password) {
+          const link = node('a', 'Open session'); link.href = url.href; row.append(link);
+        }
+      } else row.append(node('small', item.recoverable ? `Offline · recover with: delve-llm-adapter recover ${item.id}` : 'No live broker'));
+      if (item.panel && ['paused', 'running', 'exited'].includes(item.status)) {
+        const end = node('button', 'End session', 'endSession');
+        end.onclick = async () => {
+          if (!confirm(`End ${basename(item.binary)} (${item.id})? This terminates its program and debugger, including any editor attachment.`)) return;
+          end.disabled = true;
+          try {
+            await request('sessions/stop', {id:item.id,confirmed:true});
+            if (item.id === snapshot?.id) {
+              clearInterval(timer);
+              $('status').textContent = 'Ended';
+              message('notice', 'Session ended. Choose another session from the list.');
+              document.querySelectorAll<HTMLButtonElement>('button:not(.endSession):not(#refreshSessions)').forEach(b => { b.disabled = true; });
+              // A native inspector loses its broker when ending itself. Existing
+              // links remain usable; do not poll the stopped endpoint.
+              row.replaceChildren(title, node('span', item.id + ' · ended'));
+            } else await loadSessions();
+          } catch (error) { message('sessionsError',errorMessage(error)); end.disabled=false; }
+        };
+        row.append(end);
+      }
+      $('sessionList').append(row);
+    }
+    message('sessionsError', result.sessions.length ? '' : 'No saved sessions.');
+  } catch (error) { message('sessionsError', errorMessage(error)); }
+  finally { $<HTMLButtonElement>('refreshSessions').disabled = false; }
+}
+$('refreshSessions').onclick = () => { void loadSessions(); };
+document.querySelector<HTMLDetailsElement>('.sessionPicker')!.ontoggle = event => {
+  if ((event.currentTarget as HTMLDetailsElement).open) void loadSessions();
+};

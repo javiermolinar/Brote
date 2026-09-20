@@ -21,7 +21,7 @@ func doctor(args []string) (obj, error) {
 		return nil, e
 	}
 	checks := obj{}
-	for name, argv := range map[string][]string{"go": {"version"}, "dlv": {"version"}, "zed": {"--version"}, "code": {"--version"}, "codex": {"--version"}} {
+	for name, argv := range map[string][]string{"go": {"version"}, "dlv": {"version"}, "zed": {"--version"}, "code": {"--version"}, "codex": {"--version"}, "pi": {"--version"}} {
 		path, e := exec.LookPath(name)
 		if e != nil && name == "dlv" {
 			home, _ := os.UserHomeDir()

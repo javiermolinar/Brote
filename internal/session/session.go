@@ -13,13 +13,17 @@ import (
 // Descriptor is the persisted session contract shared with the CLI and editors.
 // Keep its JSON fields compatible with existing sessions and companion versions.
 type Descriptor struct {
+	Version      int           `json:"version,omitempty"`
+	Binding      *Binding      `json:"binding,omitempty"`
+	Events       []Event       `json:"events,omitempty"`
+	Cursor       uint64        `json:"cursor,omitempty"`
 	ID           string        `json:"id"`
 	PID          int           `json:"brokerPid"`
 	Binary       string        `json:"binary"`
 	Project      string        `json:"project"`
 	HTTP         string        `json:"http"`
 	DAP          string        `json:"dap"`
-	Token        string        `json:"token"`
+	Token        string        `json:"token,omitempty"`
 	Dir          string        `json:"directory"`
 	Created      string        `json:"created"`
 	RPC          string        `json:"rpc,omitempty"`
@@ -65,6 +69,9 @@ func Read(id string) (Descriptor, error) {
 		return s, e
 	}
 	e = json.Unmarshal(b, &s)
+	if e == nil && s.Version > 2 {
+		return s, fmt.Errorf("session protocol %d is newer than supported version 2", s.Version)
+	}
 	return s, e
 }
 
@@ -74,4 +81,19 @@ type Notification struct {
 	Status  string `json:"status"`
 	Error   string `json:"error,omitempty"`
 	Created string `json:"created"`
+}
+
+// Binding identifies a client, not a harness conversation. It is not authentication.
+type Binding struct {
+	ID       string `json:"id"`
+	Revision uint64 `json:"revision"`
+	Name     string `json:"name"`
+}
+type Event struct {
+	ID      uint64   `json:"id"`
+	Kind    string   `json:"kind"`
+	Owner   string   `json:"owner"`
+	Binding *Binding `json:"binding,omitempty"`
+	Note    string   `json:"note,omitempty"`
+	Created string   `json:"created"`
 }

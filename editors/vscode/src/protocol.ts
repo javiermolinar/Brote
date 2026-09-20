@@ -2,12 +2,12 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 
 export interface Session {
-  id: string; project: string; http: string; token: string; stopped?: boolean;
+  id: string; project: string; http: string; token?: string; version?: number; stopped?: boolean;
 }
 export interface State {
   id: string; project: string; owner: string; status: string; generation: number;
   handoverId: string; editorConnected: boolean; editorReady: boolean; dap: string;
-  thread: string; error: string; state: { NextInProgress?: boolean };
+  binding?: {id: string; name: string; revision: number}; thread: string; error: string; state: { NextInProgress?: boolean };
 }
 export function sessionDirectory(): string {
   if (process.env.DEBUG_HANDOVER_HOME) return process.env.DEBUG_HANDOVER_HOME;
@@ -25,8 +25,8 @@ export function loopbackPort(endpoint: string): number {
 }
 export function validateSession(value: unknown, id: string): Session {
   const s = value as Session;
-  if (!s || !validID(id) || s.id !== id || typeof s.project !== 'string' || !path.isAbsolute(s.project)
-      || !/^http:\/\/127\.0\.0\.1:\d+$/.test(s.http) || !/^[a-f0-9]{64}$/.test(s.token)) {
+  if (!s || (s.version !== undefined && s.version > 2) || !validID(id) || s.id !== id || typeof s.project !== 'string' || !path.isAbsolute(s.project)
+      || !/^http:\/\/127\.0\.0\.1:\d+$/.test(s.http) || (s.version !== 2 && !/^[a-f0-9]{64}$/.test(s.token || ''))) {
     throw new Error('Invalid local session descriptor');
   }
   loopbackPort(s.http.slice(7));
@@ -41,7 +41,7 @@ export async function request<T>(s: Session, route: '/api/state?brief=1' | '/api
   validateSession(s, s.id);
   const response = await fetch(s.http + route, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: { Authorization: `Bearer ${s.token}`, 'Content-Type': 'application/json' },
+    headers: { ...(s.token ? { Authorization: `Bearer ${s.token}` } : {}), 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
     redirect: 'error', signal: AbortSignal.timeout(8000),
   });

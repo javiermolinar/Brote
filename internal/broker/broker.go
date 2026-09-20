@@ -9,6 +9,7 @@ import (
 )
 
 type broker struct {
+	changed    chan struct{}
 	mu         sync.Mutex
 	s          session.Descriptor
 	rpcAddr    string

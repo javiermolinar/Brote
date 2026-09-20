@@ -23,6 +23,7 @@ jobs:
       - run: npm ci
       - run: npm run build && npm test
       - run: git diff --exit-code -- ui/inspector/public/app.js editors/vscode/dist/extension.js editors/vscode/dist/protocol.cjs
+      - run: python3 scripts/test_install.py
       - run: go vet ./...
       - run: go test -race -v ./...
         env:

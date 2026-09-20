@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"debug-handover/internal/agents/codex"
 	"debug-handover/internal/delve"
 	"debug-handover/internal/editors"
 	"debug-handover/internal/editors/zed"
@@ -20,6 +19,12 @@ func (b *broker) action(a obj) (obj, error) {
 		return nil, fmt.Errorf("session changed; refresh state before acting")
 	}
 	verb := str(a["action"])
+	if str(a["actor"]) == "" {
+		a["actor"] = "agent"
+	}
+	if str(a["actor"]) == "agent" && b.s.Binding != nil && str(a["binding"]) != b.s.Binding.ID && verb != "bind" && verb != "event-status" && verb != "eval" {
+		return nil, fmt.Errorf("binding mismatch; refresh session binding")
+	}
 	if verb == "editor-error" {
 		if b.owner != "vscode" || str(a["handoverId"]) != b.s.HandoverID || b.peer != nil {
 			return nil, fmt.Errorf("editor handover changed")
@@ -30,35 +35,34 @@ func (b *broker) action(a obj) (obj, error) {
 		}
 		return obj{"error": b.lastError}, nil
 	}
+
+	if verb == "event-status" {
+		return b.eventStatus(a)
+	}
 	if verb == "bind" {
-		thread := str(a["thread"])
-		if thread != "" && !codex.ValidThread(thread) {
-			return nil, fmt.Errorf("thread must be a Codex task UUID")
+		if b.owner != "agent" {
+			return nil, fmt.Errorf("return control to the agent before rebinding")
 		}
-		var executable string
-		if thread != "" {
-			var err error
-			executable, err = codex.Find()
-			if err != nil {
-				return nil, err
-			}
+		id := str(a["binding"])
+		name := str(a["name"])
+		if id == "" || len(id) > 256 || name == "" || len(name) > 80 {
+			return nil, fmt.Errorf("binding (1–256 characters) and name (1–80) required")
 		}
-		if n := b.s.Notification; n != nil && (n.Status == "pending" || n.Status == "sending") {
-			return nil, fmt.Errorf("wait for the pending notification before rebinding")
+		revision := uint64(1)
+		if b.s.Binding != nil {
+			revision = b.s.Binding.Revision + 1
 		}
-		b.s.Thread, b.s.Codex = thread, executable
+		b.s.Binding = &session.Binding{ID: id, Name: name, Revision: revision}
+		b.s.Notification = nil
 		b.generation++
-		return obj{"thread": thread}, b.persist()
+		return obj{"binding": b.s.Binding}, b.emit("binding_changed", "")
 	}
 	if verb == "retry-notification" {
 		n := b.s.Notification
-		if n == nil || (n.Status != "failed" && n.Status != "unknown") {
-			return nil, fmt.Errorf("no failed notification to retry")
+		if n == nil || (n.Status != "failed" && n.Status != "unknown") || b.owner != "agent" {
+			return nil, fmt.Errorf("no current failed handback to retry")
 		}
-		if (n.Kind == "handover" && b.owner != "zed") || (n.Kind == "reclaim" && b.owner != "codex") {
-			return nil, fmt.Errorf("ownership changed; this notification is obsolete")
-		}
-		return obj{"message": "Retrying Codex notification"}, b.queueNotification(n.Kind)
+		return obj{"status": "pending"}, b.queueNotification("reclaim")
 	}
 	s, e := b.state()
 	if e != nil && verb != "stop" {
@@ -66,6 +70,9 @@ func (b *broker) action(a obj) (obj, error) {
 	}
 	status := stateStatus(s, b.moving)
 	if verb == "stop" {
+		if b.owner != str(a["actor"]) {
+			return nil, fmt.Errorf("current owner must stop the session")
+		}
 		if b.peer != nil {
 			b.peer.close()
 		}
@@ -74,7 +81,7 @@ func (b *broker) action(a obj) (obj, error) {
 			return nil, fmt.Errorf("could not stop Delve: %w", e)
 		}
 		b.s.Stopped = true
-		_ = b.persist()
+		_ = b.emit("terminated", "")
 		cleanupErr := zed.RemoveConfig(b.s)
 		b.generation++
 		go func() { time.Sleep(150 * time.Millisecond); b.once.Do(func() { close(b.done) }) }()
@@ -90,6 +97,9 @@ func (b *broker) action(a obj) (obj, error) {
 		expression := str(a["expression"])
 		if verb == "eval" {
 			return b.evaluate(expression, num(a["goroutine"]), num(a["frame"]), num(a["depth"]), num(a["count"]), s)
+		}
+		if b.owner != str(a["actor"]) {
+			return nil, fmt.Errorf("only current owner may change watches")
 		}
 		if e := validateExpression(expression); e != nil {
 			return nil, e
@@ -116,11 +126,11 @@ func (b *broker) action(a obj) (obj, error) {
 		return obj{"watches": list}, b.persist()
 	}
 	if verb == "reclaim" {
-		if !editors.IsOwner(b.owner) {
-			return nil, fmt.Errorf("Codex already has control")
+		if !editors.IsOwner(b.owner) && b.owner != "browser" {
+			return nil, fmt.Errorf("Agent already has control")
 		}
 		if status != "paused" {
-			return nil, fmt.Errorf("pause in %s before giving control to Codex", editors.Name(b.owner))
+			return nil, fmt.Errorf("pause in %s before giving control to the agent", editors.Name(b.owner))
 		}
 		if truth(s["NextInProgress"]) {
 			return nil, fmt.Errorf("a step is still in progress; settle it in the editor before handback")
@@ -132,20 +142,16 @@ func (b *broker) action(a obj) (obj, error) {
 			b.peer.close()
 			b.peer = nil
 		}
-		b.owner = "codex"
+		b.owner = "agent"
 		b.generation++
 		out := obj{"owner": b.owner, "status": "paused", "message": "Editor detached; the same debuggee remains paused"}
-		if err := b.persist(); err != nil {
-			out["persistenceError"] = err.Error()
+		if err := b.emit("control_returned", str(a["note"])); err != nil {
+			return nil, err
 		}
-		if truth(a["notify"]) {
-			if err := b.queueNotification("reclaim"); err != nil {
-				out["notificationError"] = err.Error()
-			}
-		}
+		out["cursor"] = b.s.Cursor
 		return out, nil
 	}
-	if b.owner != "codex" && !(verb == "handover" && b.peer == nil && b.owner == "vscode") {
+	if b.owner != str(a["actor"]) && !(verb == "handover" && str(a["actor"]) == "browser" && b.owner == "agent") && !(verb == "handover" && b.peer == nil && b.owner == "vscode") {
 		return nil, fmt.Errorf("%s owns execution; reclaim the paused session first", editors.Name(b.owner))
 	}
 	if verb == "pause" {
@@ -180,13 +186,20 @@ func (b *broker) action(a obj) (obj, error) {
 			defer b.mu.Unlock()
 			b.moving = false
 			b.generation++
+			kind := "stopped"
+			if current, e := b.state(); e == nil && truth(current["exited"]) {
+				kind = "target_exited"
+			}
+			if e := b.emit(kind, ""); e != nil {
+				b.lastError = e.Error()
+			}
 			if _, exited := delve.ExitState(err); err != nil && !exited {
 				b.lastError = err.Error()
 			}
 		}()
 		return obj{"status": "running", "command": verb}, nil
 	case "break":
-		bp := obj{"name": "codex" + session.NewID(4), "Cond": str(a["condition"]), "HitCond": str(a["hitCondition"])}
+		bp := obj{"name": "agent" + session.NewID(4), "Cond": str(a["condition"]), "HitCond": str(a["hitCondition"])}
 		loc := str(a["function"])
 		if loc == "" {
 			file := str(a["file"])
@@ -220,20 +233,29 @@ func (b *broker) action(a obj) (obj, error) {
 			editor = b.s.Editor
 		}
 		if editor == "" {
-			editor = "zed"
+			editor = "browser"
 		}
-		if !editors.IsOwner(editor) {
-			return nil, fmt.Errorf("editor must be zed or vscode")
+		if !editors.IsOwner(editor) && editor != "browser" {
+			return nil, fmt.Errorf("editor must be browser, zed or vscode")
 		}
-		if b.owner != "codex" && editor != b.owner {
+		if b.owner != "agent" && b.owner != "browser" && editor != b.owner {
 			return nil, fmt.Errorf("reclaim before changing editors")
+		}
+
+		if editor == "browser" {
+			b.owner, b.s.Editor = "browser", "browser"
+			b.generation++
+			if err := b.emit("ownership_changed", str(a["note"])); err != nil {
+				return nil, err
+			}
+			return obj{"owner": b.owner, "panel": b.s.HTTP + "/", "cursor": b.s.Cursor}, nil
 		}
 		if editor == "vscode" {
 			b.owner, b.s.Editor, b.s.HandoverID = editor, editor, session.NewID(8)
 			b.lastError = ""
 			b.generation++
 			out := obj{"owner": editor, "status": "paused", "handoverId": b.s.HandoverID, "instructions": "The Debug Handover companion extension will attach in VS Code for this project."}
-			if err := b.persist(); err != nil {
+			if err := b.emit("ownership_changed", str(a["note"])); err != nil {
 				out["persistenceError"] = err.Error()
 			}
 			if truth(a["open"]) {
@@ -255,15 +277,8 @@ func (b *broker) action(a obj) (obj, error) {
 		b.lastError = ""
 		b.generation++
 		out := obj{"owner": "zed", "status": "paused", "config": path, "label": zed.Label(b.s.ID), "instructions": "In Zed, press F4 and choose " + zed.Label(b.s.ID)}
-		if err := b.persist(); err != nil {
+		if err := b.emit("ownership_changed", str(a["note"])); err != nil {
 			out["persistenceError"] = err.Error()
-		}
-		if truth(a["notify"]) {
-			if err := b.queueNotification("handover"); err != nil {
-				out["notificationError"] = err.Error()
-			} else {
-				out["instructions"] = "Codex is being notified to attach Zed to the paused session."
-			}
 		}
 		if truth(a["open"]) {
 			args := []string{b.s.Project}

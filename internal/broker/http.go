@@ -1,13 +1,14 @@
 package broker
 
 import (
-	"crypto/subtle"
 	"encoding/json"
+	"mime"
 	"net/http"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"debug-handover/internal/session"
 	"debug-handover/ui/inspector"
 )
 
@@ -17,12 +18,45 @@ func (b *broker) handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		write := func(code int, v any) { w.WriteHeader(code); _ = json.NewEncoder(w).Encode(v) }
-		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+b.s.Token)) != 1 {
-			write(401, obj{"error": "session token required"})
-			return
-		}
 		if origin := r.Header.Get("Origin"); origin != "" && origin != b.s.HTTP {
 			write(403, obj{"error": "foreign origin rejected"})
+			return
+		}
+		if r.Method == "POST" {
+			media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if err != nil || media != "application/json" {
+				write(415, obj{"error": "application/json required"})
+				return
+			}
+		}
+		if r.URL.Path == "/api/events" && r.Method == "GET" {
+			b.events(w, r)
+			return
+		}
+		if r.URL.Path == "/api/sessions/stop" && r.Method == "POST" {
+			var input struct {
+				ID        string `json:"id"`
+				Confirmed bool   `json:"confirmed"`
+			}
+			if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&input) != nil || !input.Confirmed || input.ID == "" {
+				write(400, obj{"error": "session ID and explicit confirmation required"})
+				return
+			}
+			result, err := session.End(r.Context(), input.ID)
+			if err != nil {
+				write(409, obj{"error": err.Error()})
+			} else {
+				write(200, result)
+			}
+			return
+		}
+		if r.URL.Path == "/api/sessions" && r.Method == "GET" {
+			list, err := session.List(r.Context())
+			if err != nil {
+				write(500, obj{"error": err.Error()})
+			} else {
+				write(200, obj{"sessions": list})
+			}
 			return
 		}
 		var v obj

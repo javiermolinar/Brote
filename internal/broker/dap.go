@@ -117,6 +117,10 @@ func (b *broker) connectDAP(front net.Conn) {
 				case "exited", "terminated":
 					b.moving = false
 					b.generation++
+					// A DAP disconnect also emits terminated; only a dead target is an exit.
+					if current, e := b.state(); e == nil && truth(current["exited"]) {
+						_ = b.emit("target_exited", "")
+					}
 				}
 			}
 			if str(v["type"]) == "response" {
@@ -152,7 +156,7 @@ func (b *broker) connectDAP(front net.Conn) {
 		b.mu.Lock()
 		message := ""
 		if !editors.IsOwner(b.owner) || b.peer != p {
-			message = "Codex owns this session; hand over before attaching an editor"
+			message = "Agent or browser owns this session; hand over before attaching an editor"
 		}
 		if command == "launch" || command == "restart" || command == "terminate" {
 			message = "This is a persistent attach session. End it using debug-handover stop or the inspector."

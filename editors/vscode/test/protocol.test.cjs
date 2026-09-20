@@ -43,3 +43,10 @@ test('authenticated API surfaces errors and refuses redirects', async t => {
   behavior = 'redirect';
   await assert.rejects(request(s, '/api/state?brief=1'));
 });
+
+
+test('v2 descriptors omit tokens and reject unsupported protocol versions', () => {
+  const v2 = {...descriptor, version:2, token:undefined};
+  assert.equal(validateSession(v2,v2.id),v2);
+  assert.throws(()=>validateSession({...v2,version:3},v2.id));
+});

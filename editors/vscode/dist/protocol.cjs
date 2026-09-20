@@ -56,7 +56,7 @@ function loopbackPort(endpoint) {
 }
 function validateSession(value, id) {
   const s = value;
-  if (!s || !validID(id) || s.id !== id || typeof s.project !== "string" || !path.isAbsolute(s.project) || !/^http:\/\/127\.0\.0\.1:\d+$/.test(s.http) || !/^[a-f0-9]{64}$/.test(s.token)) {
+  if (!s || s.version !== void 0 && s.version > 2 || !validID(id) || s.id !== id || typeof s.project !== "string" || !path.isAbsolute(s.project) || !/^http:\/\/127\.0\.0\.1:\d+$/.test(s.http) || s.version !== 2 && !/^[a-f0-9]{64}$/.test(s.token || "")) {
     throw new Error("Invalid local session descriptor");
   }
   loopbackPort(s.http.slice(7));
@@ -69,7 +69,7 @@ async function request(s, route, body) {
   validateSession(s, s.id);
   const response = await fetch(s.http + route, {
     method: body === void 0 ? "GET" : "POST",
-    headers: { Authorization: `Bearer ${s.token}`, "Content-Type": "application/json" },
+    headers: { ...s.token ? { Authorization: `Bearer ${s.token}` } : {}, "Content-Type": "application/json" },
     body: body === void 0 ? void 0 : JSON.stringify(body),
     redirect: "error",
     signal: AbortSignal.timeout(8e3)

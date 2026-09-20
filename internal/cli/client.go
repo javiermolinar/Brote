@@ -24,9 +24,11 @@ func api(s session.Descriptor, method, path string, body any) (obj, error) {
 	if e != nil {
 		return nil, e
 	}
-	req.Header.Set("Authorization", "Bearer "+s.Token)
+	if s.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+s.Token)
+	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, e := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	resp, e := (&http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(req)
 	if e != nil {
 		return nil, e
 	}

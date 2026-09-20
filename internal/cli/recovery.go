@@ -18,6 +18,7 @@ func recoverSession(id string) (obj, error) {
 		return nil, e
 	}
 	if _, e = api(s, "GET", "/api/state?brief=1", nil); e == nil {
+		_ = startBridge(s)
 		return obj{"id": id, "status": "already connected", "panel": s.HTTP + "/#" + s.Token}, nil
 	}
 	if s.Stopped || s.RPC == "" {
@@ -45,6 +46,7 @@ func recoverSession(id string) (obj, error) {
 		current, err := session.Read(id)
 		if err == nil && current.PID != s.PID {
 			if v, err := api(current, "GET", "/api/state?brief=1", nil); err == nil {
+				_ = startBridge(current)
 				return obj{"id": id, "status": v["status"], "panel": current.HTTP + "/#" + current.Token, "pid": v["state"], "message": "Broker reconnected to the existing Delve process"}, nil
 			}
 		}

@@ -1,0 +1,41 @@
+name: Release bundles
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci && npm run build && npm test
+      - run: go install github.com/go-delve/delve/cmd/dlv@v1.27.1
+      - run: go test -race ./... && go vet ./...
+        env:
+          DH_INTEGRATION: '1'
+          CODEX_THREAD_ID: ''
+      - run: python3 scripts/test_install.py
+      - run: npm run package:vscode
+      - name: Package
+        env:
+          RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dev-{0}', github.sha) }}
+        run: python3 scripts/release.py --version "$RELEASE_VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-bundles
+          path: dist/releases/*
+      - name: Publish tag release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_VERSION" dist/releases/* --generate-notes

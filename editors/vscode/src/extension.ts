@@ -26,8 +26,9 @@ export function activate(context: vscode.ExtensionContext): void {
   function updateStatus(): void {
     const owned = [...states.values()].filter(s => s.owner === 'vscode' && s.status !== 'exited');
     if (!owned.length) { status.hide(); return; }
-    status.text = '$(debug-disconnect) Give control to Codex';
-    status.tooltip = 'Return the paused Go process to Codex. Pause in the debugger first.';
+    const name = owned.length === 1 ? owned[0].binding?.name || 'Agent' : 'Agent';
+    status.text = `$(debug-disconnect) Give control to ${name}`;
+    status.tooltip = `Return the paused Go process to ${name}. Pause in the debugger first.`;
     status.show();
   }
   async function attach(s: Session, state: State, folder: vscode.WorkspaceFolder): Promise<void> {
@@ -49,7 +50,7 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showErrorMessage(`Debug Handover: ${message(error)}`);
       try {
         const fresh = await request<State>(s, '/api/state?brief=1');
-        await request(s, '/api/action', { action: 'editor-error', generation: fresh.generation,
+        await request(s, '/api/action', { action: 'editor-error', actor: 'vscode', generation: fresh.generation,
           handoverId: state.handoverId, error: message(error) });
       } catch { /* Ownership may have changed while VS Code was attaching. */ }
     }
@@ -117,16 +118,16 @@ export function activate(context: vscode.ExtensionContext): void {
         if (state.owner !== 'vscode') throw new Error('VS Code no longer owns this session.');
         // The broker ends only the frontend; never stopDebugging or terminate the target.
         const result = await request<{ notificationError?: string }>(s, '/api/action', {
-          action: 'reclaim', generation: state.generation, notify: Boolean(state.thread),
+          action: 'reclaim', actor: 'vscode', generation: state.generation, notify: Boolean(state.thread),
         });
         if (result.notificationError) throw new Error(`Control returned, but notification failed: ${result.notificationError}`);
-        void vscode.window.showInformationMessage(state.thread ? 'Control returned to Codex; task notification requested.' : 'Control returned. No Codex task is bound.');
+        void vscode.window.showInformationMessage(state.binding ? `Control returned to ${state.binding.name}; handback event published.` : state.thread ? 'Control returned to Codex; task notification requested.' : 'Control returned. No notification integration is bound.');
         await scan();
       } catch (error) { void vscode.window.showErrorMessage(`Debug Handover: ${message(error)}`); }
     }),
     vscode.commands.registerCommand('debugHandover.inspector', async () => {
       const s = await selected();
-      if (s) await vscode.env.openExternal(vscode.Uri.parse(`${s.http}/#${s.token}`));
+      if (s) await vscode.env.openExternal(vscode.Uri.parse(`${s.http}/${s.token ? '#' + s.token : ''}`));
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => void scan()),
     vscode.workspace.onDidGrantWorkspaceTrust(() => void scan()),

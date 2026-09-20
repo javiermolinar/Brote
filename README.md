@@ -1,81 +1,97 @@
-# delve-llm-adapter
+# Delve LLM Adapter
 
-Share a live Go debugging session between an LLM agent and a human. Start from a precompiled binary, stop on a condition, inspect it with the agent, then take over in the shared browser inspector or your editor. Handing control back preserves the same process and memory.
+Pass the same live Go debugger between an agent and a human. Start an existing debug
+binary, set conditional breakpoints, inspect stack and locals, then hand the paused
+process to the browser, VS Code, or Zed. Returning control never resumes execution.
 
-The working prototype ships as **Debug Handover**: a standalone Go CLI and broker, a TypeScript browser inspector, a Codex skill, and optional editor integrations. Codex, Zed, and VS Code have been tested. Pi support is planned.
+The shared Go core provides a JSON CLI, a local HTTP API, durable SSE events, and an
+embedded TypeScript browser inspector. Codex and Pi have small notification hooks;
+all debugging operations use the same CLI. No MCP, central daemon, or embedded editor.
 
-## Layout
+## Install
 
-```text
-cmd/debug-handover/       Executable entry point
-internal/
-  cli/                   Commands, HTTP client, launch/recovery, diagnostics
-  broker/                Ownership, actions, snapshots, HTTP and DAP proxy
-  session/               Session descriptors, persistence, binary provenance
-  delve/                 Delve JSON-RPC transport and exit-state decoding
-  dap/                   Debug Adapter Protocol message framing
-  agents/codex/          Codex discovery, handover messages, queue invocation
-  editors/               Editor identity and Zed profile management
-ui/inspector/            Shared browser UI, embedded assets, preview server
-editors/vscode/          Optional VS Code extension and its build output
-skills/debug-handover/   Codex skill instructions
-examples/demo/          Small Go target for trying the workflow
-scripts/                Cached CLI launcher and release packaging
-docs/                   Architecture and full debugging guide
-```
+Requires macOS/Linux (arm64/amd64), compatible Delve, and your selected harness.
+The browser inspector is always included. VS Code integration is optional.
 
-The broker owns mutable execution state. Session storage and protocol transports do not depend on the broker or CLI. Agent notification delivery is separate from the broker's durable event bookkeeping. See [architecture](docs/architecture.md) for the dependency boundaries and the remaining work to support other harnesses.
-
-## Try it
-
-Requirements: Go 1.23+ and a compatible Delve installation. Normal CLI and browser use does not require Node.js or an editor. Automatic handback to Codex requires a CLI with `queue --thread` support; `doctor` checks it.
+Once GitHub Releases are published, replace `OWNER/REPO` with this repository:
 
 ```sh
-./scripts/debug-handover doctor
-go build -gcflags='all=-N -l' -o examples/demo/demo ./examples/demo
-./scripts/debug-handover start --binary examples/demo/demo --project examples/demo
+curl -fsSL https://github.com/OWNER/REPO/releases/latest/download/install.sh \
+  | sh -s -- --agent codex
+# Or: --agent pi --editor vscode
+# Pin a release: add --version v0.2.0
 ```
 
-Open the returned `panel` URL. Replace `ID` with the returned session ID:
+The release installer embeds its repository. When running the source `install.sh`,
+pass `--repository OWNER/REPO`. No public remote/release is configured in this checkout.
+
+Alternatively extract a release bundle and run:
 
 ```sh
-./scripts/debug-handover break ID --file main.go --line 18 --condition 'attempt == 3'
-./scripts/debug-handover continue ID --wait 20s
-./scripts/debug-handover state ID
+./delve-llm-adapter/bin/delve-llm-adapter setup --agent pi --editor vscode
 ```
 
-The sample is built once. `start` always uses an existing binary; handover never recompiles it. See the [debugging guide](docs/debugging.md) for editor attachment, precompiled test binaries, watches, recovery, Codex installation, and limitations.
+Setup installs under `~/.local/share/delve-llm-adapter`, with launchers in
+`~/.local/bin`. It prints PATH instructions without editing shell startup files.
+Set `DELVE_LLM_ADAPTER_HOME` for an isolated installation (its launchers use `bin/`
+inside that directory). `installation`, `repair`, and `uninstall --component
+codex|pi|vscode|core` manage only this installation. Rerunning setup preserves and
+refreshes existing integrations. Live debugger processes are never killed by setup.
+Core removal refuses active sessions and installed integrations.
+
+## Debug
+
+```sh
+delve-llm-adapter start --binary /path/to/precompiled-app --project /path/to/source
+delve-llm-adapter break SESSION --file main.go --line 42 --condition 'attempt == 3'
+delve-llm-adapter continue SESSION --wait 20s
+delve-llm-adapter handover SESSION --editor browser --note 'Inspect total'
+```
+
+Open the returned panel URL. Take control in the browser, step and inspect, then
+return to the agent. VS Code uses the optional companion; Zed attaches through F4.
+The target is never rebuilt during handover.
+
+Codex automatically binds `CODEX_THREAD_ID` when present; use `--thread ""` for a
+standalone session. In Pi, use the `debug_connect` tool or `/debug-connect SESSION`
+after starting to bind the current conversation and enable handback notifications.
+
+`events SESSION --cursor N` emits a persistent JSONL event stream. Without a wakeup
+hook, `await-control SESSION --cursor N --timeout 20s` returns handback to an active
+tool call. An idle harness requires a notification hook to start another turn.
+
+## Boundaries
+
+Local prototype: HTTP binds only to `127.0.0.1`, without bearer authentication.
+Other local processes can inspect/control the debugger. Host/Origin checks and
+JSON-only mutations remain. Owner labels and client bindings coordinate clients;
+they are not security credentials. Do not expose the API to a network.
+
+Each session has one broker, one Delve process, and one target. Broker recovery
+reuses the target; editor/client disconnect does not kill it. Notification delivery
+is durable but not exactly-once; ambiguous deliveries require explicit retry.
 
 ## Development
 
 ```sh
-go build -o bin/debug-handover ./cmd/debug-handover
 go test ./...
 go vet ./...
-DH_INTEGRATION=1 go test -race -v ./...
-
+DH_INTEGRATION=1 CODEX_THREAD_ID='' go test -race ./...
 npm ci
 npm run build
 npm test
-```
-
-The Delve integration tests use temporary programs and session directories. Generated inspector assets and extension JavaScript are committed; rebuild them after TypeScript changes. `npm run build:inspector` and `npm run build:vscode` build either frontend independently. `npm run preview -- /absolute/path/to/session.json` previews the inspector against an existing broker.
-
-## Packaging
-
-```sh
-# Core/plugin source archive with the built inspector; no VSIX required.
-python3 scripts/package.py --output dist/debug-handover-prototype.zip
-
-# Optional editor extension, installed once in VS Code.
 npm run package:vscode
-code --install-extension editors/vscode/debug-handover-0.1.0.vsix
+python3 scripts/release.py --version v0.2.0
 ```
 
-Add `--include-vsix` to the archive command to bundle the separately built extension. Archives exclude Git history, target binaries, session data, and node_modules.
+Source launcher: `scripts/debug-handover`. It compiles a cached helper, not the target.
+Release bundles contain prebuilt executables and need no Go or Node build tooling.
 
-The repository name is `delve-llm-adapter`; the plugin, CLI, extension, and session identifiers remain `debug-handover`. The repository also serves as the plugin source through `.codex-plugin/` and `skills/`. An existing personal-marketplace installation can continue to resolve through a `~/plugins/debug-handover` symlink to this checkout.
+See [architecture](docs/architecture.md), [protocol](docs/protocol.md), and
+[debugging guide](docs/debugging.md). MIT licensed; third-party notices are retained.
 
-The prototype currently installs the agent plugin and optional VS Code extension separately. The intended product has one setup flow for the core, selected agent adapter, and optional editor companion; that unified installer is not implemented yet. Browser-inspector users need no editor extension.
+### Switching sessions
 
-This is a local prototype, not an official vendor integration or a published extension. Third-party licensing is recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Expand **Sessions** in the browser inspector and select **Open session**. The list shows project, binary, status, and execution owner. Opening another session does not step, stop, transfer control, or rebind an agent conversation. Offline sessions show recovery guidance; ended sessions cannot be opened. Use the selected inspector’s existing handover controls for VS Code or Zed, or Pi’s `debug_connect` to explicitly bind an existing session.
+
+Use **End session** in the session list to explicitly terminate a live target and its debugger, regardless of which frontend owns execution. This asks for confirmation. Offline brokers must be recovered before ending; the manager does not kill saved PIDs. Closing Pi alone preserves the debugger: restart in the same project with `pi -c` or choose the conversation with `pi -r`. The Pi adapter reconnects matching session bindings on startup.

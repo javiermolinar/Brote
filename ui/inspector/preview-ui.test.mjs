@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { once } from 'node:events';
 
-test('UI preview preserves API authorization and isolates origins', async t => {
-  const token = 'local-test-token';
+for (const version of [1, 2]) test(`UI preview v${version} preserves API authorization and isolates origins`, async t => {
+  const token = version === 1 ? 'local-test-token' : undefined;
   const upstream = createServer(async (req, res) => {
     let body = '';
     for await (const chunk of req) body += chunk;
@@ -24,7 +24,7 @@ test('UI preview preserves API authorization and isolates origins', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'debug-handover-ui-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const descriptor = join(dir, 'session.json');
-  await writeFile(descriptor, JSON.stringify({ id: 'test', http: broker, token }));
+  await writeFile(descriptor, JSON.stringify({ id: 'test', http: broker, token, version }));
   const child = spawn(process.execPath, [fileURLToPath(new URL('./preview-ui.mjs', import.meta.url)), descriptor]);
   t.after(() => child.kill());
   const lines = createInterface({ input: child.stdout });
@@ -34,13 +34,13 @@ test('UI preview preserves API authorization and isolates origins', async t => {
     const response = await fetch(origin + path, options);
     return { status: response.status, body: await response.text() };
   };
-  assert.equal((await get('/api/state')).status, 401);
-  assert.equal((await get('/api/state', { headers: { Authorization: 'Bearer wrong' } })).status, 401);
-  const headers = { Authorization: 'Bearer ' + token, Origin: origin };
+  assert.equal((await get('/api/state')).status, token ? 401 : 200);
+  assert.equal((await get('/api/state', { headers: { Authorization: 'Bearer wrong' } })).status, token ? 401 : 200);
+  const headers = { ...(token ? {Authorization: 'Bearer ' + token} : {}), Origin: origin, 'Content-Type':'application/json' };
   assert.equal((await get('/api/state', { headers: { ...headers, Origin: 'http://untrusted.example' } })).status, 403);
   const read = await get('/api/state?frame=2', { headers });
   assert.equal(read.status, 200);
-  assert.deepEqual(JSON.parse(read.body), { authorization: 'Bearer ' + token, origin: broker, body: '', url: '/api/state?frame=2' });
+  assert.deepEqual(JSON.parse(read.body), { ...(token ? {authorization:'Bearer ' + token} : {}), origin: broker, body: '', url: '/api/state?frame=2' });
   const body = JSON.stringify({ action: 'next', generation: 12 });
   const write = await get('/api/action', { method: 'POST', headers, body });
   assert.equal(write.status, 200);
@@ -49,7 +49,7 @@ test('UI preview preserves API authorization and isolates origins', async t => {
   assert.equal((await get('/api/unknown', { headers })).status, 404);
   const page = await get('/');
   assert.equal(page.status, 200);
-  assert.ok(!page.body.includes(token));
+  if (token) assert.ok(!page.body.includes(token));
   assert.equal((await get('/app.ts')).status, 404);
   const badHost = await new Promise((resolve, reject) => {
     const req = request(origin + '/', { headers: { Host: 'untrusted.example' } }, response => { response.resume(); resolve(response.statusCode); });

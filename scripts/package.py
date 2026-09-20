@@ -12,11 +12,11 @@ args = parser.parse_args()
 root = Path(__file__).resolve().parent.parent
 plugin_name = json.loads((root / '.codex-plugin' / 'plugin.json').read_text())['name']
 files = [root / p for p in (
-    'README.md', 'THIRD_PARTY_NOTICES.md', 'go.mod', '.gitignore',
+    'README.md', 'LICENSE', 'install.sh', 'THIRD_PARTY_NOTICES.md', 'go.mod', '.gitignore',
     '.codex-plugin/plugin.json', 'examples/demo/main.go',
     'package.json', 'package-lock.json',
 )]
-for directory in ('cmd', 'internal', 'ui', 'editors', 'docs', 'scripts', 'skills', '.github'):
+for directory in ('cmd', 'internal', 'adapters', 'ui', 'editors', 'docs', 'scripts', 'skills', '.github'):
     files += [p for p in (root / directory).rglob('*')
               if p.is_file() and '__pycache__' not in p.parts and p.suffix not in ('.pyc', '.vsix') and 'node_modules' not in p.parts]
 if args.include_vsix:

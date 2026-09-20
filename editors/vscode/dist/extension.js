@@ -56,7 +56,7 @@ function loopbackPort(endpoint) {
 }
 function validateSession(value, id) {
   const s = value;
-  if (!s || !validID(id) || s.id !== id || typeof s.project !== "string" || !path.isAbsolute(s.project) || !/^http:\/\/127\.0\.0\.1:\d+$/.test(s.http) || !/^[a-f0-9]{64}$/.test(s.token)) {
+  if (!s || s.version !== void 0 && s.version > 2 || !validID(id) || s.id !== id || typeof s.project !== "string" || !path.isAbsolute(s.project) || !/^http:\/\/127\.0\.0\.1:\d+$/.test(s.http) || s.version !== 2 && !/^[a-f0-9]{64}$/.test(s.token || "")) {
     throw new Error("Invalid local session descriptor");
   }
   loopbackPort(s.http.slice(7));
@@ -69,7 +69,7 @@ async function request(s, route, body) {
   validateSession(s, s.id);
   const response = await fetch(s.http + route, {
     method: body === void 0 ? "GET" : "POST",
-    headers: { Authorization: `Bearer ${s.token}`, "Content-Type": "application/json" },
+    headers: { ...s.token ? { Authorization: `Bearer ${s.token}` } : {}, "Content-Type": "application/json" },
     body: body === void 0 ? void 0 : JSON.stringify(body),
     redirect: "error",
     signal: AbortSignal.timeout(8e3)
@@ -107,8 +107,9 @@ function activate(context) {
       status.hide();
       return;
     }
-    status.text = "$(debug-disconnect) Give control to Codex";
-    status.tooltip = "Return the paused Go process to Codex. Pause in the debugger first.";
+    const name = owned.length === 1 ? owned[0].binding?.name || "Agent" : "Agent";
+    status.text = `$(debug-disconnect) Give control to ${name}`;
+    status.tooltip = `Return the paused Go process to ${name}. Pause in the debugger first.`;
     status.show();
   }
   async function attach(s, state, folder) {
@@ -136,6 +137,7 @@ function activate(context) {
         const fresh = await request(s, "/api/state?brief=1");
         await request(s, "/api/action", {
           action: "editor-error",
+          actor: "vscode",
           generation: fresh.generation,
           handoverId: state.handoverId,
           error: message(error)
@@ -220,11 +222,12 @@ function activate(context) {
         if (state.owner !== "vscode") throw new Error("VS Code no longer owns this session.");
         const result = await request(s, "/api/action", {
           action: "reclaim",
+          actor: "vscode",
           generation: state.generation,
           notify: Boolean(state.thread)
         });
         if (result.notificationError) throw new Error(`Control returned, but notification failed: ${result.notificationError}`);
-        void vscode.window.showInformationMessage(state.thread ? "Control returned to Codex; task notification requested." : "Control returned. No Codex task is bound.");
+        void vscode.window.showInformationMessage(state.binding ? `Control returned to ${state.binding.name}; handback event published.` : state.thread ? "Control returned to Codex; task notification requested." : "Control returned. No notification integration is bound.");
         await scan();
       } catch (error) {
         void vscode.window.showErrorMessage(`Debug Handover: ${message(error)}`);
@@ -232,7 +235,7 @@ function activate(context) {
     }),
     vscode.commands.registerCommand("debugHandover.inspector", async () => {
       const s = await selected();
-      if (s) await vscode.env.openExternal(vscode.Uri.parse(`${s.http}/#${s.token}`));
+      if (s) await vscode.env.openExternal(vscode.Uri.parse(`${s.http}/${s.token ? "#" + s.token : ""}`));
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => void scan()),
     vscode.workspace.onDidGrantWorkspaceTrust(() => void scan())

@@ -6,11 +6,11 @@ Install this VSIX and open the source project as a trusted local workspace. Run 
 
 Commands:
 
-- **Debug Handover: Give Control to Codex** — return a settled pause and notify the bound task.
+- **Debug Handover: Give Control to Agent** — return a settled pause and notify the bound task.
 - **Debug Handover: Attach Pending Session** — retry after a failure or deliberate disconnect.
 - **Debug Handover: Open Live Inspector** — open the shared browser panel.
 
-The status bar also offers Give Control to Codex. Closing the frontend preserves the target. End the target explicitly through the broker's End Session action.
+The status bar also offers Give Control to Agent. Closing the frontend preserves the target. End the target explicitly through the broker's End Session action.
 
 Only exact trusted local workspace folders are matched. Set Debug Handover: Session Directory for a custom DEBUG_HANDOVER_HOME. Remote workspaces and arbitrary process attachment are outside this prototype. See the broker README in the source package for launch, recovery, and protocol details.
 

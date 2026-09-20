@@ -1,9 +1,9 @@
 package cli
 
 import (
+	"context"
 	"flag"
 	"fmt"
-	"os"
 	"time"
 
 	"debug-handover/internal/session"
@@ -15,11 +15,19 @@ func usage() string {
 	return `Debug Handover — persistent Go / Delve sessions
 
   debug-handover start --binary PATH --project DIR [--dlv PATH] -- [program args]
+  delve-llm-adapter setup --agent codex|pi [--editor vscode]
+  debug-handover events ID [--cursor N] [--binding ID]  (JSONL stream)
+  debug-handover await-control ID [--cursor N] [--timeout 20s]
+  debug-handover event-status ID --event N --revision N --status acknowledged
+  debug-handover end-session ID --confirmed  (explicit human termination)
   debug-handover sessions
-  debug-handover state ID [--goroutine N] [--frame N]
+  debug-handover state ID [--goroutine N] [--frame N] [--summary]
   debug-handover eval ID --expression EXPR [--goroutine N] [--frame N] [--depth 3] [--count 64]
   debug-handover watch|unwatch ID --expression EXPR
   debug-handover bind ID --thread UUID
+  debug-handover bind ID --binding CLIENT_ID --name DISPLAY_NAME
+  delve-llm-adapter installation|repair
+  delve-llm-adapter uninstall --component codex|pi|vscode|core
   debug-handover retry-notification ID
   debug-handover recover ID
   debug-handover cleanup ID
@@ -27,9 +35,9 @@ func usage() string {
   debug-handover break ID --file PATH --line N [--condition EXPR] [--hit-condition '== 3']
   debug-handover break ID --function main.process [--condition EXPR]
   debug-handover clear ID --breakpoint N
-  debug-handover continue|next|step|stepout ID [--wait 20s]
+  debug-handover continue|next|step|stepout ID [--wait 20s] [--summary]
   debug-handover pause ID
-  debug-handover handover ID [--editor zed|vscode] [--no-open]
+  debug-handover handover ID [--editor browser|zed|vscode] [--no-open]
   debug-handover reclaim ID
   debug-handover stop ID
 
@@ -43,6 +51,24 @@ func Run(args []string) (any, error) {
 		return nil, nil
 	}
 	verb := args[0]
+	if verb == "end-session" {
+		if len(args) != 3 || args[2] != "--confirmed" {
+			return nil, fmt.Errorf("usage: end-session ID --confirmed (terminates the target, regardless of owner)")
+		}
+		return session.End(context.Background(), args[1])
+	}
+	if verb == "version" {
+		return obj{"version": Version, "protocol": 2}, nil
+	}
+	if verb == "events" || verb == "await-control" {
+		return eventsCommand(args[1:], verb == "await-control")
+	}
+	if verb == "bridge" {
+		return nil, bridge(args[1:])
+	}
+	if verb == "setup" || verb == "installation" || verb == "repair" || verb == "uninstall" {
+		return installation(verb, args[1:])
+	}
 	if verb == "start" {
 		return start(args[1:])
 	}
@@ -59,26 +85,9 @@ func Run(args []string) (any, error) {
 		return cleanupSession(args[1])
 	}
 	if verb == "sessions" {
-		entries, _ := os.ReadDir(session.Root())
-		list := []any{}
-		for _, ent := range entries {
-			s, e := session.Read(ent.Name())
-			if e != nil {
-				continue
-			}
-			if s.Stopped {
-				list = append(list, obj{"id": s.ID, "binary": s.Binary, "project": s.Project, "status": "ended"})
-				continue
-			}
-			v, e := api(s, "GET", "/api/state?brief=1", nil)
-			if e != nil {
-				list = append(list, obj{"id": s.ID, "binary": s.Binary, "project": s.Project, "status": "offline", "recoverable": s.RPC != "" && !s.Stopped, "error": e.Error()})
-				continue
-			}
-			list = append(list, obj{"id": s.ID, "binary": s.Binary, "project": s.Project, "owner": v["owner"], "status": v["status"], "panel": s.HTTP + "/#" + s.Token})
-		}
-		return list, nil
+		return session.List(context.Background())
 	}
+
 	if len(args) < 2 {
 		return nil, fmt.Errorf("session ID required\n%s", usage())
 	}
@@ -95,14 +104,21 @@ func Run(args []string) (any, error) {
 	bp := f.Int("breakpoint", 0, "breakpoint ID")
 	gid := f.Int("goroutine", 0, "goroutine ID")
 	frame := f.Int("frame", 0, "frame index")
+	summary := f.Bool("summary", false, "compact stack and selected-frame values")
 	wait := f.Duration("wait", 0, "wait for pause")
 	noOpen := f.Bool("no-open", false, "do not open the editor")
-	editor := f.String("editor", "", "handover editor: zed or vscode (defaults to previous editor)")
+	editor := f.String("editor", "", "handover: browser, zed or vscode (defaults to previous frontend)")
 	expr := f.String("expression", "", "read-only Go expression")
 	depth := f.Int("depth", 3, "variable depth (0–6)")
 	count := f.Int("count", 64, "maximum array/struct entries (1–128)")
 	thread := f.String("thread", "", "Codex task UUID; empty disables wakeups")
-	notify := f.Bool("notify", false, "queue a handover message to the bound Codex task")
+	binding := f.String("binding", "", "client binding ID")
+	name := f.String("name", "Agent", "agent display name")
+	note := f.String("note", "", "handover note")
+	event := f.String("event", "", "event ID")
+	delivery := f.String("status", "acknowledged", "event delivery status")
+	revision := f.Uint64("revision", 0, "binding revision")
+	notify := f.Bool("notify", false, "legacy flag; handback always emits an event")
 	if e = f.Parse(args[2:]); e != nil {
 		return nil, e
 	}
@@ -110,18 +126,44 @@ func Run(args []string) (any, error) {
 		return nil, fmt.Errorf("unexpected arguments: %v", f.Args())
 	}
 	if verb == "state" {
-		return api(s, "GET", fmt.Sprintf("/api/state?goroutine=%d&frame=%d", *gid, *frame), nil)
+		v, err := api(s, "GET", fmt.Sprintf("/api/state?goroutine=%d&frame=%d", *gid, *frame), nil)
+		if *summary && err == nil {
+			v = summarizeState(v)
+		}
+		return v, err
 	}
 	state, e := api(s, "GET", "/api/state?brief=1", nil)
 	if e != nil {
 		return nil, e
 	}
-	body := obj{"action": verb, "generation": state["generation"], "file": *file, "line": *line, "function": *fn, "condition": *cond, "hitCondition": *hit, "breakpoint": *bp, "open": !*noOpen}
+	if *binding == "" && s.Binding != nil {
+		*binding = s.Binding.ID
+	}
+	body := obj{"binding": *binding, "actor": "agent", "name": *name, "note": *note, "event": *event, "status": *delivery, "revision": *revision, "action": verb, "generation": state["generation"], "file": *file, "line": *line, "function": *fn, "condition": *cond, "hitCondition": *hit, "breakpoint": *bp, "open": !*noOpen}
 	body["editor"] = *editor
 	body["expression"], body["depth"], body["count"], body["goroutine"], body["frame"], body["thread"], body["notify"] = *expr, *depth, *count, *gid, *frame, *thread, *notify
+	if verb == "bind" && *thread != "" {
+		if !validCodexThread(*thread) {
+			return nil, fmt.Errorf("invalid Codex thread UUID")
+		}
+		if *binding == "" {
+			*binding = session.NewID(16)
+		}
+		body["binding"] = *binding
+		body["name"] = "Codex"
+	}
 	res, e := api(s, "POST", "/api/action", body)
 	if e != nil {
 		return nil, e
+	}
+	if verb == "bind" && *thread != "" {
+		fresh, err := session.Read(s.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err = configureBridge(fresh, *thread); err != nil {
+			return res, err
+		}
 	}
 	if *wait > 0 {
 		for deadline := time.Now().Add(*wait); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
@@ -130,6 +172,9 @@ func Run(args []string) (any, error) {
 				return nil, e
 			}
 			if str(v["status"]) != "running" {
+				if *summary {
+					v = summarizeState(v)
+				}
 				return v, nil
 			}
 		}
