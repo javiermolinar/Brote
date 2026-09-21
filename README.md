@@ -28,8 +28,6 @@ or build needed. Release checksums are verified automatically. Shared Go session
 support **macOS and Linux, arm64 and x64**, and require
 [Delve](https://github.com/go-delve/delve).
 
-The first public release is pending. These commands will work once it is published.
-
 ### Codex
 ```sh
 curl -fsSL https://github.com/javiermolinar/Brote/releases/latest/download/install.sh | sh -s -- --agent codex

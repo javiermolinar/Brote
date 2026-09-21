@@ -18,8 +18,8 @@ pi update --extensions
 Pi manages the checkout and updates. Installation downloads the exact-version
 native core for your platform, verifies its checksum, and keeps it in a versioned
 cache outside the checkout. If npm install scripts are disabled, the extension
-prepares the same verified core on first load. No Go compiler is needed. The first GitHub release
-must be published before remote installation works. npm distribution follows later.
+prepares the same verified core on first load. No Go compiler is needed.
+npm distribution follows later.
 
 To switch from the shell installation, run `brote uninstall --component pi`
 before installing the Git source. Keep only one Brote adapter enabled.
