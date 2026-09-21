@@ -9,7 +9,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 const execute = promisify(execFile);
 const packageRoot = path.dirname(fileURLToPath(import.meta.url));
-export default function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI, runtime = () => resolveRuntime({bundled:[path.join(packageRoot,'runtime',`${process.platform}-${process.arch}`,'brote'),path.resolve(packageRoot,'../../bin/brote')]})) {
   let stop:()=>Promise<void> = async () => {};
   let settled:()=>Promise<void> = async () => {};
   pi.on('agent_settled', async () => settled());
@@ -17,7 +17,7 @@ export default function (pi: ExtensionAPI) {
   pi.on('session_start', async (_event, ctx) => {
     await stop();
     let cli:string;
-    try { cli = await resolveRuntime({bundled:[path.join(packageRoot,'runtime',`${process.platform}-${process.arch}`,'brote'),path.resolve(packageRoot,'../../bin/brote')]}); }
+    try { cli = await runtime(); }
     catch(error) { ctx.ui.notify(String(error),'warning'); return; }
     const binding = `pi:${ctx.sessionManager.getSessionId()}`;
     let active = true;
@@ -167,7 +167,7 @@ export default function (pi: ExtensionAPI) {
       child?.kill();
       return result;
     }
-    pi.registerTool({name:'debug_sessions',label:'List debugger sessions',description:'List current debugger sessions, their projects, statuses, and browser URLs. Does not connect or change execution.',parameters:Type.Object({}),async execute(){const sessions=await currentSessions();return {content:[{type:'text',text:showSessions(sessions)}],details:{sessions}};}});
+    pi.registerTool({name:'debug_sessions',label:'List debugger sessions',description:'List current debugger sessions, their projects, statuses, browser URLs, and the Brote CLI path for starting a run. Does not connect or change execution.',parameters:Type.Object({}),async execute(){const sessions=await currentSessions();return {content:[{type:'text',text:`${showSessions(sessions)}\nBrote CLI: ${cli}`}],details:{sessions,cli}};}});
     pi.registerTool({name:'debug_stop',label:'Stop debugger session',description:'Terminate one debugger session and its target process. Use only when the user explicitly asks to end that session. Saved history is retained.',parameters:Type.Object({session:Type.String()}),async execute(_id,params){const result=await endSession(params.session);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
     pi.registerCommand('debug-connect', {description:'Connect a debugger session and show its browser URL', handler:async (args) => {const result=await connect(args.trim());ctx.ui.notify(`Debugger connected: ${result.panel}`, 'info');}});
     pi.registerCommand('debug-sessions', {description:'List current debugger sessions and browser URLs', handler:async () => {ctx.ui.notify(showSessions(await currentSessions()), 'info');}});

@@ -13,6 +13,24 @@ For Pi, `/debug-sessions` lists current runs and their inspector URLs.
 `/debug-connect SESSION_ID` attaches the current conversation to an existing run.
 Run `/reload` after installing or updating the Pi integration.
 
+Pi installs and updates Brote directly from GitHub:
+
+```sh
+pi install git:github.com/javiermolinar/Brote
+pi update --extensions
+```
+
+The Git package downloads the core for its exact version, including the WebUI,
+without compiling anything. Runtime files stay in the versioned
+`~/.cache/brote/runtimes/` cache (or `$XDG_CACHE_HOME/brote/runtimes/`). Pi updates
+and removal leave that cache intact so existing debug processes keep working.
+Use **End run** before manually removing an old cached version.
+
+If npm lifecycle scripts were disabled or a custom Pi package manager omitted
+the install hook, the extension prepares the same core when Pi loads it. You can
+also run `npm run setup:pi` inside the package checkout to prepare it explicitly.
+Normal development `npm ci` skips the download; `npm run setup:pi` opts in.
+
 For Codex, a newly started run binds to the current conversation. To connect an
 existing run, use **Attach to agent** in the inspector and paste its prompt into
 your Codex conversation. The integration starts an event bridge that delivers

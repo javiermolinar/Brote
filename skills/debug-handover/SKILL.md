@@ -5,7 +5,9 @@ description: Use Brote to inspect precompiled Go programs, set breakpoints, answ
 
 Use the shared JSON CLI. In the Codex release plugin, resolve
 `../../scripts/debug-handover` from this skill directory; it selects the bundled
-native executable. In Pi, `debug_connect` returns the CLI path. Otherwise use
+native executable. In Pi, call `debug_sessions` first to get the native CLI path,
+even before a run exists; `debug_connect` also returns it. Use that absolute path
+for the commands below, since Git installation does not add a global executable. Otherwise use
 `brote` on PATH (`agentdebugger` and `delve-llm-adapter` remain aliases). Release packages
 include the browser and require no compiler. Delve must be installed separately.
 Never compile the target implicitly.

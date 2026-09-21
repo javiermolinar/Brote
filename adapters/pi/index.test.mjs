@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
+import {mkdtemp,writeFile,readFile,rm,realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -107,6 +107,8 @@ else throw new Error(args[0]);
  assert.doesNotMatch(notifications.at(-1),/aaaaaaaaaa/);
  const listed=await tools.get('debug_sessions').execute('call',{});
  assert.equal(listed.details.sessions.length,1);
+ assert.equal(listed.details.cli,await realpath(cli));
+ assert.match(listed.content[0].text,/Brote CLI:/);
  await assert.rejects(commands.get('debug-stop').handler(''),/Expected debugger session ID/);
  await commands.get('debug-stop').handler('0123456789');
  const calls=(await readFile(log,'utf8')).trim().split('\n').map(JSON.parse);

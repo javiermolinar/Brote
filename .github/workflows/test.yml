@@ -33,4 +33,5 @@ jobs:
       - run: npm run test:packaging
         env:
           AGENTDEBUGGER_RELEASE_DIR: dist/releases
+          AGENTDEBUGGER_TEST_PI: ${{ github.workspace }}/node_modules/.bin/pi
       - run: python3 scripts/package.py --include-vsix --output /tmp/debug-handover.zip

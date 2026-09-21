@@ -4,6 +4,7 @@
 *.test
 .DS_Store
 /node_modules/
+/adapters/pi/runtime/
 /dist/
 *.vsix
 __pycache__/

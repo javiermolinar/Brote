@@ -85,6 +85,10 @@ def package_release(args):
             binary.parent.mkdir()
             run('go', 'build', '-trimpath', '-ldflags', f'-X agentdebugger/internal/cli.Version={version}', '-o', str(binary), './cmd/brote', env={**os.environ, 'GOOS': system, 'GOARCH': arch, 'CGO_ENABLED': '0'})
             runtimes[target] = binary
+            # Pi Git installs fetch only the matching native core; its WebUI is embedded.
+            native = out / f'brote-v{version}-{system}-{arch}'
+            copy_runtime(binary, native)
+            artifacts.append(native)
 
         pi = work / 'pi'
         pi.mkdir()

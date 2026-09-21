@@ -31,6 +31,8 @@ class ReleaseTest(unittest.TestCase):
             self.assertEqual(hashlib.sha256((release / name).read_bytes()).hexdigest(), digest)
         for name in manifest['artifacts']:
             self.assertTrue((release / name).is_file(), name)
+        for item in manifest['platforms']:
+            self.assertIn(f'brote-v{version}-{item.replace("/", "-")}', manifest['artifacts'])
         with tempfile.TemporaryDirectory(prefix='brote-smoke-') as directory:
             root = Path(directory)
             env = {**os.environ, 'HOME': str(root / 'home'), 'DELVE_LLM_ADAPTER_HOME': str(root / 'install'),

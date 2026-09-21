@@ -1,6 +1,15 @@
 #!/bin/sh
 set -eu
 plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+case "$(uname -s)/$(uname -m)" in
+  Darwin/arm64) target=darwin-arm64;;
+  Darwin/x86_64) target=darwin-x64;;
+  Linux/aarch64|Linux/arm64) target=linux-arm64;;
+  Linux/x86_64|Linux/amd64) target=linux-x64;;
+  *) target=unsupported;;
+esac
+native="$plugin_root/adapters/pi/runtime/$target/brote"
+if [ -x "$native" ]; then exec "$native" "$@"; fi
 cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/debug-handover"
 mkdir -p "$cache_root"
 # Cache by source content, avoiding rebuilds of both the helper and target.

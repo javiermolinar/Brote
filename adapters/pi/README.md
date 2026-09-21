@@ -8,14 +8,24 @@ Requires Pi 0.85.1 or later and Node 22+. The release package bundles a native
 core, browser inspector, extension and debugger skill. No Go build is needed.
 A Go target still needs compatible Delve installed separately.
 
-Extract the release tarball and install it with Pi:
+Install directly from GitHub:
 
 ```sh
-pi install /absolute/path/package
+pi install git:github.com/javiermolinar/Brote
+pi update --extensions
 ```
 
-npm distribution will follow later. Do not load this package and the standalone
-installer's Pi adapter simultaneously.
+Pi manages the checkout and updates. Installation downloads the exact-version
+native core for your platform, verifies its checksum, and keeps it in a versioned
+cache outside the checkout. If npm install scripts are disabled, the extension
+prepares the same verified core on first load. No Go compiler is needed. The first GitHub release
+must be published before remote installation works. npm distribution follows later.
+
+To switch from the shell installation, run `brote uninstall --component pi`
+before installing the Git source. Keep only one Brote adapter enabled.
+
+For an offline installation, extract the release's Pi tarball and use
+`pi install /absolute/path/package`. Local-path packages do not fetch updates.
 
 After installing or updating the adapter, run `/reload` in Pi.
 

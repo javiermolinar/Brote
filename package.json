@@ -3,8 +3,18 @@
   "version": "0.4.0",
   "private": true,
   "type": "module",
+  "description": "Brote — your LLM debugger companion",
+  "keywords": ["pi-package", "debugger", "brote"],
+  "engines": {"node": ">=22.19.0"},
+  "repository": {"type": "git", "url": "https://github.com/javiermolinar/Brote.git"},
+  "pi": {
+    "extensions": ["./adapters/pi/git.ts"],
+    "skills": ["./skills"]
+  },
   "scripts": {
-    "test": "node --test packages/web/*.test.mjs packages/vscode/test/*.test.cjs adapters/pi/*.test.mjs packages/client/test/*.test.cjs",
+    "postinstall": "node scripts/install-pi-runtime.mjs --if-production",
+    "setup:pi": "node scripts/install-pi-runtime.mjs",
+    "test": "node --test packages/web/*.test.mjs packages/vscode/test/*.test.cjs adapters/pi/*.test.mjs packages/client/test/*.test.cjs scripts/*.test.mjs",
     "check": "tsc -p packages/web/tsconfig.json && tsc -p packages/vscode/tsconfig.json && tsc -p adapters/pi/tsconfig.json",
     "build": "npm run build:assets && npm run check && npm run build:inspector && npm run build:vscode",
     "build:inspector": "esbuild packages/web/src/app.ts --bundle --minify --target=es2022 --outfile=packages/web/public/app.js --legal-comments=eof",
@@ -17,6 +27,14 @@
   },
   "dependencies": {
     "highlight.js": "11.12.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {"optional": true},
+    "typebox": {"optional": true}
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.85.1",

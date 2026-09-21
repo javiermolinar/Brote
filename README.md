@@ -23,34 +23,25 @@ then ask where to break next. The program stays paused throughout.*
 
 ## Install
 
-Each integration includes the core and browser inspector. Shared Go sessions
+Each integration includes the precompiled core and browser inspector—no clone
+or build needed. Release checksums are verified automatically. Shared Go sessions
 support **macOS and Linux, arm64 and x64**, and require
 [Delve](https://github.com/go-delve/delve).
-
-Run the installer directly from GitHub—no clone or build needed. It selects your
-platform, verifies the release checksum, and installs the core and integration
-together.
 
 The first public release is pending. These commands will work once it is published.
 
 ### Codex
-
 ```sh
 curl -fsSL https://github.com/javiermolinar/Brote/releases/latest/download/install.sh | sh -s -- --agent codex
 ```
-
 ### Pi
-
 ```sh
-curl -fsSL https://github.com/javiermolinar/Brote/releases/latest/download/install.sh | sh -s -- --agent pi
+pi install git:github.com/javiermolinar/Brote
 ```
-
 ### VS Code
-
 ```sh
 curl -fsSL https://github.com/javiermolinar/Brote/releases/latest/download/install.sh | sh -s -- --editor vscode
 ```
-
 Start your normal debugger with **F5**, pause, and choose **Ask Brote About
 Selection**. Pick an available model when prompted; answers appear in native
 comment threads. Use **Continue in Chat** for a longer conversation, or `@brote`
