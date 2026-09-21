@@ -50,6 +50,10 @@ for (const version of [1, 2]) test(`UI preview v${version} preserves API authori
   const page = await get('/');
   assert.equal(page.status, 200);
   if (token) assert.ok(!page.body.includes(token));
+  const mascot = await fetch(origin + '/brote-plant.png');
+  assert.equal(mascot.status, 200);
+  assert.equal(mascot.headers.get('content-type'), 'image/png');
+  assert.deepEqual(Buffer.from(await mascot.arrayBuffer()).subarray(0, 8), Buffer.from([137,80,78,71,13,10,26,10]));
   assert.equal((await get('/app.ts')).status, 404);
   const badHost = await new Promise((resolve, reject) => {
     const req = request(origin + '/', { headers: { Host: 'untrusted.example' } }, response => { response.resume(); resolve(response.statusCode); });

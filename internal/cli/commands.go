@@ -12,45 +12,47 @@ import (
 type obj = map[string]any
 
 func usage() string {
-	return `AgentDebugger — persistent Go / Delve sessions
+	return `Brote — persistent Go / Delve sessions
 
-  agentdebugger start --binary PATH --project DIR [--title TITLE] [--investigation ID] [--no-ui] -- [program args]
-  agentdebugger ui  (persistent investigation workspace)
-  agentdebugger run-again ID  (new run with saved executable and arguments)
-  agentdebugger setup --agent codex|pi [--editor vscode]
-  agentdebugger events ID [--cursor N] [--binding ID]  (JSONL stream)
-  agentdebugger await-control ID [--cursor N] [--timeout 20s]
-  agentdebugger event-status ID --event N --revision N --status acknowledged
-  agentdebugger end-session ID --confirmed  (explicit human termination)
-  agentdebugger comment list SESSION
-  agentdebugger comment reply SESSION THREAD --question ID --binding ID --revision N --body-file PATH --message-id KEY
-  agentdebugger task-authorize ID --human --instruction "Investigate the retries"
-  agentdebugger task-heartbeat|task-complete ID --task TASK_ID
-  agentdebugger task-cancel ID --human
-  agentdebugger sessions
-  agentdebugger history [ID]  (saved sessions or ordered events, works offline)
-  agentdebugger state ID [--goroutine N] [--frame N] [--summary]
-  agentdebugger eval ID --expression EXPR [--goroutine N] [--frame N] [--depth 3] [--count 64]
-  agentdebugger watch|unwatch ID --expression EXPR
-  agentdebugger bind ID --thread UUID
-  agentdebugger bind ID --binding CLIENT_ID --name DISPLAY_NAME
-  agentdebugger installation|repair
-  agentdebugger uninstall --component codex|pi|vscode|core
-  agentdebugger retry-notification ID
-  agentdebugger recover ID
-  agentdebugger cleanup ID
-  agentdebugger doctor [--binary PATH] [--project DIR]
-  agentdebugger break ID --file PATH --line N [--condition EXPR] [--hit-condition '== 3']
-  agentdebugger break ID --function main.process [--condition EXPR]
-  agentdebugger clear ID --breakpoint N
-  agentdebugger continue|next|step|stepout ID [--wait 20s] [--summary]
-  agentdebugger pause ID
-  agentdebugger handover ID [--editor browser|zed|vscode] [--no-open]
-  agentdebugger reclaim ID
-  agentdebugger stop ID
+  brote start --binary PATH --project DIR [--title TITLE] [--investigation ID] [--no-ui] -- [program args]
+  brote ui  (persistent investigation workspace)
+  brote run-again ID  (new run with saved executable and arguments)
+  brote setup --agent codex|pi [--editor vscode]
+  brote events ID [--cursor N] [--binding ID]  (JSONL stream)
+  brote await-control ID [--cursor N] [--timeout 20s]
+  brote event-status ID --event N --revision N --status acknowledged
+  brote end-session ID --confirmed  (explicit human termination)
+  brote comment list SESSION
+  brote comment reply SESSION THREAD --question ID --binding ID --revision N --body-file PATH --message-id KEY
+  brote task-authorize ID --human --instruction "Investigate the retries"
+  brote task-execute ID --task TASK_ID --binding BINDING --operation next [--wait 30s]
+  brote task-heartbeat|task-complete ID --task TASK_ID --binding BINDING
+  brote task-cancel ID --human
+  brote sessions
+  brote history [ID]  (saved sessions or ordered events, works offline)
+  brote state ID [--goroutine N] [--frame N] [--summary]
+  brote eval ID --expression EXPR [--goroutine N] [--frame N] [--depth 3] [--count 64]
+  brote watch|unwatch ID --expression EXPR
+  brote bind ID --thread UUID
+  brote bind ID --binding CLIENT_ID --name DISPLAY_NAME
+  brote installation|repair
+  brote uninstall --component codex|pi|vscode|core
+  brote retry-notification ID
+  brote recover ID
+  brote cleanup ID
+  brote doctor [--binary PATH] [--project DIR]
+  brote break ID --file PATH --line N [--condition EXPR] [--hit-condition '== 3']
+  brote break ID --function main.process [--condition EXPR]
+  brote clear ID --breakpoint N
+  brote continue|next|step|stepout ID [--wait 20s] [--summary]
+  brote pause ID
+  brote handover ID [--editor browser|zed|vscode] [--no-open]
+  brote reclaim ID
+  brote stop ID
 
 All commands print JSON. start never compiles the target. Closing Zed or the panel
-does not stop the program. stop explicitly terminates the owned debug session.`
+does not stop the program. Agent execution requires a human-authorized task;
+--human is for direct human operations. end-session explicitly terminates a run.`
 }
 
 func Run(args []string) (any, error) {
@@ -122,8 +124,11 @@ func Run(args []string) (any, error) {
 		}
 		return session.End(context.Background(), args[1])
 	}
+	if verb == "task-execute" {
+		return taskExecute(args[1:])
+	}
 	if verb == "version" {
-		return obj{"version": Version, "protocol": 2}, nil
+		return obj{"version": Version, "protocol": 2, "capabilities": []string{"executionTasks", "taskDelivery", "taskExecute", "embeddedWebUI"}}, nil
 	}
 	if verb == "events" || verb == "await-control" {
 		return eventsCommand(args[1:], verb == "await-control")
@@ -208,6 +213,7 @@ func Run(args []string) (any, error) {
 		*binding = s.Binding.ID
 	}
 	body := obj{"binding": *binding, "actor": "agent", "name": *name, "note": *note, "event": *event, "status": *delivery, "revision": *revision, "action": verb, "generation": state["generation"], "file": *file, "line": *line, "function": *fn, "condition": *cond, "hitCondition": *hit, "breakpoint": *bp, "open": !*noOpen}
+	body["error"] = *note
 	body["task"], body["instruction"] = *task, *instruction
 	if *humanAction {
 		body["actor"] = "human"

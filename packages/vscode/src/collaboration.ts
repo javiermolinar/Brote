@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { nativeDiscussions } from './native';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import * as os from 'node:os';
+import {resolveRuntime} from '../../client/src/runtime';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
@@ -29,14 +29,14 @@ const errorText = (error: unknown) => error instanceof Error ? error.message : S
 
 export function registerCollaboration(context: vscode.ExtensionContext, host: Host): void {
   const native=nativeDiscussions(context);
-  const controller = vscode.comments.createCommentController('agentdebugger', 'AgentDebugger');
+  const controller = vscode.comments.createCommentController('agentdebugger', 'Brote');
   const threads = new Map<string, vscode.CommentThread>();
   const anchors = new Map<vscode.CommentThread,{session:Session;thread:CommentThread}>();
   let refreshing = false, disposed = false;
   const listeners=new Map<string,AbortController>();
   const binding = `vscode:${context.workspaceState.get<string>('collaborationID') || randomUUID()}`;
   void context.workspaceState.update('collaborationID',binding.slice(7));
-  const cli = () => vscode.workspace.getConfiguration('debugHandover').get<string>('executable') || path.join(os.homedir(),'.local','bin','agentdebugger');
+  const cli = () => resolveRuntime({explicit:vscode.workspace.getConfiguration('debugHandover').get<string>('executable'),bundled:[path.join(context.extensionPath,'bin','brote')]});
   async function session(id?: string): Promise<Session> {
     if(!vscode.workspace.isTrusted) throw new Error('Trust this workspace before debugging.');
     const s=id ? (await host.sessions()).find(item=>item.id===id) : await host.selected();
@@ -88,7 +88,7 @@ export function registerCollaboration(context: vscode.ExtensionContext, host: Ho
     finally {refreshing=false;}
   }
   async function openQuestion(s:Session,t:CommentThread):Promise<void> {
-    const query=`@agentdebugger /answer ${s.id} ${t.id}`;
+    const query=`@brote /answer ${s.id} ${t.id}`;
     try {await vscode.commands.executeCommand('workbench.action.chat.open',{query,isPartialQuery:false});}
     catch {await vscode.env.clipboard.writeText(query);void vscode.window.showInformationMessage('Chat command copied. Paste it into VS Code Chat to answer this question.');}
   }
@@ -103,7 +103,7 @@ export function registerCollaboration(context: vscode.ExtensionContext, host: Ho
     const editor=vscode.window.activeTextEditor;
     if(!editor || editor.document.uri.scheme!=='file') throw new Error('Select a source line first.');
     const s=await session();
-    const body=await vscode.window.showInputBox({title:'Ask AgentDebugger',prompt:'Question about the selected code (read-only)',ignoreFocusOut:true});
+    const body=await vscode.window.showInputBox({title:'Ask Brote',prompt:'Question about the selected code (read-only)',ignoreFocusOut:true});
     if(!body?.trim()) return;
     const sources=await request<{files:string[]}>(s,'/api/sources');
     const canonical=await fs.realpath(editor.document.uri.fsPath);
@@ -130,7 +130,7 @@ export function registerCollaboration(context: vscode.ExtensionContext, host: Ho
       let inside=false;
       for(const folder of vscode.workspace.workspaceFolders||[]) {const root=await fs.realpath(folder.uri.fsPath);if(project===root||project.startsWith(root+path.sep))inside=true;}
       if(!inside) throw new Error('Project must belong to an open workspace folder.');
-      const result=JSON.parse((await run(cli(),['start','--binary',input.binary,'--project',project,'--thread','','--binding',binding,'--name','VS Code Chat','--',...(input.args||[])],{maxBuffer:4*1024*1024})).stdout);
+      const result=JSON.parse((await run(await cli(),['start','--binary',input.binary,'--project',project,'--thread','','--binding',binding,'--name','VS Code Chat','--',...(input.args||[])],{maxBuffer:4*1024*1024})).stdout);
       await host.attach(result.id);return result;
     }
     const s=await session(input.session);
@@ -220,7 +220,7 @@ export function registerCollaboration(context: vscode.ExtensionContext, host: Ho
         await request(s,'/api/comments',{action:'reply',...delivery,messageId:`${delivery.question}-vscode-answer`,body});
         await refresh();return;
       }
-      const messages=[vscode.LanguageModelChatMessage.User('You are AgentDebugger inside VS Code. Use debugger tools for evidence. Launch only existing precompiled binaries; never compile implicitly. Execute only when the user asks to run or step. Questions about values are read-only. Never infer success from a failed tool. Tool execution stops after 30 seconds if no breakpoint is reached.')];
+      const messages=[vscode.LanguageModelChatMessage.User('You are Brote inside VS Code. Use debugger tools for evidence. Launch only existing precompiled binaries; never compile implicitly. Execute only when the user asks to run or step. Questions about values are read-only. Never infer success from a failed tool. Tool execution stops after 30 seconds if no breakpoint is reached.')];
       for(const turn of chatContext.history){if(turn instanceof vscode.ChatRequestTurn)messages.push(vscode.LanguageModelChatMessage.User(turn.prompt));else if(turn instanceof vscode.ChatResponseTurn)messages.push(vscode.LanguageModelChatMessage.Assistant(turn.response.filter(p=>p instanceof vscode.ChatResponseMarkdownPart).map(p=>(p as vscode.ChatResponseMarkdownPart).value.value).join('')));}
       const previousDiscussion=[...chatContext.history].reverse().find(turn=>turn instanceof vscode.ChatResponseTurn && turn.result.metadata?.nativeDiscussion);
       if(previousDiscussion instanceof vscode.ChatResponseTurn){
@@ -245,7 +245,7 @@ export function registerCollaboration(context: vscode.ExtensionContext, host: Ho
       stream.markdown('\nReached the tool-call limit. Ask a follow-up to continue.');
     } catch(error){host.log.appendLine(errorText(error));stream.markdown(`\n${errorText(error)}`);}
   });
-  participant.iconPath=new vscode.ThemeIcon('debug');
+  participant.iconPath=vscode.Uri.file(path.join(context.extensionPath,'assets','brote-plant.png'));
   const command=(name:string,handler:(...args:any[])=>Promise<void>)=>vscode.commands.registerCommand(name,async(...args:any[])=>{try{await handler(...args);}catch(error){void vscode.window.showErrorMessage(errorText(error));}});
   context.subscriptions.push(controller,participant,
     command('debugHandover.ask',ask),

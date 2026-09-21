@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 interface Evidence {session:string;name:string;type:string;capturedAt:string;thread:number;frame:unknown;stack:unknown[];scopes:unknown[]}
@@ -7,7 +8,7 @@ interface Discussion {turns?:Turn[];contextNote?:string;id:string;file:string;li
 
 /** Read-only conversations for sessions whose lifecycle belongs to VS Code. */
 export function nativeDiscussions(context:vscode.ExtensionContext) {
-  const controller=vscode.comments.createCommentController('agentdebugger.native','AgentDebugger');
+  const controller=vscode.comments.createCommentController('agentdebugger.native','Brote');
   const records=context.workspaceState.get<Discussion[]>('nativeDiscussions',[]);
   const answering=new Set<string>();
   const partial=new Map<string,string>();
@@ -27,10 +28,10 @@ export function nativeDiscussions(context:vscode.ExtensionContext) {
     const turns:Turn[]=[...(d.turns||[]),{question:d.question,answer:d.answer,evidence:d.evidence,contextNote:d.contextNote}];
     view.comments=turns.flatMap(turn=>[
       {body:new vscode.MarkdownString(turn.question+(turn.contextNote?`\n\n_${turn.contextNote}_`:'')),mode:vscode.CommentMode.Preview,author:{name:'You'}},
-      ...(turn.answer?[{body:new vscode.MarkdownString(turn.answer),mode:vscode.CommentMode.Preview,author:{name:'AgentDebugger'}}]:[]),
+      ...(turn.answer?[{body:new vscode.MarkdownString(turn.answer),mode:vscode.CommentMode.Preview,author:{name:'Brote',iconPath:vscode.Uri.file(path.join(context.extensionPath,'assets','brote-plant.png'))}}]:[]),
     ]);
     const streaming=partial.get(d.id);
-    if(streaming)view.comments=[...view.comments,{body:new vscode.MarkdownString(streaming),mode:vscode.CommentMode.Preview,author:{name:'AgentDebugger'}}];
+    if(streaming)view.comments=[...view.comments,{body:new vscode.MarkdownString(streaming),mode:vscode.CommentMode.Preview,author:{name:'Brote',iconPath:vscode.Uri.file(path.join(context.extensionPath,'assets','brote-plant.png'))}}];
     view.label=`${d.evidence.name} · ${d.resolved?'Resolved':d.status}`;
     view.contextValue=d.resolved?'agentdebugger.nativeResolved':answering.has(d.id)?'agentdebugger.nativeBusy':'agentdebugger.native';
     // Keep VS Code's reply editor alive while its submit command clears the input.
@@ -153,7 +154,7 @@ export function nativeDiscussions(context:vscode.ExtensionContext) {
     reply.thread.collapsibleState=vscode.CommentThreadCollapsibleState.Expanded;
     // VS Code clears its reply input when this command returns. Do not keep the
     // UI submission pending for the entire model stream.
-    void inlineAnswer(record,model).catch(error=>{void vscode.window.showErrorMessage(`AgentDebugger: ${String(error)}`);});
+    void inlineAnswer(record,model).catch(error=>{void vscode.window.showErrorMessage(`Brote: ${String(error)}`);});
   }
 
   async function answer(id:string,model:vscode.LanguageModelChat,stream:Pick<vscode.ChatResponseStream,'markdown'>,token:vscode.CancellationToken){
@@ -179,7 +180,7 @@ export function nativeDiscussions(context:vscode.ExtensionContext) {
     vscode.commands.registerCommand('debugHandover.nativeChat',async(view:vscode.CommentThread)=>{
       const record=records.find(record=>views.get(record.id)===view);
       if(!record)return;
-      const query=`@agentdebugger /discuss ${record.id}`;
+      const query=`@brote /discuss ${record.id}`;
       await vscode.commands.executeCommand('workbench.action.chat.open',{query,isPartialQuery:false});
     }),
     vscode.commands.registerCommand('debugHandover.nativeCancel',(view:vscode.CommentThread)=>{const id=[...views].find(([,v])=>v===view)?.[0];if(id)cancellations.get(id)?.cancel();}),

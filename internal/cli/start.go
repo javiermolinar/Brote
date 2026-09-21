@@ -68,7 +68,7 @@ func start(args []string) (result obj, err error) {
 		delve, e = exec.LookPath(filepath.Join(home, "go", "bin", "dlv"))
 	}
 	if e != nil {
-		return nil, e
+		return nil, fmt.Errorf("Delve not found: install dlv for your Go version or pass --dlv /absolute/path/dlv; run agentdebugger doctor for diagnostics: %w", e)
 	}
 	id := session.NewID(5)
 	if *investigation != "" {

@@ -166,3 +166,38 @@ func TestTaskBindingExpiryCompletionAndDisconnect(t *testing.T) {
 	}
 	t.Fatal("disconnected agent retained grant")
 }
+
+func TestTaskDeliveryClaimsAndAcknowledgement(t *testing.T) {
+	b, _ := coordinationFixture(t)
+	call := func(a obj) (obj, error) { a["generation"] = b.generation; return b.action(a) }
+	result, err := call(obj{"action": "task-authorize", "actor": "human", "instruction": "inspect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := result["task"].(session.ExecutionTask)
+	delivery := func(status string) error {
+		_, err := call(obj{"action": "task-delivery", "binding": "pi", "revision": 1, "task": task.ID, "status": status})
+		return err
+	}
+	if err = delivery("sending"); err != nil {
+		t.Fatal(err)
+	}
+	if err = delivery("sending"); err == nil {
+		t.Fatal("duplicate delivery claim")
+	}
+	if _, err = call(obj{"action": "task-heartbeat", "binding": "pi", "task": task.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err = delivery("queued"); err != nil {
+		t.Fatal(err)
+	}
+	if b.s.Task.Delivery != "acknowledged" {
+		t.Fatal("queue completion overwrote agent acknowledgement")
+	}
+	if _, err = call(obj{"action": "task-cancel", "actor": "human", "task": task.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err = delivery("sending"); err == nil {
+		t.Fatal("cancelled task delivered")
+	}
+}

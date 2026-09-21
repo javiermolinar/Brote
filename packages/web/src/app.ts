@@ -251,14 +251,14 @@ message('historicalNotice',state.historical?(state.snapshotUnavailable||!state.s
   $('session').textContent = `${state.id} · PID ${lastPid || '—'} · ${basename(state.project)}`;
   const task = state.task;
   const activeTask = task?.status === 'authorized' || task?.status === 'active';
-  $('agentStatus').textContent = state.historical?'Agent · Historical discussion':activeTask ? `${agentName} · ${task.status === 'authorized' ? 'Awaiting agent' : 'Debugging'}`
+  $('agentStatus').textContent = state.historical?'Agent · Historical discussion':activeTask ? `${agentName} · ${['failed','unknown'].includes(task.delivery||'') ? 'Delivery needs attention' : task.status === 'authorized' && task.delivery !== 'acknowledged' ? 'Awaiting agent' : 'Debugging'}`
     : comments.answering() ? `${agentName} · Answering` : `${agentName} · ${state.agentConnected === true ? 'Connected' : state.agentConnected === false ? 'Offline' : 'Not reported'}`;
   $<HTMLButtonElement>('stopAgent').hidden = !activeTask;
   $<HTMLButtonElement>('stopAgent').disabled = busy;
   $('connection').textContent = state.editorConnected ? 'Editor connected to this process. Debugger controls are shared.' : 'Debugger controls are shared. Agent execution requires an authorized task.';
   $<HTMLButtonElement>('authorizeTask').disabled = busy || !paused || readOnly || activeTask || !state.capabilities?.executionTasks;
   $<HTMLTextAreaElement>('taskInstruction').disabled = busy || activeTask;
-  message('taskStatus', state.historical?'':task ? `${task.instruction} · ${task.status}${task.reason ? ': ' + task.reason : ''}`
+  message('taskStatus', state.historical?'':task ? `${task.instruction} · ${task.status}${task.reason ? ': ' + task.reason : ''}${task.deliveryError ? ' · '+task.deliveryError : ''}`
     : state.capabilities?.executionTasks ? '' : 'Execution tasks require an updated broker.');
   document.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(button => {
     button.disabled = readOnly || busy || (button.dataset.action === 'pause' ? state.status !== 'running' : !paused) || (!!state.beforeGoStart && ['next','step','stepout'].includes(button.dataset.action || ''));

@@ -65,7 +65,7 @@ export interface Snapshot {
   capabilities?: {comments?: boolean; replyContexts?:boolean; executionTasks?: boolean};
   agentConnected?: boolean;
   beforeGoStart?: boolean;
-  task?: {id:string;instruction:string;status:'authorized'|'active'|'completed'|'cancelled';reason?:string;expires:string};
+  task?: {delivery?:string;deliveryError?:string;id:string;instruction:string;status:'authorized'|'active'|'completed'|'cancelled';reason?:string;expires:string};
 }
 
 export interface Evaluation { expression: string; value?: Variable; error?: string; generation?: number; goroutine?: number; frame?: number }

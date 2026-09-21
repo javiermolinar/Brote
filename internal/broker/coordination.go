@@ -69,13 +69,38 @@ func (b *broker) coordinate(a obj) (obj, error) {
 		if b.s.Binding == nil {
 			return nil, fmt.Errorf("bind an agent first")
 		}
-		b.s.Task = &session.ExecutionTask{ID: session.NewID(16), Instruction: instruction, Status: "authorized", Binding: copyBinding(b.s.Binding), Expires: time.Now().Add(taskLease).UTC().Format(time.RFC3339Nano)}
+		b.s.Task = &session.ExecutionTask{ID: session.NewID(16), Instruction: instruction, Status: "authorized", Delivery: "pending", Binding: copyBinding(b.s.Binding), Expires: time.Now().Add(taskLease).UTC().Format(time.RFC3339Nano)}
 		b.generation++
 		if err := b.emit("task.authorized", b.s.Task.ID); err != nil {
 			b.s.Task = nil
 			return nil, err
 		}
 		b.record("task.authorized", "human", b.s.Task)
+	case "task-delivery":
+		if err := b.taskValid(a); err != nil {
+			return nil, err
+		}
+		if uint64(num(a["revision"])) != b.s.Binding.Revision {
+			return nil, fmt.Errorf("task binding revision changed")
+		}
+		t := b.s.Task
+		status := str(a["status"])
+		if t.Delivery == "acknowledged" && (status == "queued" || status == "unknown" || status == "failed") {
+			return obj{"task": b.taskView()}, nil
+		}
+		allowed := (status == "sending" && t.Delivery == "pending") || ((status == "queued" || status == "failed" || status == "unknown") && t.Delivery == "sending")
+		if !allowed {
+			return nil, fmt.Errorf("invalid task delivery transition %s -> %s", t.Delivery, status)
+		}
+		previous, previousError := t.Delivery, t.DeliveryError
+		t.Delivery, t.DeliveryError = status, str(a["error"])
+		if len(t.DeliveryError) > 1024 {
+			t.DeliveryError = t.DeliveryError[:1024]
+		}
+		if err := b.persist(); err != nil {
+			t.Delivery, t.DeliveryError = previous, previousError
+			return nil, err
+		}
 	case "task-cancel":
 		if id := str(a["task"]); id != "" && (b.s.Task == nil || b.s.Task.ID != id) {
 			return nil, fmt.Errorf("execution task changed")
@@ -108,6 +133,8 @@ func (b *broker) coordinate(a obj) (obj, error) {
 				return nil, err
 			}
 		} else {
+			b.s.Task.Delivery = "acknowledged"
+			b.s.Task.DeliveryError = ""
 			b.s.Task.Expires = time.Now().Add(taskLease).UTC().Format(time.RFC3339Nano)
 			if err := b.persist(); err != nil {
 				return nil, err

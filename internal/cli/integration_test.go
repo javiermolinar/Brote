@@ -224,8 +224,16 @@ func testRoundTrip(t *testing.T, worker bool) {
 	functionBP := action("break", obj{"function": "main.process"})
 	action("clear", obj{"breakpoint": asObj(functionBP["Breakpoint"])["id"]})
 	action("break", obj{"file": "main.go", "line": line, "condition": "attempt == 3", "hitCondition": "== 1"})
-	action("continue", nil)
+	grant := action("task-authorize", obj{"actor": "human", "instruction": "Integration: stop at the conditional breakpoint"})
+	taskID := str(asObj(grant["task"])["id"])
+	if output, err := exec.Command(helper, "task-execute", s.ID, "--task", taskID, "--binding", s.Binding.ID, "--operation", "continue", "--wait", "10s").CombinedOutput(); err != nil {
+		t.Fatalf("bounded task execution: %s: %v", output, err)
+	}
 	paused := waitPause()
+	if str(asObj(paused["task"])["delivery"]) != "acknowledged" {
+		t.Fatal("bounded execution did not acknowledge task")
+	}
+
 	pid := num(asObj(paused["state"])["Pid"])
 	gid := num(asObj(asObj(paused["state"])["currentGoroutine"])["id"])
 	if worker && gid == 1 {
@@ -348,7 +356,7 @@ func testRoundTrip(t *testing.T, worker bool) {
 	}
 	queueLog := filepath.Join(dir, "queue.log")
 	t.Setenv("DH_QUEUE_LOG", queueLog)
-	if e = os.WriteFile(filepath.Join(stubDir, "codex"), []byte("#!/bin/sh\nif [ \"$2\" = --help ]; then echo --thread; exit 0; fi\nprintf '%s\\n' \"$*\" >> \"$DH_QUEUE_LOG\"\n"), 0700); e != nil {
+	if e = os.WriteFile(filepath.Join(stubDir, "codex"), []byte("#!/bin/sh\nif [ \"$2\" = --help ]; then echo --thread --message; exit 0; fi\nprintf '%s\\n' \"$*\" >> \"$DH_QUEUE_LOG\"\n"), 0700); e != nil {
 		t.Fatal(e)
 	}
 	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -401,6 +409,20 @@ func testRoundTrip(t *testing.T, worker bool) {
 		t.Fatal("bridge did not deliver session event")
 	}
 	check(state(), stepLine, "42")
+	taskGrant := action("task-authorize", obj{"actor": "human", "instruction": "Inspect the current pause without stepping"})
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if str(asObj(state()["task"])["delivery"]) == "queued" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Codex bridge did not queue authorized task")
+		}
+	}
+	queued, _ = os.ReadFile(queueLog)
+	if !strings.Contains(string(queued), "task-execute") {
+		t.Fatal("missing scoped task instructions")
+	}
+	action("task-cancel", obj{"actor": "human", "task": asObj(taskGrant["task"])["id"]})
 	// Restore the previous preferred editor for the remaining recovery checks.
 	action("handover", obj{"editor": editor, "open": false})
 	action("reclaim", nil)

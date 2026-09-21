@@ -104,10 +104,12 @@ type Event struct {
 
 // ExecutionTask is a cooperative authorization grant, not an authentication token.
 type ExecutionTask struct {
-	ID          string   `json:"id"`
-	Instruction string   `json:"instruction"`
-	Status      string   `json:"status"`
-	Reason      string   `json:"reason,omitempty"`
-	Binding     *Binding `json:"binding"`
-	Expires     string   `json:"expires"`
+	Delivery      string   `json:"delivery,omitempty"`
+	DeliveryError string   `json:"deliveryError,omitempty"`
+	ID            string   `json:"id"`
+	Instruction   string   `json:"instruction"`
+	Status        string   `json:"status"`
+	Reason        string   `json:"reason,omitempty"`
+	Binding       *Binding `json:"binding"`
+	Expires       string   `json:"expires"`
 }

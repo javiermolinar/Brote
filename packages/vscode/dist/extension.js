@@ -40,9 +40,10 @@ var vscode2 = __toESM(require("vscode"));
 
 // packages/vscode/src/native.ts
 var vscode = __toESM(require("vscode"));
+var path = __toESM(require("node:path"));
 var import_node_crypto = require("node:crypto");
 function nativeDiscussions(context) {
-  const controller = vscode.comments.createCommentController("agentdebugger.native", "AgentDebugger");
+  const controller = vscode.comments.createCommentController("agentdebugger.native", "Brote");
   const records = context.workspaceState.get("nativeDiscussions", []);
   const answering = /* @__PURE__ */ new Set();
   const partial = /* @__PURE__ */ new Map();
@@ -70,10 +71,10 @@ function nativeDiscussions(context) {
       { body: new vscode.MarkdownString(turn.question + (turn.contextNote ? `
 
 _${turn.contextNote}_` : "")), mode: vscode.CommentMode.Preview, author: { name: "You" } },
-      ...turn.answer ? [{ body: new vscode.MarkdownString(turn.answer), mode: vscode.CommentMode.Preview, author: { name: "AgentDebugger" } }] : []
+      ...turn.answer ? [{ body: new vscode.MarkdownString(turn.answer), mode: vscode.CommentMode.Preview, author: { name: "Brote", iconPath: vscode.Uri.file(path.join(context.extensionPath, "assets", "brote-plant.png")) } }] : []
     ]);
     const streaming = partial.get(d.id);
-    if (streaming) view.comments = [...view.comments, { body: new vscode.MarkdownString(streaming), mode: vscode.CommentMode.Preview, author: { name: "AgentDebugger" } }];
+    if (streaming) view.comments = [...view.comments, { body: new vscode.MarkdownString(streaming), mode: vscode.CommentMode.Preview, author: { name: "Brote", iconPath: vscode.Uri.file(path.join(context.extensionPath, "assets", "brote-plant.png")) } }];
     view.label = `${d.evidence.name} \xB7 ${d.resolved ? "Resolved" : d.status}`;
     view.contextValue = d.resolved ? "agentdebugger.nativeResolved" : answering.has(d.id) ? "agentdebugger.nativeBusy" : "agentdebugger.native";
     view.canReply = !d.resolved;
@@ -232,7 +233,7 @@ Captured: ${record.evidence.capturedAt}`;
     render(record);
     reply.thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
     void inlineAnswer(record, model).catch((error) => {
-      void vscode.window.showErrorMessage(`AgentDebugger: ${String(error)}`);
+      void vscode.window.showErrorMessage(`Brote: ${String(error)}`);
     });
   }
   async function answer(id, model, stream, token) {
@@ -291,7 +292,7 @@ Captured: ${record.evidence.capturedAt}`;
     vscode.commands.registerCommand("debugHandover.nativeChat", async (view) => {
       const record = records.find((record2) => views.get(record2.id) === view);
       if (!record) return;
-      const query = `@agentdebugger /discuss ${record.id}`;
+      const query = `@brote /discuss ${record.id}`;
       await vscode.commands.executeCommand("workbench.action.chat.open", { query, isPartialQuery: false });
     }),
     vscode.commands.registerCommand("debugHandover.nativeCancel", (view) => {
@@ -327,10 +328,42 @@ Captured: ${record.evidence.capturedAt}`;
 
 // packages/vscode/src/collaboration.ts
 var fs = __toESM(require("node:fs/promises"));
-var path2 = __toESM(require("node:path"));
-var os2 = __toESM(require("node:os"));
+var path4 = __toESM(require("node:path"));
+
+// packages/client/src/runtime.ts
 var import_node_child_process = require("node:child_process");
 var import_node_util = require("node:util");
+var import_promises = require("node:fs/promises");
+var import_node_fs = require("node:fs");
+var os = __toESM(require("node:os"));
+var path2 = __toESM(require("node:path"));
+var run = (0, import_node_util.promisify)(import_node_child_process.execFile);
+async function resolveRuntime(options = {}) {
+  const explicit = options.explicit || process.env.BROTE_BIN || process.env.AGENTDEBUGGER_BIN || process.env.DELVE_LLM_ADAPTER_BIN;
+  const candidates = explicit ? [explicit] : [
+    ...options.bundled || [],
+    ...options.installed || [path2.join(os.homedir(), ".local", "bin", "brote"), path2.join(os.homedir(), ".local", "bin", "agentdebugger"), path2.join(os.homedir(), ".local", "bin", "delve-llm-adapter")]
+  ];
+  const failures = [];
+  for (const candidate of candidates) {
+    try {
+      if (!path2.isAbsolute(candidate)) throw new Error("runtime path must be absolute");
+      await (0, import_promises.access)(candidate, import_node_fs.constants.X_OK);
+      const executable = await (0, import_promises.realpath)(candidate);
+      const info = JSON.parse((await run(executable, ["version"], { timeout: 5e3, maxBuffer: 65536 })).stdout);
+      if (info.protocol !== 2 || !["executionTasks", "taskDelivery", "taskExecute", "embeddedWebUI"].every((c) => info.capabilities?.includes(c))) throw new Error("incompatible Brote core; update this integration or configured executable");
+      return executable;
+    } catch (error) {
+      failures.push(`${candidate}: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+  throw new Error(`Brote core unavailable on ${process.platform}/${process.arch}. Install the matching release or set BROTE_BIN.
+${failures.join("\n")}`);
+}
+
+// packages/vscode/src/collaboration.ts
+var import_node_child_process2 = require("node:child_process");
+var import_node_util2 = require("node:util");
 var import_node_crypto2 = require("node:crypto");
 
 // packages/client/src/index.ts
@@ -419,12 +452,12 @@ async function* readEvents(options, cursor = 0, signal) {
 }
 
 // packages/vscode/src/protocol.ts
-var path = __toESM(require("node:path"));
-var os = __toESM(require("node:os"));
+var path3 = __toESM(require("node:path"));
+var os2 = __toESM(require("node:os"));
 function sessionDirectory() {
   if (process.env.DEBUG_HANDOVER_HOME) return process.env.DEBUG_HANDOVER_HOME;
-  const cache = process.platform === "darwin" ? path.join(os.homedir(), "Library", "Caches") : process.platform === "win32" ? process.env.LocalAppData || path.join(os.homedir(), "AppData", "Local") : process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache");
-  return path.join(cache, "debug-handover", "sessions");
+  const cache = process.platform === "darwin" ? path3.join(os2.homedir(), "Library", "Caches") : process.platform === "win32" ? process.env.LocalAppData || path3.join(os2.homedir(), "AppData", "Local") : process.env.XDG_CACHE_HOME || path3.join(os2.homedir(), ".cache");
+  return path3.join(cache, "debug-handover", "sessions");
 }
 function validID(id) {
   return /^[a-f0-9]{10}$/.test(id);
@@ -437,7 +470,7 @@ function loopbackPort(endpoint) {
 }
 function validateSession(value, id) {
   const s = value;
-  if (!s || s.version !== void 0 && s.version > 2 || !validID(id) || s.id !== id || typeof s.project !== "string" || !path.isAbsolute(s.project) || !/^http:\/\/127\.0\.0\.1:\d+$/.test(s.http) || s.version !== 2 && !/^[a-f0-9]{64}$/.test(s.token || "")) {
+  if (!s || s.version !== void 0 && s.version > 2 || !validID(id) || s.id !== id || typeof s.project !== "string" || !path3.isAbsolute(s.project) || !/^http:\/\/127\.0\.0\.1:\d+$/.test(s.http) || s.version !== 2 && !/^[a-f0-9]{64}$/.test(s.token || "")) {
     throw new Error("Invalid local session descriptor");
   }
   loopbackPort(s.http.slice(7));
@@ -454,18 +487,18 @@ async function request(s, route, body, signal) {
 // packages/vscode/src/collaboration.ts
 var executing = /* @__PURE__ */ new Set(["continue", "next", "step", "stepout"]);
 var toolName = "agentdebugger_debug";
-var run = (0, import_node_util.promisify)(import_node_child_process.execFile);
+var run2 = (0, import_node_util2.promisify)(import_node_child_process2.execFile);
 var errorText = (error) => error instanceof Error ? error.message : String(error);
 function registerCollaboration(context, host) {
   const native = nativeDiscussions(context);
-  const controller = vscode2.comments.createCommentController("agentdebugger", "AgentDebugger");
+  const controller = vscode2.comments.createCommentController("agentdebugger", "Brote");
   const threads = /* @__PURE__ */ new Map();
   const anchors = /* @__PURE__ */ new Map();
   let refreshing = false, disposed = false;
   const listeners = /* @__PURE__ */ new Map();
   const binding = `vscode:${context.workspaceState.get("collaborationID") || (0, import_node_crypto2.randomUUID)()}`;
   void context.workspaceState.update("collaborationID", binding.slice(7));
-  const cli = () => vscode2.workspace.getConfiguration("debugHandover").get("executable") || path2.join(os2.homedir(), ".local", "bin", "agentdebugger");
+  const cli = () => resolveRuntime({ explicit: vscode2.workspace.getConfiguration("debugHandover").get("executable"), bundled: [path4.join(context.extensionPath, "bin", "brote")] });
   async function session(id) {
     if (!vscode2.workspace.isTrusted) throw new Error("Trust this workspace before debugging.");
     const s = id ? (await host.sessions()).find((item) => item.id === id) : await host.selected();
@@ -536,7 +569,7 @@ function registerCollaboration(context, host) {
     }
   }
   async function openQuestion(s, t) {
-    const query = `@agentdebugger /answer ${s.id} ${t.id}`;
+    const query = `@brote /answer ${s.id} ${t.id}`;
     try {
       await vscode2.commands.executeCommand("workbench.action.chat.open", { query, isPartialQuery: false });
     } catch {
@@ -558,7 +591,7 @@ function registerCollaboration(context, host) {
     const editor = vscode2.window.activeTextEditor;
     if (!editor || editor.document.uri.scheme !== "file") throw new Error("Select a source line first.");
     const s = await session();
-    const body = await vscode2.window.showInputBox({ title: "Ask AgentDebugger", prompt: "Question about the selected code (read-only)", ignoreFocusOut: true });
+    const body = await vscode2.window.showInputBox({ title: "Ask Brote", prompt: "Question about the selected code (read-only)", ignoreFocusOut: true });
     if (!body?.trim()) return;
     const sources = await request(s, "/api/sources");
     const canonical = await fs.realpath(editor.document.uri.fsPath);
@@ -589,15 +622,15 @@ function registerCollaboration(context, host) {
       throw new Error("For a VS Code-owned session, use native debugger controls for execution and breakpoints. Chat inspection is read-only.");
     }
     if (input.operation === "launch") {
-      if (!input.binary || !path2.isAbsolute(input.binary) || !input.project || !path2.isAbsolute(input.project)) throw new Error("Provide absolute paths to an existing binary and project. This tool never compiles.");
+      if (!input.binary || !path4.isAbsolute(input.binary) || !input.project || !path4.isAbsolute(input.project)) throw new Error("Provide absolute paths to an existing binary and project. This tool never compiles.");
       const project = await fs.realpath(input.project);
       let inside = false;
       for (const folder of vscode2.workspace.workspaceFolders || []) {
         const root = await fs.realpath(folder.uri.fsPath);
-        if (project === root || project.startsWith(root + path2.sep)) inside = true;
+        if (project === root || project.startsWith(root + path4.sep)) inside = true;
       }
       if (!inside) throw new Error("Project must belong to an open workspace folder.");
-      const result = JSON.parse((await run(cli(), ["start", "--binary", input.binary, "--project", project, "--thread", "", "--binding", binding, "--name", "VS Code Chat", "--", ...input.args || []], { maxBuffer: 4 * 1024 * 1024 })).stdout);
+      const result = JSON.parse((await run2(await cli(), ["start", "--binary", input.binary, "--project", project, "--thread", "", "--binding", binding, "--name", "VS Code Chat", "--", ...input.args || []], { maxBuffer: 4 * 1024 * 1024 })).stdout);
       await host.attach(result.id);
       return result;
     }
@@ -726,7 +759,7 @@ ${JSON.stringify(options.input, null, 2)}
         await refresh();
         return;
       }
-      const messages = [vscode2.LanguageModelChatMessage.User("You are AgentDebugger inside VS Code. Use debugger tools for evidence. Launch only existing precompiled binaries; never compile implicitly. Execute only when the user asks to run or step. Questions about values are read-only. Never infer success from a failed tool. Tool execution stops after 30 seconds if no breakpoint is reached.")];
+      const messages = [vscode2.LanguageModelChatMessage.User("You are Brote inside VS Code. Use debugger tools for evidence. Launch only existing precompiled binaries; never compile implicitly. Execute only when the user asks to run or step. Questions about values are read-only. Never infer success from a failed tool. Tool execution stops after 30 seconds if no breakpoint is reached.")];
       for (const turn of chatContext.history) {
         if (turn instanceof vscode2.ChatRequestTurn) messages.push(vscode2.LanguageModelChatMessage.User(turn.prompt));
         else if (turn instanceof vscode2.ChatResponseTurn) messages.push(vscode2.LanguageModelChatMessage.Assistant(turn.response.filter((p) => p instanceof vscode2.ChatResponseMarkdownPart).map((p) => p.value.value).join("")));
@@ -766,7 +799,7 @@ ${JSON.stringify(options.input, null, 2)}
 ${errorText(error)}`);
     }
   });
-  participant.iconPath = new vscode2.ThemeIcon("debug");
+  participant.iconPath = vscode2.Uri.file(path4.join(context.extensionPath, "assets", "brote-plant.png"));
   const command = (name, handler) => vscode2.commands.registerCommand(name, async (...args) => {
     try {
       await handler(...args);
@@ -811,9 +844,9 @@ ${errorText(error)}`);
 
 // packages/vscode/src/extension.ts
 var fs2 = __toESM(require("node:fs/promises"));
-var path3 = __toESM(require("node:path"));
+var path5 = __toESM(require("node:path"));
 function activate(context) {
-  const log = vscode3.window.createOutputChannel("AgentDebugger");
+  const log = vscode3.window.createOutputChannel("Brote");
   const status = vscode3.window.createStatusBarItem(vscode3.StatusBarAlignment.Left, 20);
   status.command = "debugHandover.ask";
   const descriptors = /* @__PURE__ */ new Map();
@@ -830,7 +863,7 @@ function activate(context) {
     if (!vscode3.workspace.isTrusted) return void 0;
     const project = await fs2.realpath(s.project);
     for (const folder of vscode3.workspace.workspaceFolders || []) {
-      if (folder.uri.scheme === "file" && (project === await fs2.realpath(folder.uri.fsPath) || project.startsWith(await fs2.realpath(folder.uri.fsPath) + path3.sep))) return folder;
+      if (folder.uri.scheme === "file" && (project === await fs2.realpath(folder.uri.fsPath) || project.startsWith(await fs2.realpath(folder.uri.fsPath) + path5.sep))) return folder;
     }
     return void 0;
   }
@@ -839,7 +872,7 @@ function activate(context) {
       status.hide();
       return;
     }
-    status.text = "$(comment-discussion) Ask AgentDebugger";
+    status.text = "$(comment-discussion) Ask Brote";
     status.tooltip = "Ask about the selected source line in VS Code Chat";
     status.show();
   }
@@ -850,7 +883,7 @@ function activate(context) {
     try {
       const started = await vscode3.debug.startDebugging(folder, {
         type: "debug-handover",
-        name: `AgentDebugger \xB7 ${s.id}`,
+        name: `Brote \xB7 ${s.id}`,
         request: "attach",
         handoverSession: s.id,
         handoverId: state.handoverId,
@@ -863,7 +896,7 @@ function activate(context) {
       log.appendLine(`Attached to session ${s.id}`);
     } catch (error) {
       log.appendLine(`Attach ${s.id}: ${message(error)}`);
-      void vscode3.window.showErrorMessage(`AgentDebugger: ${message(error)}`);
+      void vscode3.window.showErrorMessage(`Brote: ${message(error)}`);
       try {
         const fresh = await request(s, "/api/state?brief=1");
         await request(s, "/api/action", {
@@ -890,7 +923,7 @@ function activate(context) {
       for (const id of entries.filter(validID)) {
         if (disposed) return;
         try {
-          const s = validateSession(JSON.parse(await fs2.readFile(path3.join(root, id, "session.json"), "utf8")), id);
+          const s = validateSession(JSON.parse(await fs2.readFile(path5.join(root, id, "session.json"), "utf8")), id);
           if (s.stopped) continue;
           const folder = await folderFor(s);
           if (!folder) continue;
@@ -995,7 +1028,7 @@ function activate(context) {
         void vscode3.window.showInformationMessage(state.binding ? `Control returned to ${state.binding.name}; handback event published.` : state.thread ? "Control returned to Codex; task notification requested." : "Control returned. No notification integration is bound.");
         await scan();
       } catch (error) {
-        void vscode3.window.showErrorMessage(`AgentDebugger: ${message(error)}`);
+        void vscode3.window.showErrorMessage(`Brote: ${message(error)}`);
       }
     }),
     vscode3.commands.registerCommand("debugHandover.inspector", async () => {

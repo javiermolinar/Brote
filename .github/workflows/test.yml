@@ -1,4 +1,4 @@
-name: Verify Debug Handover
+name: Verify Brote
 on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
@@ -23,11 +23,14 @@ jobs:
       - run: npm ci
       - run: npm run build && npm test
       - run: git diff --exit-code -- packages/web/public/app.js packages/vscode/dist/extension.js packages/vscode/dist/protocol.cjs
-      - run: python3 scripts/test_install.py
+      - run: npm run test:packaging
       - run: go vet ./...
       - run: go test -race -v ./...
         env:
           DH_INTEGRATION: '1'
           CODEX_THREAD_ID: ''
       - run: npm run package:vscode
+      - run: npm run test:packaging
+        env:
+          AGENTDEBUGGER_RELEASE_DIR: dist/releases
       - run: python3 scripts/package.py --include-vsix --output /tmp/debug-handover.zip

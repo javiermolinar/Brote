@@ -34,6 +34,13 @@ func TestHTTPBoundary(t *testing.T) {
 	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "secret") {
 		t.Fatal("page missing or contains token")
 	}
+	// Assets referenced by the embedded page must also pass the static allowlist.
+	r = httptest.NewRequest("GET", b.s.HTTP+"/brote-plant.png", nil)
+	w = httptest.NewRecorder()
+	b.handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "image/png" || !strings.HasPrefix(w.Body.String(), "\x89PNG\r\n\x1a\n") {
+		t.Fatal("embedded mascot unavailable or incorrectly served")
+	}
 }
 
 func TestStaleActionRejectedBeforeBackend(t *testing.T) {

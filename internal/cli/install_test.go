@@ -60,7 +60,7 @@ func TestSetupRepairAndRemoval(t *testing.T) {
 	if _, e := installation("repair", nil); e != nil {
 		t.Fatal(e)
 	}
-	for _, name := range []string{"agentdebugger", "delve-llm-adapter", "debug-handover"} {
+	for _, name := range []string{"brote", "agentdebugger", "delve-llm-adapter", "debug-handover"} {
 		if _, e := os.Stat(filepath.Join(root, "bin", name)); e != nil {
 			t.Fatal(name, e)
 		}
@@ -69,7 +69,7 @@ func TestSetupRepairAndRemoval(t *testing.T) {
 		t.Fatal("missing Codex marketplace discovery path", err)
 	}
 	data, _ := os.ReadFile(log)
-	if !strings.Contains(string(data), "plugin add debug-handover@delve-llm-adapter") || !strings.Contains(string(data), "--install-extension") {
+	if !strings.Contains(string(data), "plugin add brote@brote") || !strings.Contains(string(data), "--install-extension") {
 		t.Fatal(string(data))
 	}
 	if _, e := installation("uninstall", []string{"--component", "core"}); e == nil {
@@ -142,5 +142,73 @@ func TestExecutableBundleFollowsLauncherAndCurrentSymlinks(t *testing.T) {
 		if err != nil || got != expected {
 			t.Fatalf("bundle(%s) = %s, %v", path, got, err)
 		}
+	}
+}
+
+func TestUpgradeMigratesRecordedLegacyIntegrations(t *testing.T) {
+	for _, tt := range []struct {
+		name, plugin, market, extension string
+		state                           installationState
+	}{
+		{"legacy", "debug-handover@delve-llm-adapter", "delve-llm-adapter", "debug-handover-local.debug-handover", installationState{Version: "v0.3.1"}},
+		{"agentdebugger", "agentdebugger@agentdebugger", "agentdebugger", "agentdebugger-local.agentdebugger", installationState{Version: "0.4.0", CodexPlugin: "agentdebugger@agentdebugger", CodexMarketplace: "agentdebugger", VSCodeExtension: "agentdebugger-local.agentdebugger"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			root := filepath.Join(dir, "install")
+			bundle := filepath.Join(dir, "bundle")
+			stub := filepath.Join(dir, "stub")
+			t.Setenv("DELVE_LLM_ADAPTER_HOME", root)
+			t.Setenv("DEBUG_HANDOVER_HOME", filepath.Join(dir, "sessions"))
+			t.Setenv("PATH", stub)
+			for _, d := range []string{root, stub, filepath.Join(bundle, "bin")} {
+				if err := os.MkdirAll(d, 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			log := filepath.Join(dir, "calls")
+			t.Setenv("INSTALL_TEST_LOG", log)
+			for _, name := range []string{"codex", "code"} {
+				if err := os.WriteFile(filepath.Join(stub, name), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$INSTALL_TEST_LOG\"\n"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(bundle, "bin", "delve-llm-adapter"), []byte("fixture"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := session.Write(filepath.Join(bundle, "release.json"), obj{"version": "0.4.0", "os": runtime.GOOS, "arch": runtime.GOARCH, "VSCodeExtension": "release-owner.brote"}); err != nil {
+				t.Fatal(err)
+			}
+			old := tt.state
+			old.Components = map[string]string{"core": "installed", "codex": "installed", "vscode": "installed"}
+			if err := session.Write(filepath.Join(root, "installation.json"), old); err != nil {
+				t.Fatal(err)
+			}
+			// No Go, Delve or Node executable on PATH: installation itself needs none.
+			if _, err := installation("setup", []string{"--bundle", bundle}); err != nil {
+				t.Fatal(err)
+			}
+			data, _ := os.ReadFile(log)
+			calls := string(data)
+			for _, call := range []string{"plugin remove " + tt.plugin, "plugin marketplace remove " + tt.market, "plugin add brote@brote", "--uninstall-extension " + tt.extension} {
+				if !strings.Contains(calls, call) {
+					t.Fatalf("missing %q in %s", call, calls)
+				}
+			}
+			if _, err := installation("repair", nil); err != nil {
+				t.Fatal(err)
+			}
+			data, _ = os.ReadFile(log)
+			if strings.Count(string(data), "plugin remove "+tt.plugin) != 1 {
+				t.Fatal("repair repeated legacy migration")
+			}
+			if _, err := installation("uninstall", []string{"--component", "vscode"}); err != nil {
+				t.Fatal(err)
+			}
+			data, _ = os.ReadFile(log)
+			if !strings.Contains(string(data), "--uninstall-extension release-owner.brote") {
+				t.Fatal("did not remove actual installed identity")
+			}
+		})
 	}
 }

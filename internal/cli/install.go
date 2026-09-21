@@ -1,9 +1,9 @@
 package cli
 
 import (
+	"agentdebugger/internal/session"
 	"context"
 	"crypto/sha256"
-	"agentdebugger/internal/session"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -20,9 +20,12 @@ import (
 var Version = "dev"
 
 type installationState struct {
-	Version    string            `json:"version"`
-	Components map[string]string `json:"components"`
-	Bundle     string            `json:"bundle"`
+	VSCodeExtension  string            `json:"vscodeExtension,omitempty"`
+	CodexPlugin      string            `json:"codexPlugin,omitempty"`
+	CodexMarketplace string            `json:"codexMarketplace,omitempty"`
+	Version          string            `json:"version"`
+	Components       map[string]string `json:"components"`
+	Bundle           string            `json:"bundle"`
 }
 
 func installRoot() string {
@@ -169,14 +172,25 @@ func installation(verb string, args []string) (any, error) {
 		var err error
 		switch *component {
 		case "codex":
-			err = hostCommand("codex", "plugin", "remove", "debug-handover@delve-llm-adapter", "--json")
+			plugin, market := state.CodexPlugin, state.CodexMarketplace
+			if plugin == "" {
+				plugin = "debug-handover@delve-llm-adapter"
+			}
+			if market == "" {
+				market = "delve-llm-adapter"
+			}
+			err = hostCommand("codex", "plugin", "remove", plugin, "--json")
 			if err == nil {
-				err = hostCommand("codex", "plugin", "marketplace", "remove", "delve-llm-adapter", "--json")
+				err = hostCommand("codex", "plugin", "marketplace", "remove", market, "--json")
 			}
 		case "pi":
 			err = hostCommand("pi", "remove", filepath.Join(root, "current", "adapters", "pi"))
 		case "vscode":
-			err = hostCommand("code", "--uninstall-extension", "debug-handover-local.debug-handover")
+			extension := state.VSCodeExtension
+			if extension == "" {
+				extension = "debug-handover-local.debug-handover"
+			}
+			err = hostCommand("code", "--uninstall-extension", extension)
 		case "core":
 			for key, value := range state.Components {
 				if key != "core" && value != "removed" {
@@ -190,7 +204,7 @@ func installation(verb string, args []string) (any, error) {
 					return nil, fmt.Errorf("session %s is active; core retained", s.ID)
 				}
 			}
-			for _, name := range []string{"agentdebugger", "delve-llm-adapter", "debug-handover"} {
+			for _, name := range []string{"brote", "agentdebugger", "delve-llm-adapter", "debug-handover"} {
 				link := filepath.Join(installBinRoot(root), name)
 				if dest, e := os.Readlink(link); e == nil && strings.HasPrefix(dest, root+"/") {
 					_ = os.Remove(link)
@@ -236,18 +250,12 @@ func installation(verb string, args []string) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("use an extracted release bundle (--bundle): %w", err)
 	}
-	var manifest struct{ Version, OS, Arch string }
+	var manifest struct{ Version, OS, Arch, VSCodeExtension string }
 	if err = json.Unmarshal(data, &manifest); err != nil {
 		return nil, err
 	}
 	if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`).MatchString(manifest.Version) || manifest.OS != runtime.GOOS || manifest.Arch != runtime.GOARCH {
 		return nil, fmt.Errorf("incompatible release manifest")
-	}
-	if _, err := exec.LookPath("dlv"); err != nil {
-		home, _ := os.UserHomeDir()
-		if _, err = os.Stat(filepath.Join(home, "go", "bin", "dlv")); err != nil {
-			return nil, fmt.Errorf("Delve required: install dlv and rerun setup")
-		}
 	}
 	release := filepath.Join(root, "releases", manifest.Version)
 	if source != release {
@@ -273,10 +281,22 @@ func installation(verb string, args []string) (any, error) {
 		return nil, err
 	}
 	binDir := installBinRoot(root)
-	for _, name := range []string{"agentdebugger", "delve-llm-adapter", "debug-handover"} {
+	for _, name := range []string{"brote", "agentdebugger", "delve-llm-adapter", "debug-handover"} {
 		if err = managedLink(filepath.Join(root, "current", "bin", "delve-llm-adapter"), filepath.Join(binDir, name), root); err != nil {
 			return nil, err
 		}
+	}
+	legacy := regexp.MustCompile(`^v?0\.[0-3]\.`).MatchString(state.Version)
+	if legacy && state.Components["codex"] != "" && state.Components["codex"] != "removed" {
+		if state.CodexPlugin == "" {
+			state.CodexPlugin = "debug-handover@delve-llm-adapter"
+		}
+		if state.CodexMarketplace == "" {
+			state.CodexMarketplace = "delve-llm-adapter"
+		}
+	}
+	if legacy && state.Components["vscode"] != "" && state.Components["vscode"] != "removed" && state.VSCodeExtension == "" {
+		state.VSCodeExtension = "debug-handover-local.debug-handover"
 	}
 	state.Version = manifest.Version
 	state.Bundle = release
@@ -285,15 +305,33 @@ func installation(verb string, args []string) (any, error) {
 		return nil, err
 	}
 	installCodex := func() error {
+		if state.CodexPlugin != "" && state.CodexPlugin != "brote@brote" {
+			if err := hostCommand("codex", "plugin", "remove", state.CodexPlugin, "--json"); err != nil {
+				return err
+			}
+			state.CodexPlugin = "brote@brote"
+			if err := save(); err != nil {
+				return err
+			}
+		}
+		if state.CodexMarketplace != "" && state.CodexMarketplace != "brote" {
+			if err := hostCommand("codex", "plugin", "marketplace", "remove", state.CodexMarketplace, "--json"); err != nil {
+				return err
+			}
+			state.CodexMarketplace = "brote"
+			if err := save(); err != nil {
+				return err
+			}
+		}
 		marketplace := filepath.Join(root, "marketplace")
-		plugin := filepath.Join(marketplace, "plugins", "debug-handover")
+		plugin := filepath.Join(marketplace, "plugins", "brote")
 		if err := os.MkdirAll(filepath.Dir(plugin), 0755); err != nil {
 			return err
 		}
-		if err := managedLink(filepath.Join(root, "current", "adapters", "codex", "debug-handover"), plugin, root); err != nil {
+		if err := managedLink(filepath.Join(root, "current", "adapters", "codex", "brote"), plugin, root); err != nil {
 			return err
 		}
-		market := obj{"name": "delve-llm-adapter", "interface": obj{"displayName": "Delve LLM Adapter"}, "plugins": []any{obj{"name": "debug-handover", "source": obj{"source": "local", "path": "./plugins/debug-handover"}, "policy": obj{"installation": "AVAILABLE", "authentication": "ON_INSTALL"}, "category": "Productivity"}}}
+		market := obj{"name": "brote", "interface": obj{"displayName": "Brote"}, "plugins": []any{obj{"name": "brote", "source": obj{"source": "local", "path": "./plugins/brote"}, "policy": obj{"installation": "AVAILABLE", "authentication": "ON_INSTALL"}, "category": "Productivity"}}}
 		catalogDir := filepath.Join(marketplace, ".agents", "plugins")
 		if err := os.MkdirAll(catalogDir, 0755); err != nil {
 			return err
@@ -304,11 +342,28 @@ func installation(verb string, args []string) (any, error) {
 		if err := hostCommand("codex", "plugin", "marketplace", "add", marketplace, "--json"); err != nil {
 			return err
 		}
-		return hostCommand("codex", "plugin", "add", "debug-handover@delve-llm-adapter", "--json")
+		if err := hostCommand("codex", "plugin", "add", "brote@brote", "--json"); err != nil {
+			return err
+		}
+		state.CodexPlugin, state.CodexMarketplace = "brote@brote", "brote"
+		return nil
 	}
 	installPi := func() error { return hostCommand("pi", "install", filepath.Join(root, "current", "adapters", "pi")) }
 	installEditor := func() error {
-		return hostCommand("code", "--install-extension", filepath.Join(root, "current", "editors", "debug-handover.vsix"), "--force")
+		previous := state.VSCodeExtension
+		if previous == "" && state.Components["vscode"] == "installed" {
+			previous = "debug-handover-local.debug-handover"
+		}
+		if err := hostCommand("code", "--install-extension", filepath.Join(root, "current", "editors", "brote.vsix"), "--force"); err != nil {
+			return err
+		}
+		if previous != "" && previous != manifest.VSCodeExtension && manifest.VSCodeExtension != "" {
+			if err := hostCommand("code", "--uninstall-extension", previous); err != nil {
+				return err
+			}
+		}
+		state.VSCodeExtension = manifest.VSCodeExtension
+		return nil
 	}
 	for _, item := range []struct {
 		name     string

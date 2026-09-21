@@ -16,7 +16,7 @@ if (!descriptor) {
 const session = JSON.parse(await readFile(descriptor, 'utf8'));
 const upstream = new URL(session.http);
 if (upstream.protocol !== 'http:' || upstream.hostname !== '127.0.0.1' || (!session.token && session.version !== 2)) {
-  throw new Error('Expected a local Debug Handover session descriptor');
+  throw new Error('Expected a local Brote session descriptor');
 }
 const expectedToken = session.token ? Buffer.from('Bearer ' + session.token) : null;
 const assets = new Map([
@@ -24,6 +24,7 @@ const assets = new Map([
   ['/index.html', ['index.html', 'text/html']],
   ['/app.js', ['app.js', 'text/javascript']],
   ['/style.css', ['style.css', 'text/css']],
+  ['/brote-plant.png', ['brote-plant.png', 'image/png']],
 ]);
 let origin;
 

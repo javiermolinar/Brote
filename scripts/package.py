@@ -1,33 +1,35 @@
 #!/usr/bin/env python3
-"""Package distributable source and built UI; exclude targets, state, and secrets."""
+"""Package buildable monorepo source and UI; exclude runtime state and dependencies."""
 import argparse
 import json
 from pathlib import Path
+import subprocess
 import zipfile
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--output', type=Path, required=True)
-parser.add_argument('--include-vsix', action='store_true', help='Bundle the separately built VS Code extension')
-args = parser.parse_args()
-root = Path(__file__).resolve().parent.parent
-plugin_name = json.loads((root / '.codex-plugin' / 'plugin.json').read_text())['name']
-files = [root / p for p in (
-    'README.md', 'LICENSE', 'install.sh', 'THIRD_PARTY_NOTICES.md', 'go.mod', '.gitignore',
-    '.codex-plugin/plugin.json', 'examples/demo/main.go',
-    'package.json', 'package-lock.json',
-)]
-for directory in ('cmd', 'internal', 'adapters', 'ui', 'editors', 'docs', 'scripts', 'skills', '.github'):
-    files += [p for p in (root / directory).rglob('*')
-              if p.is_file() and '__pycache__' not in p.parts and p.suffix not in ('.pyc', '.vsix') and 'node_modules' not in p.parts]
-if args.include_vsix:
-    vsix = root / 'editors' / 'vscode' / 'debug-handover-0.1.0.vsix'
-    if not vsix.is_file():
-        parser.error('VSIX missing; run npm run package:vscode first, or omit --include-vsix')
-    files.append(vsix)
-args.output.parent.mkdir(parents=True, exist_ok=True)
-with zipfile.ZipFile(args.output, 'w', zipfile.ZIP_DEFLATED) as archive:
-    for path in sorted(files):
-        archive.write(path, Path(plugin_name) / path.relative_to(root))
-with zipfile.ZipFile(args.output) as archive:
-    assert archive.testzip() is None
-print(f'{args.output}: {len(files)} files, {args.output.stat().st_size} bytes')
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--include-vsix', action='store_true')
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parent.parent
+    # The Git inventory cannot pick up local conversation exports, targets or state.
+    # Include new source files during development while respecting .gitignore.
+    names = subprocess.check_output(['git', 'ls-files', '-co', '--exclude-standard', '-z'], cwd=root).decode().split('\0')
+    roots = {'assets', 'cmd', 'internal', 'adapters', 'packages', 'docs', 'scripts', 'skills', '.github', '.codex-plugin'}
+    top = {'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'install.sh', 'go.mod', 'go.sum', '.gitignore', 'package.json', 'package-lock.json', 'examples/demo/main.go'}
+    files = sorted({root / n for n in names if n and (n in top or Path(n).parts[0] in roots) and (root / n).is_file()})
+    if args.include_vsix:
+        version = json.loads((root / 'package.json').read_text())['version']
+        vsixs = list((root / 'dist/releases').glob(f'brote-{version}-*.vsix'))
+        if not vsixs:
+            parser.error('VSIX missing; run npm run package:vscode first')
+        files += sorted(vsixs)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(args.output, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for file in files:
+            archive.write(file, Path('brote') / file.relative_to(root))
+    print(f'{args.output}: {len(files)} files')
+
+
+if __name__ == '__main__': main()

@@ -4,7 +4,7 @@ package cli
 // source listing, unrelated goroutines, and Delve function metadata.
 func summarizeState(v obj) obj {
 	out := obj{}
-	for _, key := range []string{"id", "owner", "binding", "notification", "generation", "status", "project", "binary", "panel", "goroutine", "frame", "error", "inspectionError", "sourceIdentity", "sourceNewerThanBinary", "breakpoints", "watches"} {
+	for _, key := range []string{"id", "owner", "binding", "notification", "task", "capabilities", "agentConnected", "generation", "status", "project", "binary", "panel", "goroutine", "frame", "error", "inspectionError", "sourceIdentity", "sourceNewerThanBinary", "breakpoints", "watches"} {
 		if value, ok := v[key]; ok {
 			out[key] = value
 		}

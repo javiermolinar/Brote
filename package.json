@@ -1,16 +1,19 @@
 {
-  "name": "agentdebugger",
-  "version": "0.3.0",
+  "name": "brote",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test packages/web/*.test.mjs packages/vscode/test/*.test.cjs adapters/pi/*.test.mjs packages/client/test/*.test.cjs",
     "check": "tsc -p packages/web/tsconfig.json && tsc -p packages/vscode/tsconfig.json && tsc -p adapters/pi/tsconfig.json",
-    "build": "npm run check && npm run build:inspector && npm run build:vscode",
+    "build": "npm run build:assets && npm run check && npm run build:inspector && npm run build:vscode",
     "build:inspector": "esbuild packages/web/src/app.ts --bundle --minify --target=es2022 --outfile=packages/web/public/app.js --legal-comments=eof",
     "build:vscode": "esbuild packages/vscode/src/extension.ts --bundle --platform=node --format=cjs --external:vscode --target=node20 --outfile=packages/vscode/dist/extension.js && esbuild packages/vscode/src/protocol.ts --bundle --platform=node --format=cjs --target=node20 --outfile=packages/vscode/dist/protocol.cjs",
     "preview": "node packages/web/preview-ui.mjs",
-    "package:vscode": "cd packages/vscode && npm exec --yes --package=@vscode/vsce@4.0.0 -- vsce package --no-dependencies --allow-missing-repository --skip-license --out debug-handover-0.1.0.vsix"
+    "package:vscode": "python3 scripts/release.py --host-only --output dist/releases",
+    "package:release": "python3 scripts/release.py",
+    "test:packaging": "python3 -m unittest discover -s scripts -p \"test_*.py\"",
+    "build:assets": "node scripts/brand-assets.mjs"
   },
   "dependencies": {
     "highlight.js": "11.12.0"

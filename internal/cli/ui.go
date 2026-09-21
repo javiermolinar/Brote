@@ -265,7 +265,7 @@ func workspaceHandler(origin string) http.Handler {
 		if name == "" {
 			name = "index.html"
 		}
-		mime := map[string]string{"index.html": "text/html", "app.js": "text/javascript", "style.css": "text/css"}
+		mime := map[string]string{"index.html": "text/html", "app.js": "text/javascript", "style.css": "text/css", "brote-plant.png": "image/png"}
 		if r.Method != "GET" || mime[name] == "" {
 			http.NotFound(w, r)
 			return

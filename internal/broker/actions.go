@@ -253,7 +253,7 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 			b.owner, b.s.Editor, b.s.HandoverID = editor, editor, session.NewID(8)
 			b.lastError = ""
 			b.generation++
-			out := obj{"owner": editor, "status": "paused", "handoverId": b.s.HandoverID, "instructions": "The Debug Handover companion extension will attach in VS Code for this project."}
+			out := obj{"owner": editor, "status": "paused", "handoverId": b.s.HandoverID, "instructions": "The Brote companion extension will attach in VS Code for this project."}
 			if err := b.emit("ownership_changed", str(a["note"])); err != nil {
 				out["persistenceError"] = err.Error()
 			}

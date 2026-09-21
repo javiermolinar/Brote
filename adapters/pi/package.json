@@ -1,7 +1,35 @@
 {
-  "name": "delve-llm-adapter-pi",
-  "version": "0.2.0",
-  "private": true,
+  "name": "brote-pi",
+  "version": "0.4.0",
   "type": "module",
-  "pi": { "extensions": ["./index.ts"], "skills": ["./skills"] }
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "description": "Brote \u2014 your LLM debugger companion for Pi",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "debugger",
+    "brote"
+  ],
+  "files": [
+    "index.js",
+    "runtime",
+    "skills",
+    "README.md",
+    "LICENSE",
+    "assets"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
 }

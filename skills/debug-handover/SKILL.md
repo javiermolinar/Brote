@@ -1,113 +1,113 @@
 ---
 name: debug-handover
-description: Debug precompiled Go programs with Delve and pass the same paused process between an agent, the browser inspector, Zed, and VS Code. Use for breakpoints, fresh stack and locals inspection, and human-agent debugger handback.
+description: Use Brote to inspect precompiled Go programs, set breakpoints, answer debugger comments, and execute explicitly authorized debugging tasks shared with the browser or VS Code.
 ---
 
-Use the shared JSON CLI. In the Codex package, resolve `../../scripts/debug-handover`
-from this skill directory (release packages include a prebuilt executable; the source
-checkout wrapper builds only the helper). Otherwise use `delve-llm-adapter` on PATH
-or the absolute CLI path returned by Pi's `debug_connect` tool. Requires a compatible
-installed Delve. Never compile the target implicitly.
+Use the shared JSON CLI. In the Codex release plugin, resolve
+`../../scripts/debug-handover` from this skill directory; it selects the bundled
+native executable. In Pi, `debug_connect` returns the CLI path. Otherwise use
+`brote` on PATH (`agentdebugger` and `delve-llm-adapter` remain aliases). Release packages
+include the browser and require no compiler. Delve must be installed separately.
+Never compile the target implicitly.
 
-## Session workflow
+## Connect and inspect
 
-Inspect `sessions` before creating a duplicate. Read `state ID --summary` to confirm the
-project, target, owner, binding and pause. Use `recover ID` for an offline broker;
-recovery reconnects to the same Delve/target and never relaunches it.
+Check `sessions` before creating a duplicate. Read `state ID --summary` to confirm
+the project, target, binding, task and pause. `recover ID` reconnects an offline
+broker to the same debugger/target; it does not relaunch the program.
 
-```
-delve-llm-adapter start --binary /absolute/debug-binary --project /absolute/project -- [arguments]
-delve-llm-adapter break ID --file path.go --line 42 --condition 'attempt == 3'
-delve-llm-adapter continue ID --wait 20s --summary
-```
-
-Use precompiled executables or test binaries. Test arguments go after `--`, such as
-`-test.run TestName`. Changed source does not change the running binary. Verify the
-actual breakpoint location and values before reporting that a condition was reached.
-A wait timeout does not pause the target.
-
-## Bind the conversation
-
-Codex start uses `CODEX_THREAD_ID` when available and starts a separate notification
-listener. `--thread UUID` selects a conversation explicitly; `--thread ""` disables
-automatic Codex delivery. `bind ID --thread UUID` changes the destination explicitly.
-
-In Pi, start using `--thread ""`, then call `debug_connect` with the debugger session
-ID. That small tool binds this Pi conversation and starts handback listening; use the
-shared CLI for all debugger operations. It also returns the executable path. Do not
-bind an existing session to a different conversation without the user's intent.
-
-## Human handover
-
-```
-delve-llm-adapter handover ID --editor browser --note 'Inspect total before proceeding'
+```sh
+brote start --binary /absolute/debug-binary --project /absolute/project -- [arguments]
+brote break ID --file /absolute/main.go --line 42 --condition 'attempt == 3'
+brote state ID --summary --goroutine 1 --frame 0
 ```
 
-Open the returned inspector URL. Browser is included; VS Code and Zed are optional.
-`--editor vscode` uses the companion extension. `--editor zed` creates a profile;
-press F4 and select the session profile. Both attach to the same paused process.
-Closing a frontend never terminates the target. While the human owns execution,
-inspect if useful but do not step or resume. Handover requires a settled pause.
+Test arguments go after `--`, such as `-test.run TestName`. Changed source does not
+change the binary. Check the actual breakpoint location and values before reporting
+that a condition was reached. `eval ID --expression EXPR` reads values; it rejects
+arbitrary calls, assignment and channel receives. Breakpoints, watches and inspection
+are shared; the legacy `owner` field does not authorize execution.
 
-A human return emits an event to the connected listener. On notification, read fresh
-state and compare owner (`agent`), binding ID/revision, and notification event ID.
-Ignore obsolete events. Read the fresh stack and locals, then acknowledge:
+Codex uses `CODEX_THREAD_ID` on start and a detached event bridge to wake this
+conversation. `bind ID --thread UUID` explicitly connects an existing run.
+In Pi, start with `--thread ""`, then use `debug_connect` or `/debug-connect ID`.
+Do not rebind someone else's conversation merely to inspect it. Both integrations
+return the inspector URL; opening it never resumes the program. An offline agent
+can reconnect while the debugger remains alive.
 
+## Authorized execution tasks
+
+A debugger question or attachment never authorizes execution. The user grants an
+execution task through **Authorize debugging** in the inspector (or VS Code's
+confirmed execution tool). Agents must not self-authorize or use `--human`.
+If no current grant exists, explain the execution needed and where to authorize it.
+
+On a task event, read fresh state. Match task ID, binding ID/revision and unexpired
+`authorized`/`active` status; ignore obsolete events. Follow only that instruction.
+
+**Pi:** call `debug_task` with `operation: claim`, session and task. This acknowledges
+receipt and renews the lease during the active turn. Use `debug_execute` with the
+same session/task and operation `continue`, `next`, `step`, `stepout` or `pause`.
+Finish with `debug_task` `complete` at a settled pause; use `cancel` on failure.
+Pi also completes/cancels remaining claimed work when the turn settles and cancels
+on session shutdown. Do not substitute a bare shell continue for these tools.
+
+**Codex:** use the same CLI task contract:
+
+```sh
+brote task-heartbeat ID --task TASK --binding BINDING
+brote task-execute ID --task TASK --binding BINDING --operation next --wait 30s
+brote task-complete ID --task TASK --binding BINDING
+# On failure or abandonment:
+brote task-cancel ID --task TASK --binding BINDING
 ```
-delve-llm-adapter event-status ID --event EVENT --revision REVISION --status acknowledged
-```
 
-Continue the debugging discussion. A notification never authorizes resuming.
-Without a notification integration, `await-control ID --cursor N --timeout 20s`
-keeps a tool call pending. Timeout leaves ownership unchanged; wait again or explain
-that the user should resume the conversation. Do not promise idle-harness wakeup
-without a connected notification integration.
+`task-execute` renews while that bounded tool call runs and cancels/requests a pause
+on timeout or interruption. It returns a fresh compact snapshot when stopped.
+Between calls, heartbeat before the 60-second lease expires while actively working.
+The detached event bridge never renews a grant. If the lease expires or the human
+cancels, stop executing; do not silently authorize a replacement. Human stepping,
+rebind and listener disconnect can revoke the task too. Complete only after the
+requested investigation is done, not automatically after every step.
 
-## Inspection and lifecycle
-
-`state ID --summary --goroutine N --frame N` selects fresh frames. `eval ID --expression EXPR`
-is read-only and rejects arbitrary calls, assignment and channel receives.
-`watch`/`unwatch` change saved watches while owning execution. Use `next`, `step`,
-`stepout`, `continue`, and `pause` only within the user's debugging authorization.
-
-`stop ID` explicitly ends the owned debug session. Do not stop, restart, or rebuild
-as part of handover. `cleanup ID` removes leftover profiles only after processes end.
-Failed or uncertain handback delivery is visible in state; check the conversation
-before `retry-notification ID`, since delivery may already have succeeded.
-
-## Keep the conversation focused
-
-Use `--summary` with `state` and execution commands using `--wait`. It includes
-ownership, event routing, stack, and selected-frame values without source listings
-or unrelated goroutine details. Omit it only when those full details are needed.
-`--wait` already returns the fresh stopped snapshot; do not immediately fetch it again.
-Report the stop location, relevant values or changes, and the next useful debugging
-observation. Keep session IDs, binding revisions, event acknowledgements, and setup
-mechanics out of normal replies. Surface them when diagnosing a delivery problem.
+Delivery state distinguishes queued, acknowledged and uncertain requests. A
+reconnect reconciles persisted state; it does not replay a queued/ambiguous task.
+For uncertain delivery, inspect the conversation before the user cancels and grants
+a replacement. A legacy handback event permits fresh inspection only; acknowledge
+with `event-status` after checking event and binding, and require a task for execution.
 
 ## Debugger comment questions
 
-A comment notification is a read-only question, not a control handover or a new
-implementation task. Read `comment list SESSION` for persisted threads and their
-captured stack, locals, source, and timestamps. Check the thread is unresolved,
-its delivery question ID matches the event, and its binding ID/revision still
-matches `state SESSION`. Ignore obsolete questions. Distinguish captured values
-from current execution; do not reclaim or resume to answer a comment.
+A comment event is read-only discussion, not a new implementation request. Read
+`comment list SESSION` for persisted messages and captured stack, locals, source
+and timestamps. Verify unresolved status, question ID, and binding ID/revision
+against fresh state. Ignore obsolete questions. Captured values are historical;
+do not resume to answer a comment.
 
-Before investigating, acknowledge receipt so the debugger shows that you are thinking:
+Acknowledge before investigating:
 
-```
-delve-llm-adapter comment delivery SESSION THREAD --question QUESTION --binding BINDING --revision REVISION --status thinking
-```
-
-Write the answer into a UTF-8 file and post it to the debugger:
-
-```
-delve-llm-adapter comment reply SESSION THREAD --question QUESTION --binding BINDING --revision REVISION --message-id QUESTION-answer --body-file /absolute/answer.md
+```sh
+brote comment delivery SESSION THREAD --question QUESTION --binding BINDING --revision REVISION --status thinking
 ```
 
-Reuse the same message ID on retries; replies are idempotent. The broker rejects
-stale questions and changed bindings. Reply in the thread instead of only in the
-agent chat. If more execution is needed, explain what to inspect next and let the
-user drive or explicitly hand over control. `comment list` also works after the
-runtime session ends; those contexts remain historical.
+Write the answer to a UTF-8 file, then post it to the debugger:
+
+```sh
+brote comment reply SESSION THREAD --question QUESTION --binding BINDING --revision REVISION --message-id QUESTION-answer --body-file /absolute/answer.md
+```
+
+Reuse the message ID on retry; replies are idempotent. Answer in the debugger
+thread, not only agent chat. If execution is needed, explain the next inspection
+and let the user drive or authorize a task. `comment list` works after the run ends.
+
+## Lifecycle and reporting
+
+`end-session ID --confirmed` terminates that debugger and target; use only for an
+explicit request to end the named run. Disconnecting an agent or closing a frontend
+does not end it. Do not stop, restart or rebuild as part of connecting. `history`
+lists saved runs; `history ID` reads durable events without a live process.
+
+Prefer `state --summary`; avoid immediately repeating the snapshot returned by
+`task-execute`. Report stop location, relevant values and the next observation.
+Keep routing IDs and acknowledgements out of normal replies unless diagnosing a
+connection or delivery failure.

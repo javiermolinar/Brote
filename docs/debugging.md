@@ -1,84 +1,142 @@
 # Debugging guide
 
-Use an existing Go executable or test binary with DWARF symbols. If a build is
-needed, do it once following the project's build instructions, commonly with
-`-gcflags='all=-N -l'`. Starting or handing over a session never compiles the target.
+Brote uses the Debug Adapter Protocol (DAP). Go through Delve is the supported
+backend in this release; other language backends are not included yet.
 
-## Demo
+## Start from your agent
 
-From a source checkout (development only):
+Open your Go project in Pi or Codex and ask Brote to start a debug session. It
+uses an existing executable with debugging information. If one is needed, ask
+your agent to build it first; starting a session never compiles the target.
+
+For Pi, `/debug-sessions` lists current runs and their inspector URLs.
+`/debug-connect SESSION_ID` attaches the current conversation to an existing run.
+Run `/reload` after installing or updating the Pi integration.
+
+For Codex, a newly started run binds to the current conversation. To connect an
+existing run, use **Attach to agent** in the inspector and paste its prompt into
+your Codex conversation. The integration starts an event bridge that delivers
+questions and authorized tasks back to that conversation.
+
+The inspector and agent attach without changing whether the program is running
+or paused. If no source is selected yet, open a project file and set a breakpoint.
+
+## Inspect and discuss
+
+In the browser inspector you can:
+
+- Click beside a line number to toggle a breakpoint; right-click for a condition.
+- Select a stack frame or goroutine to inspect its locals.
+- Evaluate a read-only expression, or pin it to refresh at each pause.
+- Select code or click a variable to ask the agent a question beside the source.
+
+Questions capture the pause, source, and values that prompted them. Replies stay
+in that discussion, including follow-ups. Saved evidence remains historical when
+you step or the run ends; it is not a live view of the target.
+
+Inspection, breakpoints, and watches are shared. You do not need to transfer
+ownership between the browser and the agent.
+
+## Let the agent execute
+
+A question does not authorize stepping or continuing. Open **Debug with agent**,
+describe the investigation, and choose **Authorize debugging**. For example:
+
+> Run until `attempt == 3`, inspect `total`, and leave the program paused.
+
+The agent receives a task scoped to that instruction and conversation. It can
+step or continue while that task is active. **Stop agent** cancels the task and
+requests a pause without ending the run. Human stepping, a changed agent binding,
+or a disconnected listener can also revoke the task. Execution leases expire if
+the agent stops renewing them.
+
+You can always use the debugger's own execution controls. The old handover and
+reclaim commands remain for compatibility; they are not required by this workflow.
+
+## Use the native VS Code debugger
+
+Start your normal Go debugger with **F5** and stop at a breakpoint. Select code,
+choose **Ask Brote About Selection**, and type in the inline comment box. Select
+an available model when prompted. Answers stream into the thread; use **Continue
+in Chat** for a longer conversation.
+
+This mode captures the selected frame through VS Code's active debug adapter.
+Its discussions are stored in VS Code, separate from the browser's shared runs.
+Use VS Code's normal debugger controls to step and continue.
+
+To use a shared Brote run instead, launch it from `@brote` Chat or choose
+**Brote: Attach Session**. Shared discussions are available in both the editor
+and browser. Execution tools request confirmation through VS Code and use the
+same scoped task contract. A run's questions are routed to its attached agent;
+they are not broadcast to every open frontend.
+
+## Use a precompiled binary
+
+Use an existing Go executable or test binary with DWARF symbols. Build once using
+the project's instructions, commonly with `-gcflags='all=-N -l'`. Changed source
+does not change a running binary.
+
+For a manual demo from this checkout, with Brote installed:
 
 ```sh
-go build -gcflags='all=-N -l' -o /tmp/handover-demo ./examples/demo
-scripts/debug-handover start --binary /tmp/handover-demo --project "$PWD" --thread ''
+go build -gcflags='all=-N -l' -o /tmp/brote-demo ./examples/demo
+brote start --binary /tmp/brote-demo --project "$PWD/examples/demo" --thread ''
 ```
 
-Use the returned ID with `break ID --function main.process`, or select a source line
-and condition with `break ID --file examples/demo/main.go --line N --condition
-'attempt == 3'`. `continue ID --wait 20s` executes to the breakpoint. Inspect fresh
-`state ID` before claiming a condition fired. The state contains source, locals,
-stack, goroutines, watches, breakpoint conditions, owner, binding, and event cursor.
+Open the returned inspector URL, or use the returned session ID in the terminal:
 
-## Shared controls
+```sh
+brote break SESSION_ID --function main.process --condition 'attempt == 3'
+brote continue SESSION_ID --human --wait 20s
+brote state SESSION_ID --summary
+```
 
-`handover ID --editor browser` transfers a settled pause to the embedded inspector.
-The browser can step, continue, pause, edit breakpoints/watches, or stop only while
-it owns execution. Observers can read variables. The Return button leaves the process
-paused, emits `control_returned`, and lets a connected listener notify the agent.
+`--human` identifies a command you run directly. Agents use the authorized task
+tools instead. Check the fresh location and values before concluding that a
+condition fired. Program arguments, including test flags, go after `--` on start.
 
-`handover ID --editor vscode` requires the companion installed by setup. It attaches
-to the correct trusted project automatically. Use Give Control to Agent in the status
-bar to hand back; the extension command identifier remains `debugHandover.reclaim`.
-`handover ID --editor zed` creates a JSONC profile without replacing unrelated profiles.
-Open F4 and select `Debug Handover · ID`. Zed attachment is manual in this release.
+Useful inspection commands include:
 
-`reclaim ID` explicitly returns the same pause to the agent. Receiving an event never
-authorizes resuming. Agents must compare its ID/binding/revision to current state,
-read fresh stack and locals, and acknowledge the event.
+```sh
+brote state SESSION_ID --goroutine 1 --frame 0 --summary
+brote eval SESSION_ID --expression total --depth 3 --count 64
+brote watch SESSION_ID --expression total
+brote unwatch SESSION_ID --expression total
+```
 
-## Conversation handback
+Evaluation is bounded and read-only; arbitrary function calls, assignments and
+channel receives are rejected. `brote doctor` checks debugger and host availability.
 
-Codex start binds `CODEX_THREAD_ID` unless `--thread ''` is supplied. A separate bridge
-listens over SSE and uses the installed `codex queue --thread` capability. Its routing
-and cursor are stored separately from core session state. `doctor` checks capability.
+## End, reconnect, and recover
 
-Pi uses the shared CLI for debugging. After starting, call `debug_connect` or use
-`/debug-connect ID`; this binds the Pi conversation and starts a streaming listener.
-On resume it reconnects matching sessions; forks do not inherit control. The extension
-must remain loaded for automatic handback. Delivery errors appear in the inspector
-and Pi notifications.
+Closing the browser or agent does not stop the debugger. Use **End run**, Pi's
+`/debug-stop SESSION_ID`, or `brote end-session SESSION_ID --confirmed` to terminate
+the debugger and target. Saved investigation history remains available.
 
-`events ID --cursor N` streams JSONL without polling. `await-control ID --cursor N
---timeout 20s` returns to an active tool call on handback or exit. If it times out,
-continue waiting from the returned cursor. Without a harness notification mechanism,
-a completed agent turn cannot be awakened by the CLI alone.
+An offline agent can reconnect to a live run without restarting it. If the broker
+has failed but Delve and the target survive, `brote recover SESSION_ID` reconnects
+to that process. Use the returned inspector URL if its endpoint changed.
 
-Notification states are pending, sending, queued, failed, unknown, and acknowledged.
-Queued means accepted, not read. A crash during sending is ambiguous. Check the
-conversation before `retry-notification ID`; automatic resend could duplicate it.
+`brote history` lists saved runs; `brote history SESSION_ID` reads their durable
+events without a live process. **Run again** starts a new process using the saved
+launch configuration. Saved snapshots are evidence, not time-travel execution.
 
-## Inspection and recovery
+Source warnings identify possible differences between the executable and files
+on disk. An unverified source fingerprint means the match is unknown. Rebuild and
+start a new run when you need to debug changed code.
 
-- `state ID --goroutine N --frame N`: select fresh inspection scope.
-- `eval ID --expression EXPR --depth 3 --count 64`: bounded read-only evaluation.
-- `watch ID --expression EXPR` / `unwatch`: saved expressions, up to 16.
-- `next`, `step`, `stepout`, `continue`: execution commands with optional `--wait`.
-- `pause ID`: halt an owned running target.
-- `recover ID`: reconnect a failed broker to the recorded Delve process and target PID.
-- `stop ID`: explicitly terminate the owned debug session.
-- `cleanup ID`: remove leftover generated profiles after all session processes end.
+## Development checks
 
-A broker crash does not destroy target memory while Delve survives. Recovery preserves
-ownership, bindings, event history, watches, and breakpoints. If a port was occupied,
-use the new panel URL. Event clients reconnect using the refreshed descriptor.
-Source fingerprints identify on-disk changes, but cannot prove an arbitrary precompiled
-binary matches the source: `unverified` means unknown, not a match.
+```sh
+npm ci
+npm run build
+npm test
+go vet ./...
+DH_INTEGRATION=1 CODEX_THREAD_ID='' go test -race ./...
+```
 
-## Testing
-
-`DH_INTEGRATION=1 CODEX_THREAD_ID='' go test -race ./...` builds temporary debug targets
-and tests real Delve JSON-RPC/DAP ownership, browser handback events, stepping, unchanged
-PID/memory, frontend disconnect, and hard broker recovery. Notification tests use local
-stubs and never send unsolicited messages to real conversations. Node tests cover the
-Pi lifecycle and VS Code protocol. The release workflow packages four platform bundles;
-cross-compilation alone is not evidence of native runtime validation on each platform.
+The integration tests create disposable Go targets and exercise real Delve
+transports, stepping, breakpoints, durable evidence, cancellation, and recovery.
+Host notification tests use stubs. Authenticated agent/model responses need a
+separate manual check; cross-compilation does not prove native operation on every
+release platform.

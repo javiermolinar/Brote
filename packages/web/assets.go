@@ -5,5 +5,5 @@ import "embed"
 
 // Assets contains only files served by the broker, excluding development sources.
 //
-//go:embed public/index.html public/app.js public/style.css
+//go:embed public/index.html public/app.js public/style.css public/brote-plant.png
 var Assets embed.FS

@@ -10,7 +10,7 @@ import (
 	"agentdebugger/internal/session"
 )
 
-func Label(id string) string { return "Debug Handover · " + id }
+func Label(id string) string { return "Brote · " + id }
 
 // WriteConfig updates only this session's attach profile, preserving other entries.
 func WriteConfig(s session.Descriptor) (string, error) {

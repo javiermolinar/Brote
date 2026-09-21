@@ -1,11 +1,11 @@
 {
-  "name": "debug-handover",
-  "displayName": "AgentDebugger",
-  "description": "Collaborative debugging with humans and agents",
-  "version": "0.3.0",
-  "publisher": "debug-handover-local",
+  "name": "brote",
+  "displayName": "Brote",
+  "description": "Your LLM debugger companion. Ask about live debugger state, right beside your code.",
+  "version": "0.4.0",
+  "publisher": "brote-local",
   "engines": {
-    "vscode": "^1.100.0"
+    "vscode": "^1.138.0"
   },
   "categories": [
     "Debuggers"
@@ -25,15 +25,15 @@
     "commands": [
       {
         "command": "debugHandover.attach",
-        "title": "AgentDebugger: Attach Session"
+        "title": "Brote: Attach Session"
       },
       {
         "command": "debugHandover.inspector",
-        "title": "AgentDebugger: Open Live Inspector"
+        "title": "Brote: Open Live Inspector"
       },
       {
         "command": "debugHandover.ask",
-        "title": "Ask AgentDebugger About Selection"
+        "title": "Ask Brote About Selection"
       },
       {
         "command": "debugHandover.answer",
@@ -78,7 +78,7 @@
     "debuggers": [
       {
         "type": "debug-handover",
-        "label": "AgentDebugger (Go / Delve)",
+        "label": "Brote (Go / Delve)",
         "languages": [
           "go"
         ],
@@ -90,7 +90,7 @@
             "properties": {
               "handoverSession": {
                 "type": "string",
-                "description": "Existing AgentDebugger session ID"
+                "description": "Existing Brote session ID"
               }
             }
           }
@@ -98,7 +98,7 @@
       }
     ],
     "configuration": {
-      "title": "AgentDebugger",
+      "title": "Brote",
       "properties": {
         "debugHandover.sessionDirectory": {
           "type": "string",
@@ -110,15 +110,15 @@
           "type": "string",
           "default": "",
           "scope": "machine",
-          "description": "Absolute path to the AgentDebugger CLI. Defaults to ~/.local/bin/agentdebugger."
+          "description": "Optional absolute path to a compatible Brote CLI. Defaults to the bundled runtime."
         }
       }
     },
     "chatParticipants": [
       {
         "id": "agentdebugger.chat",
-        "name": "agentdebugger",
-        "fullName": "AgentDebugger",
+        "name": "brote",
+        "fullName": "Brote",
         "description": "Debug precompiled programs and discuss captured debugger evidence.",
         "isSticky": true,
         "commands": [
@@ -136,8 +136,8 @@
     "languageModelTools": [
       {
         "name": "agentdebugger_debug",
-        "displayName": "AgentDebugger",
-        "toolReferenceName": "agentdebugger",
+        "displayName": "Brote",
+        "toolReferenceName": "brote",
         "canBeReferencedInPrompt": true,
         "modelDescription": "List workspace sessions, launch an existing precompiled Go binary, attach the native debugger, inspect stack/locals, evaluate read-only expressions, set conditional breakpoints, or execute one authorized step/continue. Never compile implicitly. Only execute when explicitly requested; questions about values are read-only. Execution waits up to 30 seconds then pauses.",
         "inputSchema": {
@@ -266,5 +266,16 @@
         "when": "commentEditorFocused && commentController == agentdebugger.native && (commentThread == agentdebugger.nativeDraft || commentThread == agentdebugger.native) && !commentIsEmpty && !suggestWidgetVisible"
       }
     ]
-  }
+  },
+  "license": "MIT",
+  "extensionKind": [
+    "workspace"
+  ],
+  "keywords": [
+    "debugger",
+    "agents",
+    "Go",
+    "Delve"
+  ],
+  "icon": "assets/brote-plant.png"
 }

@@ -20,14 +20,14 @@ func Find() (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if out, e := exec.CommandContext(ctx, p, "queue", "--help").CombinedOutput(); e != nil || !strings.Contains(string(out), "--thread") {
-		return "", fmt.Errorf("this Codex CLI does not support queue --thread")
+	if out, e := exec.CommandContext(ctx, p, "queue", "--help").CombinedOutput(); e != nil || (!strings.Contains(string(out), "--thread") || !strings.Contains(string(out), "--message")) {
+		return "", fmt.Errorf("this Codex CLI does not support queue --thread --message")
 	}
 	return p, nil
 }
 
 func Message(id, session, kind string) string {
-	text := "Debug Handover event " + id + " for session " + session + ". The user clicked "
+	text := "Brote event " + id + " for session " + session + ". The user clicked "
 	if kind == "handover" {
 		text += "Hand over to Zed in the live inspector. Use the debug-handover skill to attach Zed to this existing session and verify the paused process. First read its current state; ignore this event if ownership is no longer zed or it is already attached. Do not rebuild, restart, or resume the debuggee."
 	} else {

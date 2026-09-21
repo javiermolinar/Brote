@@ -53,7 +53,7 @@ async function harness(t, hooks={}){
  const built=await build({entryPoints:['packages/vscode/src/collaboration.ts'],bundle:true,platform:'node',format:'cjs',external:['vscode'],write:false});
  const module={exports:{}};
  vm.runInNewContext(built.outputFiles[0].text,{module,exports:module.exports,require:name=>name==='vscode'?vscode:require(name),setInterval,clearInterval,setTimeout,URL,fetch,AbortSignal,AbortController,TextDecoder,Buffer});
- module.exports.registerCollaboration({subscriptions,workspaceState:{get:(key,fallback)=>key==='collaborationID'?'test':fallback,update:async()=>{}}},{sessions:async()=>[s],selected:async()=>s,attach:async()=>{},scope:()=>({goroutine:7,frame:3}),log:{appendLine:m=>messages.push(m)}});
+ module.exports.registerCollaboration({extensionPath:'/extension',subscriptions,workspaceState:{get:(key,fallback)=>key==='collaborationID'?'test':fallback,update:async()=>{}}},{sessions:async()=>[s],selected:async()=>s,attach:async()=>{},scope:()=>({goroutine:7,frame:3}),log:{appendLine:m=>messages.push(m)}});
  for(let i=0;i<100&&!native.length;i++)await new Promise(r=>setTimeout(r,10));
  return {tools,participant,calls,state,thread,native,vscode,messages,commands};
 }

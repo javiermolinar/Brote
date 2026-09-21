@@ -175,7 +175,7 @@ func (b *broker) handler() http.Handler {
 		if name == "" {
 			name = "index.html"
 		}
-		if name != "index.html" && name != "app.js" && name != "style.css" {
+		if name != "index.html" && name != "app.js" && name != "style.css" && name != "brote-plant.png" {
 			http.NotFound(w, r)
 			return
 		}
@@ -187,6 +187,8 @@ func (b *broker) handler() http.Handler {
 		switch filepath.Ext(name) {
 		case ".js":
 			w.Header().Set("Content-Type", "text/javascript")
+		case ".png":
+			w.Header().Set("Content-Type", "image/png")
 		case ".css":
 			w.Header().Set("Content-Type", "text/css")
 		default:

@@ -37,8 +37,8 @@ func doctor(args []string) (obj, error) {
 		checks[name] = obj{"available": err == nil, "path": path, "version": strings.TrimSpace(string(out)), "error": errorString(err)}
 	}
 	_, queueErr := codex.Find()
-	checks["automaticHandover"] = obj{"available": queueErr == nil, "error": errorString(queueErr)}
-	result := obj{"checks": checks, "platforms": "macOS and Linux; Go/Delve compatibility depends on the target build"}
+	checks["codexEventBridge"] = obj{"available": queueErr == nil, "error": errorString(queueErr), "requires": "codex queue --thread --message"}
+	result := obj{"version": Version, "protocol": 2, "testedHosts": obj{"codex": "0.154.0", "pi": "0.85.1", "vscode": "1.138.0"}, "debuggerSetup": "Install a Delve build compatible with the target Go version, or start with --dlv /absolute/path/dlv. Go is needed to build targets, not to install Brote releases.", "checks": checks, "platforms": "macOS and Linux; Go/Delve compatibility depends on the target build"}
 	if *binary != "" {
 		abs, e := filepath.Abs(*binary)
 		if e != nil {

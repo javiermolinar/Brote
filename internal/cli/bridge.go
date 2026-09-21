@@ -1,9 +1,9 @@
 package cli
 
 import (
-	"context"
 	"agentdebugger/internal/agents/codex"
 	"agentdebugger/internal/session"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -123,9 +123,17 @@ func bridge(args []string) error {
 		if err = deliverQuestions(s, cfg); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 		}
+		if err = deliverTask(s, cfg); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		err = stream(context.Background(), s, cfg.Cursor, cfg.Binding.ID, func(event session.Event) error {
 			if event.Binding == nil || *event.Binding != cfg.Binding {
 				return fmt.Errorf("binding changed")
+			}
+			if event.Kind == "task.authorized" {
+				if err := deliverTask(s, cfg); err != nil {
+					return err
+				}
 			}
 			if event.Kind == "question.created" {
 				if err := deliverQuestions(s, cfg); err != nil {
@@ -195,7 +203,7 @@ func deliverCodex(s session.Descriptor, cfg bridgeConfig, event session.Event) e
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	message := fmt.Sprintf("Debug Handover event %s for session %s (binding %s revision %d). The human returned control. Read fresh state; ignore if owner, binding, or event changed. Inspect the fresh stack and locals, then acknowledge with event-status --event %s --revision %d --status acknowledged. Never resume without the user's debugging authorization. Handover note: %s", id, s.ID, cfg.Binding.ID, cfg.Binding.Revision, id, cfg.Binding.Revision, event.Note)
+	message := fmt.Sprintf("Brote event %s for session %s (binding %s revision %d). The human returned control. Read fresh state; ignore if owner, binding, or event changed. Inspect the fresh stack and locals, then acknowledge with event-status --event %s --revision %d --status acknowledged. Never resume without the user's debugging authorization. Handover note: %s", id, s.ID, cfg.Binding.ID, cfg.Binding.Revision, id, cfg.Binding.Revision, event.Note)
 	output, err := codex.Queue(ctx, cfg.Executable, cfg.Thread, message)
 	status, detail := "queued", ""
 	if err != nil {

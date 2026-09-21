@@ -1,134 +1,103 @@
-# AgentDebugger
+<p align="center">
+  <img src="assets/brote-plant.png" width="180" alt="Brote, a friendly carnivorous plant that catches bugs">
+</p>
+<h1 align="center">Brote</h1>
+<p align="center"><strong>Your LLM debugger companion.</strong></p>
+<p align="center">Pause the program. Ask beside the code. Figure it out together.</p>
 
-Pass the same live Go debugger between an agent and a human. Start an existing debug
-binary, set conditional breakpoints, inspect stack and locals, then hand the paused
-process to the browser, VS Code, or Zed. Returning control never resumes execution.
+Brote brings your debugger and your agent into the same conversation. See the
+actual stack and variables, ask why a value looks wrong, and keep the answer
+attached to the code and the pause that prompted it.
 
-The shared Go core provides a JSON CLI, a local HTTP API, durable SSE events, and an
-embedded TypeScript browser inspector. Codex and Pi have small notification hooks;
-all debugging operations use the same CLI. No MCP, central daemon, or embedded editor.
+Brote uses the **Debug Adapter Protocol (DAP)**. The currently supported language
+is **Go**, through **Delve**; other language backends are not included yet.
+
+Use the browser inspector with **Codex or Pi**, or stay in **VS Code** with native
+debugger comments and Chat. You can inspect and set breakpoints together. The
+agent only steps or continues when you authorize it.
+
+![Brote paused in a Go program, with the call stack, locals, and a threaded agent conversation](assets/debugger-conversation.png)
+
+*An example conversation in the browser inspector: explain a surprising value,
+then ask where to break next. The program stays paused throughout.*
 
 ## Install
 
-Requires macOS/Linux (arm64/amd64), compatible Delve, and your selected harness.
-The browser inspector is always included. VS Code integration is optional.
+Each integration includes the core and browser inspector. Shared Go sessions
+support **macOS and Linux, arm64 and x64**, and require
+[Delve](https://github.com/go-delve/delve).
 
-Once GitHub Releases are published, replace `OWNER/REPO` with this repository:
+Run the installer directly from GitHub—no clone or build needed. It selects your
+platform, verifies the release checksum, and installs the core and integration
+together.
 
-```sh
-curl -fsSL https://github.com/OWNER/REPO/releases/latest/download/install.sh \
-  | sh -s -- --agent codex
-# Or: --agent pi --editor vscode
-# Pin a release: add --version v0.2.0
-```
+The first public release is pending. These commands will work once it is published.
 
-The release installer embeds its repository. When running the source `install.sh`,
-pass `--repository OWNER/REPO`. No public remote/release is configured in this checkout.
-
-Alternatively extract a release bundle and run:
+### Codex
 
 ```sh
-./delve-llm-adapter/bin/delve-llm-adapter setup --agent pi --editor vscode
+curl -fsSL https://github.com/javiermolinar/Brote/releases/latest/download/install.sh | sh -s -- --agent codex
 ```
 
-Setup installs under `~/.local/share/delve-llm-adapter`, with launchers in
-`~/.local/bin`. It prints PATH instructions without editing shell startup files.
-Set `DELVE_LLM_ADAPTER_HOME` for an isolated installation (its launchers use `bin/`
-inside that directory). `installation`, `repair`, and `uninstall --component
-codex|pi|vscode|core` manage only this installation. Rerunning setup preserves and
-refreshes existing integrations. Live debugger processes are never killed by setup.
-Core removal refuses active sessions and installed integrations.
-
-## Debug
+### Pi
 
 ```sh
-agentdebugger start --binary /path/to/precompiled-app --project /path/to/source
-agentdebugger break SESSION --file main.go --line 42 --condition 'attempt == 3'
-agentdebugger continue SESSION --wait 20s
-agentdebugger handover SESSION --editor browser --note 'Inspect total'
+curl -fsSL https://github.com/javiermolinar/Brote/releases/latest/download/install.sh | sh -s -- --agent pi
 ```
 
-Open the returned panel URL. Take control in the browser, step and inspect, then
-return to the agent. VS Code uses the optional companion; Zed attaches through F4.
-The target is never rebuilt during handover.
-
-Codex automatically binds `CODEX_THREAD_ID` when present; use `--thread ""` for a
-standalone session. In Pi, use the `debug_connect` tool or `/debug-connect SESSION`
-after starting to bind the current conversation and enable handback notifications.
-
-`events SESSION --cursor N` emits a persistent JSONL event stream. Without a wakeup
-hook, `await-control SESSION --cursor N --timeout 20s` returns handback to an active
-tool call. An idle harness requires a notification hook to start another turn.
-
-## Boundaries
-
-Local prototype: HTTP binds only to `127.0.0.1`, without bearer authentication.
-Other local processes can inspect/control the debugger. Host/Origin checks and
-JSON-only mutations remain. Owner labels and client bindings coordinate clients;
-they are not security credentials. Do not expose the API to a network.
-
-Each session has one broker, one Delve process, and one target. Broker recovery
-reuses the target; editor/client disconnect does not kill it. Notification delivery
-is durable but not exactly-once; ambiguous deliveries require explicit retry.
-
-## Development
+### VS Code
 
 ```sh
-go test ./...
-go vet ./...
-DH_INTEGRATION=1 CODEX_THREAD_ID='' go test -race ./...
-npm ci
-npm run build
-npm test
-npm run package:vscode
-python3 scripts/release.py --version v0.2.0
+curl -fsSL https://github.com/javiermolinar/Brote/releases/latest/download/install.sh | sh -s -- --editor vscode
 ```
 
-Source launcher: `scripts/debug-handover`. It compiles a cached helper, not the target.
-Release bundles contain prebuilt executables and need no Go or Node build tooling.
+Start your normal debugger with **F5**, pause, and choose **Ask Brote About
+Selection**. Pick an available model when prompted; answers appear in native
+comment threads. Use **Continue in Chat** for a longer conversation, or `@brote`
+to start a shared session from Chat.
 
-See [architecture](docs/architecture.md), [protocol](docs/protocol.md), and
-[debugging guide](docs/debugging.md). MIT licensed; third-party notices are retained.
+## Try it
 
-### Switching sessions
+Open your Go project and start Pi:
 
-Expand **Sessions** in the browser inspector and select **Open session**. The list shows project, binary, status, and execution owner. Opening another session does not step, stop, transfer control, or rebind an agent conversation. Offline sessions show recovery guidance; ended sessions cannot be opened. Use the selected inspector’s existing handover controls for VS Code or Zed, or Pi’s `debug_connect` to explicitly bind an existing session.
+```sh
+cd mycoolproject
+pi
+```
 
-Use **End session** in the session list to explicitly terminate a live target and its debugger, regardless of which frontend owns execution. This asks for confirmation. Offline brokers must be recovered before ending; the manager does not kill saved PIDs. Closing Pi alone preserves the debugger: restart in the same project with `pi -c` or choose the conversation with `pi -r`. The Pi adapter reconnects matching session bindings on startup.
+Then ask:
 
-### Source tabs and gutter breakpoints
+> Let's debug this project with Brote. Start a session, stop at `main`, and
+> give me the debugger URL. Leave it paused so I can explore.
 
-Use **Open file** or **Cmd/Ctrl+P** to search source paths recorded in the running binary. Project files sort first. Files open in separate read-only tabs; browsing does not change the selected frame or locals. **Current frame** returns to the selected stack location, and a new stop follows that location. Click the gutter beside a line number to toggle a breakpoint while the session is paused, regardless of execution owner; right-click an empty gutter line to set a condition. Delve’s returned location is shown after creation.
+Open the URL to see your code, call stack, and variables. Select a line or click
+a variable and ask:
 
-**Take control here** transfers a settled pause directly to the browser, detaching the editor without emitting an agent handback. Breakpoint edits do not transfer ownership; stepping and resuming still require the execution owner. Existing brokers need recovery with the updated executable to adopt this policy.
+> Where does this value come from?
 
-### Ask the agent in the debugger
+The reply appears beside the code. Step through the program and keep asking
+follow-up questions in the same thread.
 
-Click the comment bubble beside a source line or local variable. A thread opens
-beside the code, capturing the selected pause, stack, locals and source. Questions
-are delivered to the connected Pi/Codex conversation; replies arrive in that
-thread without transferring execution control. Follow-ups retain the original
-captured context, clearly marked historical. Resolve or reopen discussions, or
-explicitly retry failed/uncertain delivery after checking the agent conversation.
+[Debugging guide](docs/debugging.md)
 
-Discussion documents live outside the runtime cache, under the OS configuration
-directory `delve-llm-adapter/discussions`. Read them even after a session ends with
-`agentdebugger comment list SESSION`. CLI/API details are in
-[the discussion protocol](docs/protocol.md#persisted-discussions). Updated brokers
-and agent listeners are required; reconnect Pi after installing an update.
+## How it fits together
 
-## Monorepo and backend
+```text
+Codex / Pi ─── tools + events ───┐
+                               │
+Browser inspector ─── HTTP ─── Brote core ─── DAP ─── Delve ─── Go program
+                               │
+VS Code extension ──────────────┘
+        └── also works with your existing F5 debug session
+```
 
-See [package boundaries](docs/monorepo.md), [frontend API](docs/frontend-api.md),
-and [DAP migration](docs/dap-migration.md). New sessions use DAP for execution and
-inspection. Go metadata discovery and legacy-session recovery retain documented
-RPC compatibility paths. `agentdebugger` is the primary CLI; `delve-llm-adapter`
-and `debug-handover` remain aliases. Storage and extension identifiers are retained
-to preserve existing installations and discussions.
+The Go core coordinates sessions, bounded agent execution, and durable history.
+A typed client connects the integrations over a local HTTP API and SSE events.
+The browser UI is embedded in the native binary; running a release needs no Go
+or Node build tools.
 
-## Session history
+The local API listens on `127.0.0.1` without bearer authentication. It is intended
+for a trusted local machine, not network exposure. Saved debugger evidence can
+contain application data.
 
-New brokers record durable investigation history under a project/date/session directory.
-Use `agentdebugger history` to list saved sessions and `agentdebugger history ID` to read
-their events, even after runtime cleanup. See [Session history](docs/session-history.md)
-for storage, schema, recovery, and captured-context semantics.
+MIT licensed. Third-party notices are retained.

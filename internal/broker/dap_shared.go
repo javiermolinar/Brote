@@ -65,7 +65,7 @@ func (b *broker) connectSharedDAP(front net.Conn) {
 				b.cancelTask("human editor pause")
 				err = b.interruptExecution()
 			case "launch", "restart", "terminate":
-				err = fmt.Errorf("end or restart through AgentDebugger session controls")
+				err = fmt.Errorf("end or restart through Brote session controls")
 			case "setBreakpoints":
 				body, err = b.backend.ReplaceBreakpoints("editor", str(asObj(args["source"])["path"]), asList(args["breakpoints"]), false)
 			case "setFunctionBreakpoints":
