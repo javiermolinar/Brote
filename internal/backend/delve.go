@@ -28,7 +28,7 @@ type Delve struct {
 
 var ErrRunning = errors.New("DAP remote attach would halt the running target")
 
-func Open(address string, owners map[string]string) (*Delve, error) {
+func Open(address string, owners map[string]string, functions map[string]string) (*Delve, error) {
 	// DAP remote attach does not report PID or running state. Read identity once,
 	// before opening the DAP session; all subsequent execution uses DAP.
 	raw, err := delve.Call(address, "State", obj{"NonBlocking": true}, 5*time.Second)
@@ -58,6 +58,15 @@ func Open(address string, owners map[string]string) (*Delve, error) {
 			owner = fmt.Sprintf("restored-%d", num(bp["id"]))
 		}
 		bp["client"] = owner
+		expression := functions[fmt.Sprint(num(bp["id"]))]
+		if expression == "" && strings.HasPrefix(str(bp["name"]), "functionBreakpoint Name=") {
+			expression = strings.TrimPrefix(str(bp["name"]), "functionBreakpoint Name=")
+		}
+		bp["kind"] = "source"
+		if expression != "" {
+			bp["kind"] = "function"
+			bp["functionName"] = expression
+		}
 		d.breakpoints = append(d.breakpoints, bp)
 	}
 	go d.events()
@@ -105,7 +114,9 @@ func (d *Delve) events() {
 		case "exited", "terminated":
 			d.state["Running"] = false
 			d.state["exited"] = true
-			d.state["exitStatus"] = body["exitCode"]
+			if code, ok := body["exitCode"]; ok {
+				d.state["exitStatus"] = code
+			}
 			close(d.stopped)
 			d.stopped = make(chan struct{})
 		}
@@ -185,6 +196,11 @@ func (d *Delve) Call(method string, a obj) (obj, error) {
 		gid := num(a["Id"])
 		if gid <= 0 {
 			gid = num(asObj(d.State()["currentGoroutine"])["id"])
+		}
+		// A pre-runtime process entry has no goroutine yet. Delve's DAP
+		// placeholder thread is not a valid stack and can return synthetic ??? frames.
+		if gid <= 0 {
+			return obj{"Locations": []any{}}, nil
 		}
 		v, e := d.Request("stackTrace", obj{"threadId": gid, "levels": a["Depth"]})
 		out := []any{}

@@ -97,3 +97,59 @@ func TestCommentWriteFailureDoesNotEmitEvent(t *testing.T) {
 		}
 	}
 }
+
+func TestFollowupPreservesOriginalEvidenceAndValidatesCurrentPause(t *testing.T) {
+	t.Setenv("DEBUG_HANDOVER_HOME", t.TempDir())
+	t.Setenv("AGENTDEBUGGER_DATA_DIR", t.TempDir())
+	b := &broker{s: session.Descriptor{ID: "0123456789", Dir: t.TempDir()}, owner: "browser", generation: 9}
+	d := session.Discussion{Session: b.s.ID, Threads: []session.CommentThread{{ID: "thread", Context: obj{"generation": 3}, Messages: []session.CommentMessage{{ID: "q", Author: "human", Body: "first"}}, Delivery: session.CommentDelivery{Status: "answered"}}}}
+	if e := session.WriteDiscussion(d); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := b.comments(obj{"action": "ask", "thread": "thread", "body": "fresh?", "contextMode": "current", "generation": 8}); e == nil {
+		t.Fatal("stale generation accepted")
+	}
+	if _, e := b.comments(obj{"action": "ask", "thread": "thread", "body": "historical?", "contextMode": "original"}); e != nil {
+		t.Fatal(e)
+	}
+	saved, e := session.ReadDiscussion(b.s.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, m := range saved.Threads[0].Messages {
+		if num(m.Context["generation"]) != 3 || m.Run != b.s.ID {
+			t.Fatalf("missing preserved evidence: %+v", m)
+		}
+	}
+}
+func TestContinueThreadOnlyWithinInvestigation(t *testing.T) {
+	t.Setenv("DEBUG_HANDOVER_HOME", t.TempDir())
+	t.Setenv("AGENTDEBUGGER_DATA_DIR", t.TempDir())
+	project := t.TempDir()
+	for _, id := range []string{"1111111111", "2222222222"} {
+		if e := session.AssignInvestigation(id, "1111111111", "Demo", project); e != nil {
+			t.Fatal(e)
+		}
+	}
+	original := session.Discussion{Session: "1111111111", Threads: []session.CommentThread{{ID: "thread", Context: obj{"generation": 3}, Messages: []session.CommentMessage{{ID: "q", Author: "human", Body: "first"}}, Delivery: session.CommentDelivery{Status: "answered"}}}}
+	if e := session.WriteDiscussion(original); e != nil {
+		t.Fatal(e)
+	}
+	b := &broker{s: session.Descriptor{ID: "2222222222", Dir: t.TempDir()}, owner: "browser", generation: 9}
+	request := obj{"action": "continue-thread", "thread": "thread", "previousRun": "3333333333", "body": "next run?", "contextMode": "original"}
+	if _, e := b.comments(request); e == nil {
+		t.Fatal("cross-investigation thread accepted")
+	}
+	request["previousRun"] = "1111111111"
+	if _, e := b.comments(request); e != nil {
+		t.Fatal(e)
+	}
+	saved, _ := session.ReadDiscussion(b.s.ID)
+	if len(saved.Threads) != 1 || len(saved.Threads[0].Messages) != 2 || saved.Threads[0].Messages[0].Run != "1111111111" {
+		t.Fatal(saved)
+	}
+	old, _ := session.ReadDiscussion("1111111111")
+	if len(old.Threads[0].Messages) != 1 {
+		t.Fatal("original evidence mutated")
+	}
+}

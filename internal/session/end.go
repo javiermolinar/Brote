@@ -68,7 +68,11 @@ func End(ctx context.Context, id string) (map[string]any, error) {
 	if !ok || owner == "" || state["generation"] == nil {
 		return nil, fmt.Errorf("incomplete broker state")
 	}
-	action := map[string]any{"action": "stop", "actor": owner, "generation": state["generation"]}
+	actor := owner
+	if capabilities, ok := state["capabilities"].(map[string]any); ok && capabilities["executionTasks"] == true {
+		actor = "human"
+	}
+	action := map[string]any{"action": "stop", "actor": actor, "generation": state["generation"]}
 	if binding, ok := state["binding"].(map[string]any); ok {
 		action["binding"] = binding["id"]
 	}

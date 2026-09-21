@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"agentdebugger/internal/dap"
-	"agentdebugger/internal/editors"
 )
 
 type dapPeer struct {
@@ -73,7 +72,7 @@ func (b *broker) connectDAP(front net.Conn) {
 		return
 	}
 	b.mu.Lock()
-	if !editors.IsOwner(b.owner) || b.peer != nil {
+	if b.peer != nil {
 		b.mu.Unlock()
 		_ = front.Close()
 		return
@@ -175,8 +174,11 @@ func (b *broker) connectDAP(front net.Conn) {
 		command := str(v["command"])
 		b.mu.Lock()
 		message := ""
-		if !editors.IsOwner(b.owner) || b.peer != p {
-			message = "Agent or browser owns this session; hand over before attaching an editor"
+		if b.peer != p {
+			message = "Editor connection changed"
+		}
+		if isExecution(command) && (b.moving || b.interrupting) {
+			message = "Execution already in progress"
 		}
 		if command == "launch" || command == "restart" || command == "terminate" {
 			message = "This is a persistent attach session. End it using debug-handover stop or the inspector."
@@ -202,6 +204,9 @@ func (b *broker) connectDAP(front net.Conn) {
 			b.mu.Unlock()
 			_ = p.send(obj{"seq": num(v["seq"]), "type": "response", "request_seq": v["seq"], "command": command, "success": false, "message": message})
 			continue
+		}
+		if isExecution(command) || command == "pause" {
+			b.cancelTask("human editor action")
 		}
 		if isExecution(command) {
 			b.moving = true

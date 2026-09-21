@@ -38,6 +38,11 @@ func (b *broker) emit(kind, note string) error {
 	case "stopped":
 		b.historyStop(note)
 	case "target_exited", "terminated":
+		if b.activeTask() {
+			b.s.Task.Status = "completed"
+			b.record("task.completed", "debugger", b.s.Task)
+			_ = b.persist()
+		}
 		b.record("session.ended", "debugger", obj{"reason": kind})
 	default:
 		b.record("session."+kind, "core", event)

@@ -25,10 +25,17 @@ func (b *broker) snapshotLocked(gid, frame int, brief bool) (obj, error) {
 	stateView["currentThread"] = pick(asObj(s["currentThread"]), "id", "file", "line", "pc", "function", "goroutineID")
 	stateView["currentGoroutine"] = pick(asObj(s["currentGoroutine"]), "id")
 	v := obj{"id": b.s.ID, "owner": b.owner, "generation": b.generation, "status": status, "state": stateView, "zedConnected": b.owner == "zed" && b.peer != nil, "binary": b.s.Binary, "project": b.s.Project, "error": b.lastError, "dap": b.s.DAP, "label": zed.Label(b.s.ID)}
+	protocol := "DAP"
+	if b.s.Backend == "rpc" {
+		protocol = "JSON-RPC"
+	}
+	v["debugger"] = obj{"adapter": "Delve", "protocol": protocol, "pid": b.s.DelvePID, "status": "connected", "mode": "launched"}
 	v["historyError"] = b.historyError
+	v["task"] = b.taskView()
+	v["agentConnected"] = b.agentStreams > 0
 	v["panel"] = b.s.HTTP + "/"
 	v["version"], v["binding"], v["cursor"] = 2, b.s.Binding, b.s.Cursor
-	v["capabilities"] = obj{"events": true, "browserOwner": true, "authentication": false, "comments": true}
+	v["capabilities"] = obj{"events": true, "browserOwner": true, "authentication": false, "comments": true, "replyContexts": true, "executionTasks": true}
 	v["editor"], v["handoverId"] = b.s.Editor, b.s.HandoverID
 	v["editorConnected"], v["editorReady"] = b.peer != nil, b.peer != nil && b.peer.ready
 	v["vscodeConnected"] = b.owner == "vscode" && b.peer != nil
@@ -81,6 +88,7 @@ func (b *broker) snapshotLocked(gid, frame int, brief bool) (obj, error) {
 		frame = 0
 	}
 	v["frame"] = frame
+	v["beforeGoStart"] = len(frames) == 0 && num(asObj(s["currentGoroutine"])["id"]) <= 0 && str(s["stopReason"]) == "entry"
 	watches := []any{}
 	for _, expression := range b.s.Watches {
 		value, err := b.evaluate(expression, gid, frame, 2, 32, s)

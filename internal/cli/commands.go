@@ -14,7 +14,9 @@ type obj = map[string]any
 func usage() string {
 	return `AgentDebugger — persistent Go / Delve sessions
 
-  agentdebugger start --binary PATH --project DIR [--dlv PATH] -- [program args]
+  agentdebugger start --binary PATH --project DIR [--title TITLE] [--investigation ID] [--no-ui] -- [program args]
+  agentdebugger ui  (persistent investigation workspace)
+  agentdebugger run-again ID  (new run with saved executable and arguments)
   agentdebugger setup --agent codex|pi [--editor vscode]
   agentdebugger events ID [--cursor N] [--binding ID]  (JSONL stream)
   agentdebugger await-control ID [--cursor N] [--timeout 20s]
@@ -22,6 +24,9 @@ func usage() string {
   agentdebugger end-session ID --confirmed  (explicit human termination)
   agentdebugger comment list SESSION
   agentdebugger comment reply SESSION THREAD --question ID --binding ID --revision N --body-file PATH --message-id KEY
+  agentdebugger task-authorize ID --human --instruction "Investigate the retries"
+  agentdebugger task-heartbeat|task-complete ID --task TASK_ID
+  agentdebugger task-cancel ID --human
   agentdebugger sessions
   agentdebugger history [ID]  (saved sessions or ordered events, works offline)
   agentdebugger state ID [--goroutine N] [--frame N] [--summary]
@@ -54,6 +59,37 @@ func Run(args []string) (any, error) {
 		return nil, nil
 	}
 	verb := args[0]
+	if verb == "ui-serve" {
+		return nil, serveUI()
+	}
+	if verb == "ui" {
+		endpoint, e := ensureUI()
+		return obj{"panel": endpoint}, e
+	}
+	if verb == "workspace" {
+		return session.Workspace(context.Background())
+	}
+	if verb == "saved-run" && len(args) == 2 {
+		return session.SavedRun(args[1])
+	}
+	if verb == "run-again" && len(args) == 2 {
+		histories, err := session.ListHistory()
+		if err != nil {
+			return nil, err
+		}
+		for _, h := range histories {
+			if h.ID == args[1] {
+				group, err := session.InvestigationFor(h.ID)
+				if err != nil {
+					return nil, err
+				}
+				argv := []string{"--binary", h.Binary, "--project", h.Project, "--investigation", group, "--thread", "", "--"}
+				argv = append(argv, h.Args...)
+				return start(argv)
+			}
+		}
+		return nil, fmt.Errorf("saved launch configuration not found")
+	}
 	if verb == "history" {
 		if len(args) == 1 {
 			return session.ListHistory()
@@ -125,6 +161,9 @@ func Run(args []string) (any, error) {
 		return nil, e
 	}
 	f := flag.NewFlagSet(verb, flag.ContinueOnError)
+	task := f.String("task", "", "explicitly authorized execution task ID")
+	humanAction := f.Bool("human", false, "direct human debugger action or authorization")
+	instruction := f.String("instruction", "", "authorized investigation scope")
 	file := f.String("file", "", "source path")
 	line := f.Int("line", 0, "line")
 	fn := f.String("function", "", "function name")
@@ -169,6 +208,10 @@ func Run(args []string) (any, error) {
 		*binding = s.Binding.ID
 	}
 	body := obj{"binding": *binding, "actor": "agent", "name": *name, "note": *note, "event": *event, "status": *delivery, "revision": *revision, "action": verb, "generation": state["generation"], "file": *file, "line": *line, "function": *fn, "condition": *cond, "hitCondition": *hit, "breakpoint": *bp, "open": !*noOpen}
+	body["task"], body["instruction"] = *task, *instruction
+	if *humanAction {
+		body["actor"] = "human"
+	}
 	body["editor"] = *editor
 	body["expression"], body["depth"], body["count"], body["goroutine"], body["frame"], body["thread"], body["notify"] = *expr, *depth, *count, *gid, *frame, *thread, *notify
 	if verb == "bind" && *thread != "" {

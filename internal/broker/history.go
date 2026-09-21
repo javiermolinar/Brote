@@ -58,7 +58,7 @@ func (b *broker) historyContext(v obj) obj {
 			}
 		}
 	}
-	return obj{"v": 1, "stop_id": b.stopID, "contexts": []any{obj{"id": fmt.Sprint(num(v["goroutine"])), "kind": "goroutine", "selected": true, "frames": frames, "observations": observations}}, "source": v["source"], "source_identity": v["sourceIdentity"], "watches": v["watches"]}
+	return obj{"v": 1, "stop_id": b.stopID, "contexts": []any{obj{"id": fmt.Sprint(num(v["goroutine"])), "kind": "goroutine", "selected": true, "selected_frame": num(v["frame"]), "frames": frames, "observations": observations}}, "source": v["source"], "source_identity": v["sourceIdentity"], "watches": v["watches"]}
 }
 func (b *broker) historyInspection(v obj) {
 	if b.history == nil || v["status"] != "paused" {

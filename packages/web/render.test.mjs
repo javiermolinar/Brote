@@ -19,10 +19,7 @@ test('stepping retains last pause, expansions and stable source; stale controls 
  w.eval(js.outputFiles[0].text);await flush();
  d.querySelector('#refreshSessions').click();await flush();
  assert.equal(d.querySelectorAll('.sessionRow').length,3);
- assert.equal(d.querySelectorAll('.endSession').length,2);
- w.confirm=()=>false;d.querySelector('.endSession').click();await flush();
- assert.ok(calls.every(c=>c.options.method==='GET'),'cancel must not terminate');
- assert.equal(d.querySelector('#sessionList a').href,'http://127.0.0.1:5678/');
+ assert.equal(d.querySelectorAll('#runList .runItem').length,1);
  assert.match(d.querySelector('#sessionList').textContent,/Current/);
  assert.ok(calls.every(c=>c.options.method==='GET'),'listing must not mutate session');
  w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
@@ -61,8 +58,9 @@ test('stepping retains last pause, expansions and stable source; stale controls 
  assert.equal(d.querySelector('.sourceNumber[data-line="23"] .lineLabel').textContent,'23');
  state={...state,owner:'agent'};tick();await flush();
  assert.equal(d.querySelector('.breakpointGutter[data-line="23"]').disabled,false);
- assert.equal(d.querySelector('[data-action=step]').disabled,true);
- assert.equal(d.querySelector('#takeBrowser').disabled,false);
+ assert.equal(d.querySelector('[data-action=step]').disabled,false);
+ assert.equal(d.querySelector('#takeBrowser'),null);
+ assert.match(d.querySelector('#agentStatus').textContent,/Not reported/);
  d.querySelector('.breakpointGutter[data-line="23"]').click();await flush();
  const action=JSON.parse(calls.find(c=>c.url==='/api/action').options.body);
  assert.equal(action.action,'break');assert.equal(action.file,'main.go');assert.equal(action.line,23);
@@ -113,4 +111,86 @@ test('stepping retains last pause, expansions and stable source; stale controls 
  assert.equal(unpin.expression,'value');
 
 
+});
+
+test('explicit investigation grants are separate from questions and can be stopped without handover', async t => {
+ const html=await readFile('packages/web/public/index.html','utf8');
+ const js=await build({entryPoints:['packages/web/src/app.ts'],bundle:true,write:false,format:'iife',logLevel:'silent'});
+ const dom=new JSDOM(html,{url:'http://127.0.0.1:1234',runScripts:'outside-only'});t.after(()=>dom.window.close());
+ const w=dom.window,d=w.document;let tick;const calls=[];
+ let state={id:'test',owner:'agent',binding:{id:'pi',revision:1,name:'Pi'},agentConnected:true,capabilities:{executionTasks:true},generation:1,status:'paused',state:{Pid:1},project:'/demo',binary:'/demo/bin',frame:0,frames:[{file:null,line:0}]};
+ w.setInterval=fn=>{tick=fn;return 1};
+ w.fetch=async(url,options)=>{
+  const path=new URL(url,w.location.href).pathname;
+  if(path==='/api/action'){
+   const body=JSON.parse(options.body);calls.push(body);
+   if(body.action==='task-authorize')state={...state,generation:2,task:{id:'task1',instruction:body.instruction,status:'authorized'}};
+   if(body.action==='task-cancel')state={...state,generation:3,task:{...state.task,status:'cancelled',reason:'cancelled by browser'}};
+   return {ok:true,json:async()=>({task:state.task})};
+  }
+  if(path==='/api/sessions')return {ok:true,json:async()=>({sessions:[]})};
+  return {ok:true,json:async()=>structuredClone(state)};
+ };
+ const flush=()=>new Promise(r=>setTimeout(r,0));w.eval(js.outputFiles[0].text);await flush();
+ assert.equal(d.querySelector('#status').textContent,'Paused');
+ assert.equal(d.querySelector('#handover'),null);assert.equal(d.querySelector('#editor'),null);
+ assert.equal(d.querySelector('[data-action=next]').disabled,false);
+ assert.match(d.querySelector('#agentStatus').textContent,/Pi.*Connected/);
+ assert.equal(calls.length,0);
+ const input=d.querySelector('#taskInstruction');input.value='Find why retry repeats';
+ d.querySelector('#taskForm').dispatchEvent(new w.Event('submit',{cancelable:true}));await flush();
+ assert.equal(calls[0].action,'task-authorize');assert.equal(calls[0].actor,'browser');assert.equal(calls[0].instruction,input.value);
+ assert.equal(d.querySelector('#stopAgent').hidden,false);
+ assert.equal(d.querySelector('#authorizeTask').disabled,true);
+ assert.equal(input.value,'Find why retry repeats');tick();await flush();assert.equal(input.value,'Find why retry repeats');
+ d.querySelector('#stopAgent').click();await flush();
+ assert.equal(calls[1].action,'task-cancel');assert.equal(calls[1].task,'task1');assert.equal(d.querySelector('#stopAgent').hidden,true);
+ assert.equal(d.querySelector('#authorizeTask').disabled,false);assert.match(d.querySelector('#taskStatus').textContent,/cancelled/);
+ state={...state,beforeGoStart:true,frames:[]};tick();await flush();
+ assert.match(d.querySelector('#filename').textContent,/Paused before Go starts/);
+ assert.equal(d.querySelector('[data-action=step]').disabled,true);
+ assert.equal(d.querySelector('[data-action=continue]').disabled,false);
+ assert.equal(d.querySelectorAll('#frames button').length,0);
+ assert.match(d.querySelector('#source').textContent,/set a breakpoint/);
+});
+
+test('unavailable archived run keeps its label and does not poll the missing snapshot', async t=>{
+ const html=await readFile('packages/web/public/index.html','utf8');
+ const js=await build({entryPoints:['packages/web/src/app.ts'],bundle:true,write:false,format:'iife',logLevel:'silent'});
+ const dom=new JSDOM(html,{url:'http://127.0.0.1:1234/?history=f188abf6a0',runScripts:'outside-only'});t.after(()=>dom.window.close());
+ const w=dom.window,d=w.document;let tick;let archiveRequests=0;
+ w.setInterval=fn=>{tick=fn;return 1};
+ w.fetch=async url=>{if(String(url).includes('saved-run')){archiveRequests++;return {ok:false,status:404,json:async()=>({error:'file does not exist'})};}return {ok:true,json:async()=>({investigations:[{id:'f188abf6a0',title:'Demo',project:'/demo',runs:[{id:'f188abf6a0',status:'ended'}]}]})};};
+ w.eval(js.outputFiles[0].text);const flush=()=>new Promise(r=>setTimeout(r,0));await flush();await flush();
+ const label=d.querySelector('#session'),before=label.textContent,count=archiveRequests;assert.match(before,/f188abf6a0/);
+ let changes=0;const observer=new w.MutationObserver(()=>changes++);observer.observe(label,{childList:true,characterData:true,subtree:true});
+ for(let i=0;i<4;i++){tick();await flush();}
+ assert.equal(archiveRequests,count);assert.equal(label.textContent,before);assert.equal(changes,0);assert.equal(d.querySelector('#status').textContent,'Ended');observer.disconnect();assert.equal(d.querySelector('.controls').hidden,true);assert.equal(d.querySelector('.inspectionDock').hidden,true);assert.match(d.querySelector('#filename').textContent,/recorded source|unavailable/i);assert.equal(d.querySelector('#openFile').hidden,true);
+});
+
+test('archived missing snapshot hides live controls and keeps saved discussions available',async t=>{
+ const html=await readFile('packages/web/public/index.html','utf8');const js=await build({entryPoints:['packages/web/src/app.ts'],bundle:true,write:false,format:'iife',logLevel:'silent'});
+ const dom=new JSDOM(html,{url:'http://127.0.0.1:1234/?history=1111111111',runScripts:'outside-only'});t.after(()=>dom.window.close());const w=dom.window,d=w.document;w.setInterval=()=>1;
+ w.fetch=async url=>({ok:true,json:async()=>String(url).includes('saved-run')?{id:'1111111111',historical:true,runEnded:true,snapshotUnavailable:true,status:'exited',state:{},project:'/demo',binary:'/demo/bin',frames:[],discussion:{threads:[]}}:{investigations:[{id:'1111111111',title:'Demo',project:'/demo',created:'2026-09-20T10:00:00Z',runs:[{id:'1111111111',ordinal:1,status:'ended',created:'2026-09-20T10:00:00Z'}]}]}});
+ w.eval(js.outputFiles[0].text);await new Promise(r=>setTimeout(r,0));await new Promise(r=>setTimeout(r,0));
+ assert.equal(d.querySelector('.controls').hidden,true);assert.equal(d.querySelector('#goroutines').hidden,true);assert.equal(d.querySelector('#reconnectAgent').hidden,true);assert.equal(d.querySelector('.inspectionDock').hidden,true);assert.equal(d.querySelector('#openFile').hidden,true);assert.match(d.querySelector('#frames').textContent,/No call stack recorded/);assert.match(d.querySelector('#commentList').textContent,/No saved discussions/);assert.match(d.querySelector('#investigationDate').textContent,/2026/);assert.equal(d.querySelector('#runTitle').textContent,'Run 1');
+});
+
+test('entry pause followed by exit clears stale launch instructions and offers rerun',async t=>{
+ const html=await readFile('packages/web/public/index.html','utf8');const js=await build({entryPoints:['packages/web/src/app.ts'],bundle:true,write:false,format:'iife',logLevel:'silent'});const dom=new JSDOM(html,{url:'http://127.0.0.1:1234/?session=1111111111',runScripts:'outside-only'});t.after(()=>dom.window.close());const w=dom.window,d=w.document;let tick;w.setInterval=fn=>{tick=fn;return 1};let state={id:'1111111111',project:'/demo',binary:'/demo/bin',status:'paused',state:{Pid:42},beforeGoStart:true,frames:[]};
+ w.fetch=async url=>({ok:true,json:async()=>String(url).includes('workspace')?{investigations:[{id:'1111111111',title:'Demo',project:'/demo',runs:[{id:'1111111111',status:'paused',binary:'/demo/bin'}]}]}:String(url).includes('comments')?{threads:[]}:structuredClone(state)});
+ w.eval(js.outputFiles[0].text);await new Promise(r=>setTimeout(r,0));assert.match(d.querySelector('#filename').textContent,/Paused before/);state={...state,status:'exited',beforeGoStart:false};tick();await new Promise(r=>setTimeout(r,0));assert.equal(d.querySelector('#filename').textContent,'Program exited');assert.match(d.querySelector('#runList').textContent,/exited/);assert.equal(d.querySelector('#headerRunAgain').hidden,false);assert.equal(d.querySelector('.controls').hidden,true);assert.equal(d.querySelector('#newQuestion').hidden,true);
+});
+
+test('file picker preserves source-load failure when search text changes',async t=>{
+ const html=await readFile('packages/web/public/index.html','utf8');const js=await build({entryPoints:['packages/web/src/app.ts'],bundle:true,write:false,format:'iife',logLevel:'silent'});const dom=new JSDOM(html,{url:'http://127.0.0.1:1234/?session=1111111111',runScripts:'outside-only'});t.after(()=>dom.window.close());const w=dom.window,d=w.document;w.setInterval=()=>1;w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
+ w.fetch=async url=>String(url).includes('sources')?{ok:false,status:409,json:async()=>({error:'Process has exited'})}:{ok:true,json:async()=>String(url).includes('workspace')?{investigations:[]}:String(url).includes('comments')?{threads:[]}:{id:'1111111111',status:'paused',project:'/demo',binary:'/demo/bin',state:{},frames:[]}};
+ w.eval(js.outputFiles[0].text);await new Promise(r=>setTimeout(r,0));d.querySelector('#openFile').click();await new Promise(r=>setTimeout(r,0));const field=d.querySelector('#fileSearch');field.value='main';field.dispatchEvent(new w.Event('input'));assert.match(d.querySelector('#fileSearchStatus').textContent,/Process has exited/);assert.doesNotMatch(d.querySelector('#fileSearchStatus').textContent,/0 files/);
+});
+
+test('saved breakpoint gutters cannot prompt or mutate',async t=>{
+ const html=await readFile('packages/web/public/index.html','utf8'),js=await build({entryPoints:['packages/web/src/app.ts'],bundle:true,write:false,format:'iife'});
+ const dom=new JSDOM(html,{url:'http://127.0.0.1/?history=1111111111',runScripts:'outside-only'});t.after(()=>dom.window.close());const w=dom.window,d=w.document;w.setInterval=()=>1;let prompts=0;w.prompt=()=>{prompts++;return 'true'};const calls=[];
+ w.fetch=async(url,options)=>{calls.push({url:String(url),options});return {ok:true,json:async()=>String(url).includes('saved-run')?{id:'1111111111',historical:true,status:'paused',state:{},frame:0,source:{file:'main.go',start:1,line:1,lines:['func main() {}']},breakpoints:[{id:1,file:'main.go',line:1,Cond:'x == 1'}],discussion:{threads:[]}}:{investigations:[]}}};
+ w.eval(js.outputFiles[0].text);await new Promise(r=>setTimeout(r,0));const gutter=d.querySelector('.breakpointGutter');assert.equal(gutter.disabled,true);assert.match(gutter.ariaLabel,/Saved breakpoint/);gutter.dispatchEvent(new w.MouseEvent('contextmenu',{bubbles:true}));assert.equal(prompts,0);assert.equal(calls.some(c=>c.options.method==='POST'),false);
 });

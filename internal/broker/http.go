@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"mime"
 	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -28,6 +30,61 @@ func (b *broker) handler() http.Handler {
 				write(415, obj{"error": "application/json required"})
 				return
 			}
+		}
+		if r.URL.Path == "/api/workspace" && r.Method == "GET" {
+			v, e := session.Workspace(r.Context())
+			if e != nil {
+				write(500, obj{"error": e.Error()})
+			} else {
+				write(200, obj{"investigations": v})
+			}
+			return
+		}
+		if r.URL.Path == "/api/saved-run" && r.Method == "GET" {
+			v, e := session.SavedRun(r.URL.Query().Get("id"))
+			if e != nil {
+				write(409, obj{"error": e.Error()})
+			} else {
+				write(200, v)
+			}
+			return
+		}
+		if r.URL.Path == "/api/runs/start" && r.Method == "POST" {
+			var input struct {
+				Run     string `json:"run"`
+				Binary  string `json:"binary"`
+				Project string `json:"project"`
+				Title   string `json:"title"`
+			}
+			if json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&input) != nil {
+				write(400, obj{"error": "invalid launch request"})
+				return
+			}
+			args := []string{"run-again", input.Run}
+			if input.Run == "" {
+				if input.Binary == "" || input.Project == "" {
+					write(400, obj{"error": "binary and project required"})
+					return
+				}
+				args = []string{"start", "--binary", input.Binary, "--project", input.Project, "--title", input.Title, "--thread", ""}
+			}
+			exe, e := os.Executable()
+			if e != nil {
+				write(500, obj{"error": e.Error()})
+				return
+			}
+			data, e := exec.Command(exe, args...).CombinedOutput()
+			if e != nil {
+				write(409, obj{"error": "Launch failed: " + string(data) + " " + e.Error()})
+				return
+			}
+			var result obj
+			if json.Unmarshal(data, &result) != nil {
+				write(500, obj{"error": "invalid launch response"})
+				return
+			}
+			write(200, result)
+			return
 		}
 		if r.URL.Path == "/api/events" && r.Method == "GET" {
 			b.events(w, r)

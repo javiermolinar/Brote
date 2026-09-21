@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"agentdebugger/internal/delve"
@@ -16,7 +17,7 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	defer func() { b.historyAction(a, result, actionErr) }()
-	if _, ok := a["generation"]; !ok || num(a["generation"]) != b.generation {
+	if _, ok := a["generation"]; (!ok || num(a["generation"]) != b.generation) && !(str(a["action"]) == "task-cancel" && human(str(a["actor"])) && b.s.Task != nil && str(a["task"]) == b.s.Task.ID) {
 		return nil, fmt.Errorf("session changed; refresh state before acting")
 	}
 	verb := str(a["action"])
@@ -25,6 +26,22 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 	}
 	if str(a["actor"]) == "agent" && b.s.Binding != nil && str(a["binding"]) != b.s.Binding.ID && verb != "bind" && verb != "event-status" && verb != "eval" {
 		return nil, fmt.Errorf("binding mismatch; refresh session binding")
+	}
+	if strings.HasPrefix(verb, "task-") {
+		return b.coordinate(a)
+	}
+	if executionAction(verb) {
+		if human(str(a["actor"])) {
+			b.cancelTask("human debugger action")
+		} else if str(a["actor"]) == "agent" {
+			if err := b.taskValid(a); err != nil {
+				return nil, err
+			}
+			b.s.Task.Status = "active"
+			b.s.Task.Expires = time.Now().Add(taskLease).UTC().Format(time.RFC3339Nano)
+		} else {
+			return nil, fmt.Errorf("unknown execution actor")
+		}
 	}
 	if verb == "editor-error" {
 		if b.owner != "vscode" || str(a["handoverId"]) != b.s.HandoverID || b.peer != nil {
@@ -41,8 +58,9 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 		return b.eventStatus(a)
 	}
 	if verb == "bind" {
-		if b.owner != "agent" {
-			return nil, fmt.Errorf("return control to the agent before rebinding")
+		b.cancelTask("agent binding changed")
+		if err := b.interruptExecution(); err != nil {
+			return nil, err
 		}
 		id := str(a["binding"])
 		name := str(a["name"])
@@ -71,9 +89,7 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 	}
 	status := stateStatus(s, b.moving)
 	if verb == "stop" {
-		if b.owner != str(a["actor"]) {
-			return nil, fmt.Errorf("current owner must stop the session")
-		}
+
 		if b.peer != nil {
 			b.peer.close()
 		}
@@ -99,9 +115,7 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 		if verb == "eval" {
 			return b.evaluate(expression, num(a["goroutine"]), num(a["frame"]), num(a["depth"]), num(a["count"]), s)
 		}
-		if b.owner != str(a["actor"]) {
-			return nil, fmt.Errorf("only current owner may change watches")
-		}
+
 		if e := validateExpression(expression); e != nil {
 			return nil, e
 		}
@@ -152,21 +166,9 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 		out["cursor"] = b.s.Cursor
 		return out, nil
 	}
-	sharedBreakpoint := str(a["actor"]) == "browser" && (verb == "break" || verb == "clear")
 	takeBrowser := str(a["actor"]) == "browser" && verb == "handover" && str(a["editor"]) == "browser"
-	if !sharedBreakpoint && !takeBrowser && b.owner != str(a["actor"]) && !(verb == "handover" && str(a["actor"]) == "browser" && b.owner == "agent") && !(verb == "handover" && b.peer == nil && b.owner == "vscode") {
-		return nil, fmt.Errorf("%s owns execution; reclaim the paused session first", editors.Name(b.owner))
-	}
 	if verb == "pause" {
-		if status != "running" {
-			return nil, fmt.Errorf("already paused")
-		}
-		if !truth(s["Running"]) {
-			return nil, fmt.Errorf("execution command is starting or finishing; refresh and retry pause")
-		}
-		_, e = b.rpc("Command", obj{"name": "halt"})
-		b.generation++
-		return obj{"status": "pause requested"}, e
+		return obj{"status": "pause requested"}, b.interruptExecution()
 	}
 	if status != "paused" {
 		return nil, fmt.Errorf("pause the program before %s", verb)
@@ -176,44 +178,9 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 	}
 	switch verb {
 	case "continue", "next", "step", "stepout":
-		name := verb
-		if name == "stepout" {
-			name = "stepOut"
+		if err := b.beginExecution(verb, s); err != nil {
+			return nil, err
 		}
-		b.moving = true
-		b.lastError = ""
-		b.generation++
-		go func() {
-			var err error
-			if b.backend != nil {
-				_, err = b.backend.Call("Command", obj{"name": name})
-			} else {
-				_, err = delve.Call(b.rpcAddr, "Command", obj{"name": name}, 0)
-			}
-			b.mu.Lock()
-			defer b.mu.Unlock()
-			if b.backend != nil {
-				if err != nil {
-					b.moving = false
-					b.lastError = err.Error()
-					b.record("execution.failed", "debugger", obj{"command": name, "error": err.Error()})
-					b.generation++
-				}
-				return
-			}
-			b.moving = false
-			b.generation++
-			kind := "stopped"
-			if current, e := b.state(); e == nil && truth(current["exited"]) {
-				kind = "target_exited"
-			}
-			if e := b.emit(kind, ""); e != nil {
-				b.lastError = e.Error()
-			}
-			if _, exited := delve.ExitState(err); err != nil && !exited {
-				b.lastError = err.Error()
-			}
-		}()
 		return obj{"status": "running", "command": verb}, nil
 	case "break":
 		bp := obj{"name": "agent" + session.NewID(4), "Cond": str(a["condition"]), "HitCond": str(a["hitCondition"])}

@@ -34,6 +34,8 @@ export interface Breakpoint {
 }
 
 export interface Snapshot {
+ snapshotUnavailable?:boolean;historical?:boolean;runEnded?:boolean;capturedAt?:string;
+ debugger?:{adapter:string;protocol:string;pid?:number;status:string;mode:string};
   id: string;
   owner: 'agent' | 'codex' | 'browser' | 'zed' | 'vscode';
   binding?: {id: string; name: string; revision: number};
@@ -60,13 +62,18 @@ export interface Snapshot {
   notification?: { id: string; kind: string; status: 'pending' | 'sending' | 'queued' | 'acknowledged' | 'failed' | 'unknown'; error?: string };
   sourceIdentity?: { match: string; changedSinceStart?: boolean; binaryChanged?: boolean };
   watches?: Evaluation[];
-  capabilities?: {comments?: boolean};
+  capabilities?: {comments?: boolean; replyContexts?:boolean; executionTasks?: boolean};
+  agentConnected?: boolean;
+  beforeGoStart?: boolean;
+  task?: {id:string;instruction:string;status:'authorized'|'active'|'completed'|'cancelled';reason?:string;expires:string};
 }
 
 export interface Evaluation { expression: string; value?: Variable; error?: string; generation?: number; goroutine?: number; frame?: number }
 
-export type Action = 'continue' | 'next' | 'step' | 'stepout' | 'pause' | 'break' | 'clear' | 'handover' | 'reclaim' | 'stop' | 'eval' | 'watch' | 'unwatch' | 'retry-notification';
+export type Action = 'task-authorize' | 'task-cancel' | 'task-complete' | 'task-heartbeat' | 'continue' | 'next' | 'step' | 'stepout' | 'pause' | 'break' | 'clear' | 'handover' | 'reclaim' | 'stop' | 'eval' | 'watch' | 'unwatch' | 'retry-notification';
 export interface ActionOptions {
+ instruction?: string;
+ task?: string;
 	 editor?: string;
   breakpoint?: number;
   open?: boolean;
@@ -87,6 +94,6 @@ export interface ActionResult extends Partial<Evaluation> { Breakpoint?: {file:s
 export interface CommentThread {
  id:string;file:string;line:number;expression?:string;created:string;resolved:boolean;
  context:{generation?:number;frame?:number;goroutine?:number;capturedAt?:string;anchorSource?:{lines:string[]};frames?:{function?:{name:string};file?:string;line?:number;Locals?:{name:string;value?:string;type:string}[];Arguments?:{name:string;value?:string;type:string}[]}[]};
- messages:{id:string;author:string;body:string;created:string}[];
+ messages:{id:string;author:string;body:string;created:string;run?:string;context?:CommentThread["context"]}[];
  delivery:{question:string;status:string;error?:string;binding?:{id:string;name:string}};
 }

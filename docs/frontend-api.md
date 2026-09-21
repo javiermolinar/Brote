@@ -32,3 +32,51 @@ snapshot and must not be silently refreshed when execution advances.
 Execution-task authorization and cancellation replace ownership in a later
 milestone. The existing ownership contract remains in effect until then. No new
 MCP interface or authentication flow is introduced.
+
+## Execution coordination
+
+`capabilities.executionTasks` advertises shared human controls with explicitly
+scoped agent execution. `owner` remains a compatibility field for old attachment
+workflows; it no longer grants execution permission. Normal inspection, questions,
+breakpoints, and watches are shared. Human debugger commands cancel an active
+agent task. Native DAP clients use the same serialized execution path and do not
+need an ownership transition to connect.
+
+Actions on `/api/action`:
+
+- `task-authorize`: human actor, fresh `generation`, and `instruction` create an
+  `authorized` task. The `task.authorized` SSE event carries its ID in `note`;
+  fetch fresh state for the task and instruction. This does not run the target.
+- Agent continue/step/pause commands require `task` and the current `binding`, as
+  well as a fresh generation. The first execution changes status to `active`.
+- `task-heartbeat`: renews the 60-second lease for that task/binding. Every agent
+  execution also renews it. Call heartbeat during long investigations.
+- `task-complete`: finishes the matching task at a settled pause.
+- `task-cancel`: revokes the task and pauses in-flight execution. Human requests
+  carrying the matching task ID remain valid if the pause generation changed.
+
+State exposes `task` (ID, instruction, status, reason, binding, expiry) and
+`agentConnected` (a bound SSE listener is connected). Questions never create a
+task. A human command, rebind, expired lease, or bound listener disconnect lasting
+more than five seconds revokes execution. Recovery cancels persisted grants; it
+does not resume execution or halt a target that was already running at the crash.
+A grant cannot be reused after cancellation, completion, or recovery, even after
+fetching a new generation. These are cooperative local protocol rules, not
+identity authentication.
+
+The WebUI exposes Authorize debugging and Stop agent, independently of read-only
+inline questions. Harness-specific delivery of `task.authorized`, automatic
+heartbeats, and task completion messages belong to the adapters/release phase;
+existing question/reply routing is unchanged. Until then, a protocol client or
+agent using the CLI can act on a human-authorized task:
+
+```sh
+agentdebugger task-authorize SESSION --human --instruction 'Investigate the retries'
+agentdebugger next SESSION --task TASK_ID
+agentdebugger task-heartbeat SESSION --task TASK_ID
+agentdebugger task-complete SESSION --task TASK_ID
+agentdebugger task-cancel SESSION --human
+```
+
+`--human` represents a direct human operation. Harnesses must never use it to
+self-authorize. A human can use `next SESSION --human` without an agent task.

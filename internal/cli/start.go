@@ -13,8 +13,11 @@ import (
 	"agentdebugger/internal/session"
 )
 
-func start(args []string) (obj, error) {
+func start(args []string) (result obj, err error) {
 	f := flag.NewFlagSet("start", flag.ContinueOnError)
+	noUI := f.Bool("no-ui", false, "return the broker URL without starting the persistent workspace")
+	investigation := f.String("investigation", "", "existing investigation ID")
+	title := f.String("title", "", "new investigation title")
 	backend := f.String("backend", "dap", "debug backend: dap or legacy rpc")
 	bin := f.String("binary", "", "Existing Go executable or test binary")
 	project := f.String("project", ".", "Project/source directory")
@@ -68,6 +71,29 @@ func start(args []string) (obj, error) {
 		return nil, e
 	}
 	id := session.NewID(5)
+	if *investigation != "" {
+		if _, err := session.ReadInvestigation(*investigation); err != nil {
+			old, readErr := session.Read(*investigation)
+			if readErr != nil {
+				return nil, fmt.Errorf("investigation not found")
+			}
+			if err = session.AssignInvestigation(old.ID, old.ID, filepath.Base(old.Binary), old.Project); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if e = session.AssignInvestigation(id, *investigation, *title, root); e != nil {
+		return nil, e
+	}
+	childStarted := false
+	defer func() {
+		if err != nil && !childStarted {
+			d := session.Descriptor{ID: id, Project: root, Binary: abs, Created: time.Now().UTC().Format(time.RFC3339Nano)}
+			if recordErr := session.RecordFailedLaunch(d, f.Args(), err.Error()); recordErr != nil {
+				err = fmt.Errorf("%w; recording failed launch: %v", err, recordErr)
+			}
+		}
+	}()
 	dir := filepath.Join(session.Root(), id)
 	if e = os.MkdirAll(dir, 0700); e != nil {
 		return nil, e
@@ -90,6 +116,7 @@ func start(args []string) (obj, error) {
 	if e = cmd.Start(); e != nil {
 		return nil, e
 	}
+	childStarted = true
 	go func() { _ = cmd.Wait() }()
 	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
 		s, e := session.Read(id)
@@ -99,7 +126,13 @@ func start(args []string) (obj, error) {
 					return obj{"id": id, "panel": s.HTTP, "notificationError": err.Error()}, nil
 				}
 			}
-			return obj{"id": id, "panel": s.HTTP + "/#" + s.Token, "binary": abs, "project": root, "status": "paused at launch", "log": filepath.Join(dir, "delve.log")}, nil
+			panel := s.HTTP + "/#" + s.Token
+			if !*noUI {
+				if ui, err := ensureUI(); err == nil {
+					panel = ui + "/?session=" + id
+				}
+			}
+			return obj{"id": id, "panel": panel, "binary": abs, "project": root, "status": "paused at launch", "log": filepath.Join(dir, "delve.log")}, nil
 		}
 		if data, e := os.ReadFile(filepath.Join(dir, "error")); e == nil {
 			return nil, fmt.Errorf("start failed: %s", data)

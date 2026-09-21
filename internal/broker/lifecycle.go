@@ -31,6 +31,7 @@ func (b *broker) persist() error {
 	b.s.Owner = b.owner
 	if b.backend != nil {
 		b.s.BreakpointOwners = b.backend.BreakpointOwners()
+		b.s.FunctionBreakpoints = b.backend.FunctionBreakpoints()
 	}
 	return session.Write(filepath.Join(b.s.Dir, "session.json"), b.s)
 }
@@ -66,10 +67,17 @@ func Serve(options Options) (err error) {
 		}
 	}()
 	s := session.Descriptor{Backend: options.Backend, ID: options.ID, PID: os.Getpid(), Binary: options.Binary, Project: options.Project, Dir: dir, Version: 2, Binding: &session.Binding{ID: options.BindingID, Revision: 1, Name: options.AgentName}, Created: time.Now().Format(time.RFC3339), Owner: "agent"}
+	defer func() {
+		if err != nil && !options.Recover {
+			if failure := session.RecordFailedLaunch(s, options.Args, err.Error()); failure != nil {
+				err = fmt.Errorf("%w; failed launch record: %v", err, failure)
+			}
+		}
+	}()
 	var process *exec.Cmd
 	committed := false
 	defer func() {
-		if process != nil && !committed {
+		if process != nil && process.Process != nil && !committed {
 			_ = process.Process.Kill()
 			_ = process.Wait()
 		}
@@ -139,6 +147,10 @@ func Serve(options Options) (err error) {
 	if s.Binding.Name == "" {
 		s.Binding.Name = "Agent"
 	}
+	if s.Task != nil && (s.Task.Status == "active" || s.Task.Status == "authorized") {
+		s.Task.Status = "cancelled"
+		s.Task.Reason = "broker recovered; authorize a new task"
+	}
 	s.Version = 2
 	s.Token = ""
 	s.Thread, s.Codex = "", ""
@@ -150,7 +162,7 @@ func Serve(options Options) (err error) {
 		b.owner = "agent"
 	}
 	if s.Backend == "dap" {
-		b.backend, e = backend.Open(s.RPC, s.BreakpointOwners)
+		b.backend, e = backend.Open(s.RPC, s.BreakpointOwners, s.FunctionBreakpoints)
 		if errors.Is(e, backend.ErrRunning) && options.Recover {
 			if !session.ProcessExists(s.DelvePID) || !session.ProcessExists(s.TargetPID) {
 				return fmt.Errorf("recovery process identity unavailable")
@@ -236,13 +248,16 @@ func Serve(options Options) (err error) {
 				case "continued":
 					b.moving = true
 					b.generation++
+					b.handleEpoch++
 				case "stopped":
 					b.moving = false
 					b.generation++
+					b.handleEpoch++
 					_ = b.emit("stopped", str(asObj(event["body"])["reason"]))
 				case "exited":
 					b.moving = false
 					b.generation++
+					b.handleEpoch++
 					_ = b.emit("target_exited", "")
 				}
 				if b.peer != nil && b.peer.back == nil {
@@ -254,6 +269,8 @@ func Serve(options Options) (err error) {
 	}
 
 	committed = true
+	go b.maintainTasks()
+	defer b.once.Do(func() { close(b.done) })
 	go func() { _ = server.Serve(httpLn) }()
 	go b.acceptDAP(dapListener)
 	sig := make(chan os.Signal, 1)

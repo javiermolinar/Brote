@@ -8,6 +8,7 @@ export interface Session {
 export interface State {
   id: string; project: string; owner: string; status: string; generation: number;
   handoverId: string; editorConnected: boolean; editorReady: boolean; dap: string;
+  capabilities?: {executionTasks?: boolean};
   binding?: {id: string; name: string; revision: number}; thread: string; error: string; state: { NextInProgress?: boolean };
 }
 export function sessionDirectory(): string {
@@ -38,7 +39,7 @@ export function pending(s: Session, v: State, attempted?: string): boolean {
     && v.status === 'paused' && !v.state.NextInProgress && !v.editorConnected
     && /^[a-f0-9]{16}$/.test(v.handoverId) && v.handoverId !== attempted;
 }
-export async function request<T>(s: Session, route: '/api/state?brief=1' | '/api/action', body?: unknown): Promise<T> {
+export async function request<T>(s: Session, route: `/api/${string}`, body?: unknown, signal?: AbortSignal): Promise<T> {
   validateSession(s, s.id);
-  return createClient({baseURL:s.http,token:s.token}).request<T>(route.slice(5),body);
+  return createClient({baseURL:s.http,token:s.token}).request<T>(route.slice(5),body,signal);
 }

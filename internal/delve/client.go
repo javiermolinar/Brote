@@ -40,3 +40,17 @@ func ExitState(err error) (map[string]any, bool) {
 	code, _ := strconv.Atoi(parts[2])
 	return map[string]any{"Pid": pid, "Running": false, "exited": true, "exitStatus": code, "stopReason": "exited"}, true
 }
+
+// Begin writes a command before returning; wait consumes its eventual response.
+func Begin(addr, method string, arg any) (func() (map[string]any, error), error) {
+	c, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	client := jsonrpc.NewClient(c)
+	out := map[string]any{}
+	_ = c.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	call := client.Go("RPCServer."+method, arg, &out, nil)
+	_ = c.SetWriteDeadline(time.Time{})
+	return func() (map[string]any, error) { defer client.Close(); result := <-call.Done; return out, result.Error }, nil
+}

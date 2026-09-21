@@ -57,3 +57,27 @@ test('comments capture the original draft scope, preserve errors, and receive re
  assert.equal(d.querySelector('.commentSuggestion').hidden,true);
 
 });
+
+test('docked threads preserve drafts, stay open on outside clicks, and send explicit reply context',async t=>{
+ const js=await build({entryPoints:['packages/web/src/comments.ts'],bundle:true,write:false,format:'iife',globalName:'Comments',logLevel:'silent'});
+ const dom=new JSDOM('<div id="source"></div><section id="commentsPanel"><div id="commentList"></div><div id="threadHost" hidden></div></section>',{url:'http://127.0.0.1',runScripts:'outside-only'});t.after(()=>dom.window.close());const w=dom.window,d=w.document;w.HTMLElement.prototype.scrollIntoView=function(){};
+ const threads=['one','two'].map(id=>({id,file:'main.go',line:17,created:'2026-09-21T10:00:00Z',context:{generation:1,frame:0},resolved:false,messages:[{id:'q',author:'human',body:id}],delivery:{status:'answered'}}));const posts=[];const request=async(path,body)=>{if(!body)return {discussion:{threads}};posts.push(body);return {thread:threads[0]};};w.eval(js.outputFiles[0].text+';window.C=Comments;');const ui=w.C.createComments(request,async()=>{}),flush=()=>new Promise(r=>setTimeout(r,0));ui.update({id:'run',generation:9,frame:2,goroutine:4,status:'paused',capabilities:{comments:true,replyContexts:true}});await flush();d.querySelector('.commentListItem').click();await flush();const input=d.querySelector('textarea');assert.equal(d.querySelector('.commentThread').parentElement.id,'threadHost');input.value='retain this';d.body.dispatchEvent(new w.Event('pointerdown',{bubbles:true}));assert.equal(d.querySelector('.commentThread').hidden,false);
+ d.querySelector('[aria-label="All discussions"]').click();d.querySelectorAll('.commentListItem')[1].click();await flush();input.value='second draft';d.querySelector('[aria-label="All discussions"]').click();d.querySelector('.commentListItem').click();await flush();assert.equal(input.value,'retain this');
+ d.querySelector('select').value='current';d.querySelector('form').dispatchEvent(new w.Event('submit',{cancelable:true}));await flush();assert.equal(posts[0].contextMode,'current');assert.equal(posts[0].generation,9);assert.equal(posts[0].frame,2);
+ ui.update({id:'run',generation:9,frame:2,status:'running',capabilities:{comments:true,replyContexts:true}});assert.equal(d.querySelector('select').value,'original');assert.equal(d.querySelector('select').options[0].disabled,true);
+});
+
+test('merged continuations retain sibling messages and select immutable message evidence',async t=>{
+ const js=await build({entryPoints:['packages/web/src/comments.ts'],bundle:true,write:false,format:'iife',globalName:'Comments',logLevel:'silent'});
+ const dom=new JSDOM('<div id="source"></div><section id="commentsPanel"><div id="commentList"></div><div id="threadHost"></div></section>',{url:'http://127.0.0.1/?history=one',runScripts:'outside-only'});t.after(()=>dom.window.close());const w=dom.window,d=w.document;w.HTMLElement.prototype.scrollIntoView=function(){};w.eval(js.outputFiles[0].text+';window.C=Comments;');
+ const ctx=value=>({capturedAt:'2026-09-21T10:00:00Z',frame:0,frames:[{Locals:[{name:'total',value,type:'int'}]}]});
+ const first={id:'q1',author:'human',body:'first',run:'one',context:ctx('21'),created:'2026-09-21T10:00:00Z'};
+ const thread={id:'thread',file:'main.go',line:1,created:first.created,context:ctx('99'),delivery:{status:'answered'}};
+ const ui=w.C.createComments(async()=>{throw Error('No requests');},async()=>{});ui.update({id:'one',historical:true,status:'exited',generation:0,frame:0});
+ ui.history([{...thread,messages:[first,{id:'q2',author:'human',body:'second',run:'two',context:ctx('99'),created:'2026-09-21T11:00:00Z'}]},{...thread,messages:[first,{id:'q3',author:'human',body:'sibling',run:'three',context:ctx('42'),created:'2026-09-21T12:00:00Z'}]}]);
+ d.querySelector('.commentListItem').click();await new Promise(r=>setTimeout(r,0));
+ assert.equal(d.querySelectorAll('.commentMessage').length,3);
+ assert.match(d.querySelector('.commentCaptured').textContent,/total = 21/);
+ d.querySelectorAll('.commentMessage button')[1].click();assert.match(d.querySelector('.commentCaptured').textContent,/total = 99/);assert.match(d.querySelector('.commentContext').textContent,/two/);
+ d.querySelectorAll('.commentMessage button')[0].click();assert.match(d.querySelector('.commentCaptured').textContent,/total = 21/);
+});

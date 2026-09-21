@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { registerCollaboration } from './collaboration';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { sessionDirectory, validateSession, validID, loopbackPort, pending, request } from './protocol';
@@ -7,11 +8,12 @@ import type { Session, State } from './protocol';
 export function activate(context: vscode.ExtensionContext): void {
   const log = vscode.window.createOutputChannel('AgentDebugger');
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
-  status.command = 'debugHandover.reclaim';
+  status.command = 'debugHandover.ask';
   const descriptors = new Map<string, Session>();
   const states = new Map<string, State>();
   const attempts = new Map<string, string>();
   const live = new Map<string, vscode.DebugSession>();
+  const frameScopes = new Map<string, Map<number,{goroutine:number;frame:number}>>();
   let busy = false;
   let disposed = false;
   function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
@@ -19,16 +21,14 @@ export function activate(context: vscode.ExtensionContext): void {
     if (!vscode.workspace.isTrusted) return undefined;
     const project = await fs.realpath(s.project);
     for (const folder of vscode.workspace.workspaceFolders || []) {
-      if (folder.uri.scheme === 'file' && await fs.realpath(folder.uri.fsPath) === project) return folder;
+      if (folder.uri.scheme === 'file' && (project === await fs.realpath(folder.uri.fsPath) || project.startsWith((await fs.realpath(folder.uri.fsPath)) + path.sep))) return folder;
     }
     return undefined;
   }
   function updateStatus(): void {
-    const owned = [...states.values()].filter(s => s.owner === 'vscode' && s.status !== 'exited');
-    if (!owned.length) { status.hide(); return; }
-    const name = owned.length === 1 ? owned[0].binding?.name || 'Agent' : 'Agent';
-    status.text = `$(debug-disconnect) Give control to ${name}`;
-    status.tooltip = `Return the paused Go process to ${name}. Pause in the debugger first.`;
+    if (!live.size) { status.hide(); return; }
+    status.text = '$(comment-discussion) Ask AgentDebugger';
+    status.tooltip = 'Ask about the selected source line in VS Code Chat';
     status.show();
   }
   async function attach(s: Session, state: State, folder: vscode.WorkspaceFolder): Promise<void> {
@@ -52,11 +52,14 @@ export function activate(context: vscode.ExtensionContext): void {
         const fresh = await request<State>(s, '/api/state?brief=1');
         await request(s, '/api/action', { action: 'editor-error', actor: 'vscode', generation: fresh.generation,
           handoverId: state.handoverId, error: message(error) });
-      } catch { /* Ownership may have changed while VS Code was attaching. */ }
+      } catch { /* The session may have changed while VS Code was attaching. */ }
+      throw error;
     }
   }
   async function scan(retry = false): Promise<void> {
-    if (busy || disposed || !vscode.workspace.isTrusted) return;
+    if (disposed || !vscode.workspace.isTrusted) return;
+    while (busy && !disposed) await new Promise(resolve=>setTimeout(resolve,25));
+    if (disposed) return;
     busy = true;
     try {
       const root = vscode.workspace.getConfiguration('debugHandover').get<string>('sessionDirectory') || sessionDirectory();
@@ -82,20 +85,38 @@ export function activate(context: vscode.ExtensionContext): void {
   async function selected(): Promise<Session | undefined> {
     const active = vscode.debug.activeDebugSession?.configuration.handoverSession as string | undefined;
     if (active && descriptors.has(active)) return descriptors.get(active);
-    const candidates = [...descriptors.values()].filter(s => states.get(s.id)?.owner === 'vscode');
+    const candidates = [...descriptors.values()];
     if (candidates.length === 1) return candidates[0];
-    if (!candidates.length) { void vscode.window.showInformationMessage('No VS Code handover session is active for this project.'); return; }
+    if (!candidates.length) { void vscode.window.showInformationMessage('No debugger session is active for this workspace.'); return; }
     const choice = await vscode.window.showQuickPick(candidates.map(s => ({ label: s.id, description: s.project, session: s })));
     return choice?.session;
   }
   context.subscriptions.push(log, status,
+    vscode.debug.registerDebugAdapterTrackerFactory('debug-handover', {
+      createDebugAdapterTracker(debugSession) {
+        const scopes=new Map<number,{goroutine:number;frame:number}>();
+        const requests=new Map<number,{goroutine:number;start:number}>();
+        frameScopes.set(debugSession.id,scopes);
+        return {
+          onWillReceiveMessage(m) {if(m.type==='request' && m.command==='stackTrace') requests.set(m.seq,{goroutine:m.arguments.threadId,start:m.arguments.startFrame||0});},
+          onDidSendMessage(m) {
+            if(m.type==='event' && ['continued','terminated','stopped'].includes(m.event))scopes.clear();
+            if(m.type==='response' && m.command==='stackTrace') {
+              const scope=requests.get(m.request_seq);requests.delete(m.request_seq);
+              if(scope && m.success) (m.body?.stackFrames||[]).forEach((f:{id:number},i:number)=>scopes.set(f.id,{goroutine:scope.goroutine,frame:scope.start+i}));
+            }
+          },
+          onExit(){frameScopes.delete(debugSession.id);},
+        };
+      },
+    }),
     vscode.debug.registerDebugAdapterDescriptorFactory('debug-handover', {
       async createDebugAdapterDescriptor(session): Promise<vscode.DebugAdapterServer> {
         const id = session.configuration.handoverSession as string;
         const s = descriptors.get(id);
         if (!s || !await folderFor(s)) throw new Error('Session does not belong to this trusted project.');
         const state = await request<State>(s, '/api/state?brief=1');
-        if (!pending(s, state) || state.handoverId !== session.configuration.handoverId) {
+        if (state.capabilities?.executionTasks ? state.editorConnected || state.status !== 'paused' : (!pending(s, state) || state.handoverId !== session.configuration.handoverId)) {
           throw new Error('Handover changed or another editor is attached. Request a fresh handover.');
         }
         return new vscode.DebugAdapterServer(loopbackPort(state.dap), '127.0.0.1');
@@ -109,7 +130,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (live.get(id)?.id === session.id) live.delete(id);
       void scan();
     }),
-    vscode.commands.registerCommand('debugHandover.attach', () => scan(true)),
+    vscode.commands.registerCommand('debugHandover.attach', async (id?:string) => {await scan(); if(typeof id==='string'){await attachSelected(id);return;} const s=await selected(); if(s) await attachSelected(s.id);}),
     vscode.commands.registerCommand('debugHandover.reclaim', async () => {
       try {
         const s = await selected();
@@ -132,6 +153,16 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeWorkspaceFolders(() => void scan()),
     vscode.workspace.onDidGrantWorkspaceTrust(() => void scan()),
   );
+  async function attachSelected(id: string): Promise<void> {
+    await scan();
+    const s=descriptors.get(id);
+    if(!s) throw new Error('Session is not available in this trusted workspace.');
+    if(live.has(id)) return;
+    const folder=await folderFor(s);
+    if(!folder) throw new Error('Open the session project in this workspace first.');
+    await attach(s,await request<State>(s,'/api/state?brief=1'),folder);
+  }
+  registerCollaboration(context, { sessions: async()=>{await scan();return [...descriptors.values()];}, selected, attach:attachSelected, scope:(id)=>{const selected=vscode.debug.activeStackItem; if(selected?.session.configuration.handoverSession!==id)return {}; if(selected instanceof vscode.DebugStackFrame){const scope=frameScopes.get(selected.session.id)?.get(selected.frameId);if(!scope)throw new Error("Selected frame changed; select it again.");return scope;} return {goroutine:selected.threadId,frame:0};}, log });
   const timer = setInterval(() => void scan(), 1000);
   context.subscriptions.push({ dispose() { disposed = true; clearInterval(timer); } });
   void scan();

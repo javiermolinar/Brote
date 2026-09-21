@@ -2,7 +2,6 @@ package broker
 
 import (
 	"agentdebugger/internal/dap"
-	"agentdebugger/internal/editors"
 	"bufio"
 	"fmt"
 	"net"
@@ -11,7 +10,7 @@ import (
 // Editors are clients of the broker, never independent clients of Delve.
 func (b *broker) connectSharedDAP(front net.Conn) {
 	b.mu.Lock()
-	if !editors.IsOwner(b.owner) || b.peer != nil {
+	if b.peer != nil {
 		b.mu.Unlock()
 		front.Close()
 		return
@@ -49,8 +48,8 @@ func (b *broker) connectSharedDAP(front net.Conn) {
 		var body obj
 		var err error
 		startedExecution := false
-		if b.peer != p || !editors.IsOwner(b.owner) {
-			err = fmt.Errorf("editor no longer controls execution")
+		if b.peer != p {
+			err = fmt.Errorf("editor connection changed")
 		} else {
 			switch command {
 			case "initialize":
@@ -62,6 +61,9 @@ func (b *broker) connectSharedDAP(front net.Conn) {
 				body = obj{}
 			case "disconnect":
 				body = obj{}
+			case "pause":
+				b.cancelTask("human editor pause")
+				err = b.interruptExecution()
 			case "launch", "restart", "terminate":
 				err = fmt.Errorf("end or restart through AgentDebugger session controls")
 			case "setBreakpoints":
@@ -69,13 +71,15 @@ func (b *broker) connectSharedDAP(front net.Conn) {
 			case "setFunctionBreakpoints":
 				body, err = b.backend.ReplaceBreakpoints("editor", "", asList(args["breakpoints"]), true)
 			default:
-				err = p.translateArguments(args, b.generation)
+				err = p.translateArguments(args, b.handleEpoch)
 				if err == nil && isExecution(command) {
-					if b.moving || truth(b.backend.State()["Running"]) {
+					b.cancelTask("human editor action")
+					if b.moving || b.interrupting || truth(b.backend.State()["Running"]) {
 						err = fmt.Errorf("execution already in progress")
 					} else {
 						b.moving = true
 						startedExecution = true
+						b.handleEpoch++
 						b.generation++
 					}
 				}
@@ -86,7 +90,7 @@ func (b *broker) connectSharedDAP(front net.Conn) {
 					b.moving = false
 				}
 				if err == nil {
-					p.exportHandles(body, command, b.generation)
+					p.exportHandles(body, command, b.handleEpoch)
 				}
 			}
 		}

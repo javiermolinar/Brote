@@ -35,7 +35,21 @@ func (b *broker) events(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"binding changed"}`, 409)
 		return
 	}
+	if binding != "" {
+		b.agentStreams++
+		b.agentDisconnected = time.Time{}
+	}
 	b.mu.Unlock()
+	if binding != "" {
+		defer func() {
+			b.mu.Lock()
+			b.agentStreams--
+			if b.agentStreams == 0 {
+				b.agentDisconnected = time.Now()
+			}
+			b.mu.Unlock()
+		}()
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unavailable", 500)

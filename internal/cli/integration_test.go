@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"agentdebugger/internal/dap"
-	"agentdebugger/internal/editors"
+	"agentdebugger/internal/delve"
 	"agentdebugger/internal/editors/zed"
 	"agentdebugger/internal/session"
 )
@@ -148,7 +148,7 @@ func testRoundTrip(t *testing.T, worker bool) {
 	}
 	before, _ := os.ReadFile(binary)
 	digest := sha256.Sum256(before)
-	cmd = exec.Command(helper, "start", "--binary", binary, "--project", project)
+	cmd = exec.Command(helper, "start", "--no-ui", "--binary", binary, "--project", project)
 	out, e := cmd.CombinedOutput()
 	if e != nil {
 		t.Fatalf("start: %s: %v", out, e)
@@ -164,7 +164,7 @@ func testRoundTrip(t *testing.T, worker bool) {
 	t.Cleanup(func() {
 		v, e := api(s, "GET", "/api/state?brief=1", nil)
 		if e == nil {
-			_, _ = api(s, "POST", "/api/action", obj{"action": "stop", "actor": v["owner"], "binding": s.Binding.ID, "generation": v["generation"]})
+			_, _ = api(s, "POST", "/api/action", obj{"action": "stop", "actor": "human", "binding": s.Binding.ID, "generation": v["generation"]})
 		}
 		time.Sleep(300 * time.Millisecond)
 		log, _ := os.ReadFile(filepath.Join(s.Dir, "broker.log"))
@@ -185,6 +185,20 @@ func testRoundTrip(t *testing.T, worker bool) {
 		v := state()
 		if a == nil {
 			a = obj{}
+		}
+		if a["actor"] == nil && (name == "continue" || name == "next" || name == "step" || name == "stepout" || name == "pause") {
+			task := asObj(v["task"])
+			if str(task["status"]) != "active" && str(task["status"]) != "authorized" {
+				if _, err := api(s, "POST", "/api/action", obj{"action": "task-authorize", "actor": "human", "instruction": "Integration test: execute to the next assertion", "generation": v["generation"]}); err != nil {
+					t.Fatal(err)
+				}
+				v = state()
+				task = asObj(v["task"])
+			}
+			a["task"] = task["id"]
+		}
+		if name == "stop" {
+			a["actor"] = "human"
 		}
 		a["action"] = name
 		a["generation"] = v["generation"]
@@ -286,6 +300,11 @@ func testRoundTrip(t *testing.T, worker bool) {
 	if event := d.event("stopped"); num(event["threadId"]) != gid {
 		t.Fatalf("attach focused wrong goroutine: want %d, event=%v", gid, event)
 	}
+
+	framesForReview := asList(d.ok("stackTrace", obj{"threadId": gid})["stackFrames"])
+	frameForReview := asObj(framesForReview[0])["id"]
+	d.ok("setBreakpoints", obj{"source": obj{"path": file}, "breakpoints": []any{obj{"line": returnLine}}})
+	d.ok("scopes", obj{"frameId": frameForReview})
 	attached := waitPause()
 	if !truth(attached["editorReady"]) || str(attached["owner"]) != editor {
 		t.Fatalf("editor did not finish attaching: %v", attached)
@@ -304,8 +323,8 @@ func testRoundTrip(t *testing.T, worker bool) {
 	if count != 2 {
 		t.Fatalf("breakpoints not preserved: %v", attached["breakpoints"])
 	}
-	if _, e = api(s, "POST", "/api/action", obj{"action": "next", "binding": s.Binding.ID, "generation": attached["generation"]}); e == nil || !strings.Contains(e.Error(), editors.Name(editor)+" owns") {
-		t.Fatalf("Codex executed during Zed ownership: %v", e)
+	if _, e = api(s, "POST", "/api/action", obj{"action": "next", "binding": s.Binding.ID, "generation": attached["generation"]}); e == nil || !strings.Contains(e.Error(), "authorized task") {
+		t.Fatalf("Agent executed without a task ID: %v", e)
 	}
 	d.ok("next", obj{"threadId": gid})
 	d.event("stopped")
@@ -388,6 +407,8 @@ func testRoundTrip(t *testing.T, worker bool) {
 	// Kill only the broker. Delve and its paused target must survive, and the
 	// replacement broker must retain watches, breakpoints, token, and stop PC.
 	pc := asObj(asObj(returned["state"])["currentThread"])["pc"]
+	reviewFunctionBP := action("break", obj{"function": "main.process"})
+	reviewFunctionID := num(asObj(reviewFunctionBP["Breakpoint"])["id"])
 	var recoveryHandover string
 	if worker {
 		recoveryHandover = str(action("handover", obj{"open": false})["handoverId"])
@@ -425,6 +446,17 @@ func testRoundTrip(t *testing.T, worker bool) {
 	}
 	if !worker && s.DAP == old.DAP {
 		t.Fatal("occupied DAP port was not rebound")
+	}
+
+	action("clear", obj{"breakpoint": reviewFunctionID})
+	reviewActual, reviewErr := delve.Call(s.RPC, "ListBreakpoints", obj{"All": false}, 5*time.Second)
+	if reviewErr != nil {
+		t.Fatal(reviewErr)
+	}
+	for _, raw := range asList(reviewActual["Breakpoints"]) {
+		if num(asObj(raw)["id"]) == reviewFunctionID {
+			t.Fatalf("cleared recovered function breakpoint remains in Delve: %v", raw)
+		}
 	}
 	recovered := state()
 	if worker {
@@ -567,7 +599,7 @@ func TestIntegrationRunningRecovery(t *testing.T) {
 		}
 		return v
 	}
-	id := str(run("start", "--binary", binary, "--project", dir)["id"])
+	id := str(run("start", "--no-ui", "--binary", binary, "--project", dir)["id"])
 	t.Cleanup(func() {
 		s, e := session.Read(id)
 		if e == nil {
@@ -577,7 +609,9 @@ func TestIntegrationRunningRecovery(t *testing.T) {
 		}
 	})
 	run("break", id, "--file", file, "--line", "5")
-	run("continue", id)
+	grant := run("task-authorize", id, "--human", "--instruction", "Run to the next breakpoint")
+	taskID := str(asObj(grant["task"])["id"])
+	run("continue", id, "--task", taskID)
 	before, e := session.Read(id)
 	if e != nil {
 		t.Fatal(e)
@@ -588,6 +622,13 @@ func TestIntegrationRunningRecovery(t *testing.T) {
 	state := run("state", id, "--summary")
 	if str(state["status"]) != "running" {
 		t.Fatalf("recovery fabricated a stop: %v", state)
+	}
+	fresh := run("state", id)
+	if str(asObj(fresh["task"])["status"]) != "cancelled" {
+		t.Fatal("recovery retained execution grant")
+	}
+	if output, err := exec.Command(helper, "next", id, "--task", taskID).CombinedOutput(); err == nil {
+		t.Fatalf("recovered broker accepted old task: %s", output)
 	}
 	for deadline := time.Now().Add(8 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
 		state = run("state", id, "--summary")

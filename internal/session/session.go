@@ -13,33 +13,35 @@ import (
 // Descriptor is the persisted session contract shared with the CLI and editors.
 // Keep its JSON fields compatible with existing sessions and companion versions.
 type Descriptor struct {
-	BreakpointOwners map[string]string `json:"breakpointOwners,omitempty"`
-	Backend          string            `json:"backend,omitempty"`
-	Version          int               `json:"version,omitempty"`
-	Binding          *Binding          `json:"binding,omitempty"`
-	Events           []Event           `json:"events,omitempty"`
-	Cursor           uint64            `json:"cursor,omitempty"`
-	ID               string            `json:"id"`
-	PID              int               `json:"brokerPid"`
-	Binary           string            `json:"binary"`
-	Project          string            `json:"project"`
-	HTTP             string            `json:"http"`
-	DAP              string            `json:"dap"`
-	Token            string            `json:"token,omitempty"`
-	Dir              string            `json:"directory"`
-	Created          string            `json:"created"`
-	RPC              string            `json:"rpc,omitempty"`
-	DelvePID         int               `json:"delvePid,omitempty"`
-	TargetPID        int               `json:"targetPid,omitempty"`
-	Thread           string            `json:"thread,omitempty"`
-	Codex            string            `json:"codex,omitempty"`
-	Owner            string            `json:"owner,omitempty"`
-	Editor           string            `json:"editor,omitempty"`
-	HandoverID       string            `json:"handoverId,omitempty"`
-	Watches          []string          `json:"watches,omitempty"`
-	Fingerprint      *Fingerprint      `json:"fingerprint,omitempty"`
-	Notification     *Notification     `json:"notification,omitempty"`
-	Stopped          bool              `json:"stopped,omitempty"`
+	FunctionBreakpoints map[string]string `json:"functionBreakpoints,omitempty"`
+	Task                *ExecutionTask    `json:"task,omitempty"`
+	BreakpointOwners    map[string]string `json:"breakpointOwners,omitempty"`
+	Backend             string            `json:"backend,omitempty"`
+	Version             int               `json:"version,omitempty"`
+	Binding             *Binding          `json:"binding,omitempty"`
+	Events              []Event           `json:"events,omitempty"`
+	Cursor              uint64            `json:"cursor,omitempty"`
+	ID                  string            `json:"id"`
+	PID                 int               `json:"brokerPid"`
+	Binary              string            `json:"binary"`
+	Project             string            `json:"project"`
+	HTTP                string            `json:"http"`
+	DAP                 string            `json:"dap"`
+	Token               string            `json:"token,omitempty"`
+	Dir                 string            `json:"directory"`
+	Created             string            `json:"created"`
+	RPC                 string            `json:"rpc,omitempty"`
+	DelvePID            int               `json:"delvePid,omitempty"`
+	TargetPID           int               `json:"targetPid,omitempty"`
+	Thread              string            `json:"thread,omitempty"`
+	Codex               string            `json:"codex,omitempty"`
+	Owner               string            `json:"owner,omitempty"`
+	Editor              string            `json:"editor,omitempty"`
+	HandoverID          string            `json:"handoverId,omitempty"`
+	Watches             []string          `json:"watches,omitempty"`
+	Fingerprint         *Fingerprint      `json:"fingerprint,omitempty"`
+	Notification        *Notification     `json:"notification,omitempty"`
+	Stopped             bool              `json:"stopped,omitempty"`
 }
 
 func NewID(n int) string {
@@ -98,4 +100,14 @@ type Event struct {
 	Binding *Binding `json:"binding,omitempty"`
 	Note    string   `json:"note,omitempty"`
 	Created string   `json:"created"`
+}
+
+// ExecutionTask is a cooperative authorization grant, not an authentication token.
+type ExecutionTask struct {
+	ID          string   `json:"id"`
+	Instruction string   `json:"instruction"`
+	Status      string   `json:"status"`
+	Reason      string   `json:"reason,omitempty"`
+	Binding     *Binding `json:"binding"`
+	Expires     string   `json:"expires"`
 }

@@ -10,22 +10,26 @@ import (
 )
 
 type broker struct {
-	history      *session.History
-	historyError string
-	stopID       string
-	captured     map[string]bool
-	backend      *backend.Delve
-	changed      chan struct{}
-	mu           sync.Mutex
-	s            session.Descriptor
-	rpcAddr      string
-	owner        string
-	generation   int
-	moving       bool
-	lastError    string
-	peer         *dapPeer
-	done         chan struct{}
-	once         sync.Once
+	interrupting      bool
+	agentStreams      int
+	agentDisconnected time.Time
+	history           *session.History
+	historyError      string
+	stopID            string
+	captured          map[string]bool
+	backend           *backend.Delve
+	changed           chan struct{}
+	mu                sync.Mutex
+	s                 session.Descriptor
+	rpcAddr           string
+	owner             string
+	generation        int
+	handleEpoch       int
+	moving            bool
+	lastError         string
+	peer              *dapPeer
+	done              chan struct{}
+	once              sync.Once
 }
 
 func (b *broker) rpc(method string, arg any) (obj, error) {

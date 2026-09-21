@@ -59,7 +59,7 @@ export default function (pi: ExtensionAPI) {
         await status(id,event,'queued',state.binding.revision);
       }).catch(error => { if (active) ctx.ui.notify(`Debug Handover: ${error.message}`, 'warning'); }); });
       child.on('error', error => {if(active) ctx.ui.notify(`Debug Handover: ${error.message}`, 'warning');});
-      child.on('exit', () => {children.delete(id); if(active) ctx.ui.notify(`Debug Handover listener ended for ${id}; use /debug-connect to reconnect.`, 'info');});
+      child.on('exit', () => {const expected = children.get(id) !== child; if (!expected) children.delete(id); if(active && !expected) ctx.ui.notify(`Debug Handover listener ended for ${id}; use /debug-connect to reconnect.`, 'info');});
     }
     // The shared skill passes this binding when starting a session. Explicit
     // connect also covers sessions started later, without directory polling.
@@ -74,10 +74,28 @@ export default function (pi: ExtensionAPI) {
       const cursor=state.notification && ['pending','sending'].includes(state.notification.status) ? Math.max(0,Number(state.notification.id)-1) : state.cursor;
       await questions(id);
       await listen(id,cursor);
-      return {session:id,binding,cli,panel:state.panel};
+      let panel=state.panel;
+      try {const ui=await call('ui');const url=new URL(ui.panel);if(url.protocol==='http:'&&url.hostname==='127.0.0.1'&&!url.username&&!url.password){url.searchParams.set('session',id);panel=url.href;}} catch { /* Older CLIs still return a working direct broker link. */ }
+      return {session:id,binding,cli,panel};
     }
     pi.registerTool({name:'debug_connect',label:'Connect debugger',description:'Bind a debugger session to this Pi conversation and enable event-driven handback. All debugger operations use the shared CLI.',parameters:Type.Object({session:Type.String()}),async execute(_id,params){const result=await connect(params.session);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
-    pi.registerCommand('debug-connect', {description:'Connect a debugger session to this Pi conversation', handler:async (args) => {await connect(args.trim());ctx.ui.notify('Debugger connected', 'info');}});
+    const currentSessions = async () => (await call('sessions')).filter((item: any) => item.status !== 'ended');
+    const showSessions = (items: any[]) => items.length ? items.map(item =>
+      `${item.id} · ${item.status} · ${item.project}\n${item.panel || 'Broker unavailable; recover the session before connecting or stopping it.'}`
+    ).join('\n\n') : 'No current debugger sessions.';
+    async function endSession(id: string) {
+      if (!/^[a-f0-9]{10}$/.test(id)) throw new Error('Expected debugger session ID');
+      const result = await call('end-session', id, '--confirmed');
+      const child = children.get(id);
+      children.delete(id);
+      child?.kill();
+      return result;
+    }
+    pi.registerTool({name:'debug_sessions',label:'List debugger sessions',description:'List current debugger sessions, their projects, statuses, and browser URLs. Does not connect or change execution.',parameters:Type.Object({}),async execute(){const sessions=await currentSessions();return {content:[{type:'text',text:showSessions(sessions)}],details:{sessions}};}});
+    pi.registerTool({name:'debug_stop',label:'Stop debugger session',description:'Terminate one debugger session and its target process. Use only when the user explicitly asks to end that session. Saved history is retained.',parameters:Type.Object({session:Type.String()}),async execute(_id,params){const result=await endSession(params.session);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
+    pi.registerCommand('debug-connect', {description:'Connect a debugger session and show its browser URL', handler:async (args) => {const result=await connect(args.trim());ctx.ui.notify(`Debugger connected: ${result.panel}`, 'info');}});
+    pi.registerCommand('debug-sessions', {description:'List current debugger sessions and browser URLs', handler:async () => {ctx.ui.notify(showSessions(await currentSessions()), 'info');}});
+    pi.registerCommand('debug-stop', {description:'Stop a debugger session and its target: /debug-stop SESSION_ID', handler:async (args) => {const id=args.trim();await endSession(id);ctx.ui.notify(`Debugger session ${id} stopped. Saved history retained.`, 'info');}});
     try {
       const sessions = await call('sessions');
       for (const item of sessions) {

@@ -9,11 +9,13 @@ import (
 )
 
 type CommentMessage struct {
-	ID       string `json:"id"`
-	Author   string `json:"author"`
-	Body     string `json:"body"`
-	Created  string `json:"created"`
-	Question string `json:"question,omitempty"`
+	Context  map[string]any `json:"context,omitempty"`
+	Run      string         `json:"run,omitempty"`
+	ID       string         `json:"id"`
+	Author   string         `json:"author"`
+	Body     string         `json:"body"`
+	Created  string         `json:"created"`
+	Question string         `json:"question,omitempty"`
 }
 type CommentDelivery struct {
 	Question string   `json:"question"`

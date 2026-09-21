@@ -1,3 +1,4 @@
+import {createWorkspace} from './workspace';
 import { createComments } from './comments';
 import hljs from 'highlight.js/lib/core';
 import go from 'highlight.js/lib/languages/go';
@@ -22,6 +23,10 @@ function node<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, cls?
 
 const token = location.hash.slice(1); // Only older broker URLs carry a token.
 const previewSession = new URLSearchParams(location.search).get('session');
+let historicalID = new URLSearchParams(location.search).get('history');
+let historicalLoaded=false;
+const landing=!previewSession&&!historicalID&&document.body.dataset.workspace==='true';
+let ownHistory: import('../../client/src/models').CommentThread[]=[];
 history.replaceState(null, '', location.pathname + location.search);
 
 let snapshot: Snapshot | undefined;
@@ -43,7 +48,7 @@ let fileRequest = 0;
 let knownFiles: string[] = [];
 let disconnected = false;
 let evaluated: Evaluation | undefined;
-const basename = (path: string) => path.split('/').pop() || path;
+const basename = (path: string | null | undefined) => path?.split('/').pop() || path || '?';
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 function message(id: string, text?: string): void {
@@ -54,7 +59,10 @@ function message(id: string, text?: string): void {
 const api = createClient({baseURL: location.origin, token, session: previewSession || undefined});
 const request = <T>(path: string, body?: ActionRequest | Record<string, unknown>) => api.request<T>(path, body);
 
-const comments = createComments(request, openSourceFile);
+const comments = createComments(request, (file,line)=>openSourceFile(file,line,true));
+const workspace = createWorkspace({request,runs:names=>comments.runs(names),history:items=>comments.history([...items,...ownHistory]),ended:()=>{if(snapshot){historicalID=snapshot.id;historicalLoaded=false;openSources.clear();activeFile='';displayedSource=undefined;sourceKey='';lastLocation='';renderKey='';const url=new URL(location.href);url.searchParams.delete('session');url.searchParams.set('history',historicalID);history.replaceState(null,'',url.pathname+url.search);void refresh();}}});
+$('newQuestion').onclick=()=>{const source=displayedSource||snapshot?.source;if(source)comments.start(source.file,navigationTarget?.line||source.line||source.start,undefined,true);};
+$('copyPath').onclick=()=>{if(displayedSource)void navigator.clipboard.writeText(displayedSource.file).then(()=>message('notice','Absolute source path copied.')).catch(()=>message('notice',displayedSource!.file));};
 
 function pinIcon(): SVGSVGElement {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -89,7 +97,7 @@ function inspectable(value: Variable, expression: string, loaded = false): HTMLE
       more.disabled = true;
       more.textContent = 'Loading…';
       try {
-        const result = await request<ActionResult>('action', { action: 'eval', actor: snapshot.owner === 'codex' ? 'agent' : 'browser', expression, ...scope, depth: 6, count: 128 });
+        const result = await request<ActionResult>('action', { action: 'eval', actor: 'browser', expression, ...scope, depth: 6, count: 128 });
         if (!root.isConnected || snapshot?.status !== 'paused' || snapshot.generation !== scope.generation || snapshot.frame !== scope.frame || snapshot.goroutine !== scope.goroutine) return;
         if (result.value) {
           const replacement = inspectable({ ...result.value, name: value.name }, expression, true);
@@ -125,7 +133,8 @@ function variable(value: Variable): HTMLElement {
 }
 
 function renderSource(source: Source): void {
-  $('filename').textContent = source.file;
+  $('filename').textContent = source.file.startsWith((snapshot?.project||'')+'/')?source.file.slice(snapshot!.project.length+1):source.file;
+ $('filename').title=source.file;
   $('filename').title = source.file;
   $('line').textContent = source.line ? 'line ' + source.line : 'Browsing';
 
@@ -217,44 +226,50 @@ function renderSource(source: Source): void {
   if (current) $('source').scrollTop = Math.max(0, current.offsetTop - $('source').clientHeight / 2);
 }
 
+function syncQuestion(state:Snapshot):void{
+ const button=$<HTMLButtonElement>('newQuestion');
+ button.hidden=!!historicalID||!!state.historical||state.status==='exited';
+ button.disabled=busy||disconnected||state.status!=='paused'||!state.capabilities?.comments||!(displayedSource||state.source);
+ button.title=button.disabled?'Open a source file at a paused run to ask a question.':'Ask about this source';
+}
+function setArchiveControls(state:Snapshot):void{
+ const archived=!!state.historical;document.querySelector<HTMLElement>('.controls')!.hidden=archived;document.querySelector<HTMLElement>('.fileToolbar')!.hidden=archived&&!state.source;document.querySelector<HTMLElement>('.addBreakpoint')!.hidden=archived;syncQuestion(state);document.querySelector<HTMLElement>('.console')!.hidden=archived;document.querySelector<HTMLElement>('.inspectionDock')!.hidden=archived&&!state.frames?.length;$('openFileLabel').textContent=archived?'Browse saved files…':'Open file…';$('fileShortcut').textContent=/Mac/.test(navigator.platform)?'⌘P':'Ctrl+P';$('openFile').hidden=archived&&!state.source;$<HTMLButtonElement>('openFile').disabled=archived&&!state.source;$('followSource').hidden=!state.source;$('copyPath').hidden=!state.source&&!activeFile;$('gutterHint').hidden=archived&&!state.source;
+ if(state.snapshotUnavailable)message('error','Saved snapshot unavailable. Run details and saved discussions remain accessible.');
+}
 function render(state: Snapshot): void {
-  const paused = state.status === 'paused';
+  const paused = state.status === 'paused' || !!state.historical;
+  const readOnly=!!state.historical;
   document.querySelector('main')!.dataset.executing = String(busy || state.status === 'running');
   lastPid = state.state.Pid || lastPid;
-  const codex = state.owner === 'browser' || state.owner === 'codex';
   const agentName = state.binding?.name || 'Agent';
-  $('status').textContent = state.status[0].toUpperCase() + state.status.slice(1);
+ document.querySelector<HTMLElement>('.agentPanel')!.hidden=!!state.historical;
+
+ setArchiveControls(state);
+  $('status').textContent = 'Program · '+(state.historical?(state.runEnded?'Ended':'Historical'):state.status[0].toUpperCase() + state.status.slice(1));
+message('historicalNotice',state.historical?(state.snapshotUnavailable||!state.source?'Historical run':'Saved snapshot')+(state.capturedAt?' · '+new Date(state.capturedAt).toLocaleString():'')+(state.runEnded?' · execution has ended':' · live process state is unverified'):'');
   $('status').className = 'badge ' + state.status;
   $('session').textContent = `${state.id} · PID ${lastPid || '—'} · ${basename(state.project)}`;
-  const editorSelect = $<HTMLSelectElement>('editor');
-  if (!editorSelect.dataset.chosen) editorSelect.value = state.editor || 'browser';
-  editorSelect.disabled = busy || !paused || (state.owner !== 'agent' && state.owner !== 'codex');
-  const editor = state.owner === 'vscode' ? 'VS Code' : state.owner === 'browser' ? 'browser' : 'Zed';
-  $('owner').textContent = state.owner === 'agent' || state.owner === 'codex' ? `${agentName} has control` : `You have control in ${editor}`;
-  $('connection').textContent = state.owner === 'browser' ? 'Use the controls here, then return control to your agent.'
-    : state.owner === 'agent' ? 'Choose browser or an editor to take control at this pause.'
-    : state.editorConnected ? `${editor} is connected to the same process.` : `Attach ${editor} to the paused session. Zed: F4 → ${state.label}.`;
-  const delivery = state.notification;
-  $('delivery').textContent = delivery ? `Handback ${delivery.status}${delivery.error ? ': ' + delivery.error : ''}`
-    : `Handback events go to the bound ${agentName} listener when available.`;
-  const retry = $<HTMLButtonElement>('retryNotification');
-  retry.hidden = !delivery || !['failed', 'unknown'].includes(delivery.status);
-  retry.disabled = busy;
-  const handover = $<HTMLButtonElement>('handover');
-  handover.textContent = state.owner === 'agent' || state.owner === 'codex' ? `Take control in ${editorSelect.value}` : `Return to ${agentName}`;
-  handover.disabled = busy || !paused;
-  $<HTMLButtonElement>('takeBrowser').hidden = state.owner === 'browser';
-  $<HTMLButtonElement>('takeBrowser').disabled = busy || !paused;
+  const task = state.task;
+  const activeTask = task?.status === 'authorized' || task?.status === 'active';
+  $('agentStatus').textContent = state.historical?'Agent · Historical discussion':activeTask ? `${agentName} · ${task.status === 'authorized' ? 'Awaiting agent' : 'Debugging'}`
+    : comments.answering() ? `${agentName} · Answering` : `${agentName} · ${state.agentConnected === true ? 'Connected' : state.agentConnected === false ? 'Offline' : 'Not reported'}`;
+  $<HTMLButtonElement>('stopAgent').hidden = !activeTask;
+  $<HTMLButtonElement>('stopAgent').disabled = busy;
+  $('connection').textContent = state.editorConnected ? 'Editor connected to this process. Debugger controls are shared.' : 'Debugger controls are shared. Agent execution requires an authorized task.';
+  $<HTMLButtonElement>('authorizeTask').disabled = busy || !paused || readOnly || activeTask || !state.capabilities?.executionTasks;
+  $<HTMLTextAreaElement>('taskInstruction').disabled = busy || activeTask;
+  message('taskStatus', state.historical?'':task ? `${task.instruction} · ${task.status}${task.reason ? ': ' + task.reason : ''}`
+    : state.capabilities?.executionTasks ? '' : 'Execution tasks require an updated broker.');
   document.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(button => {
-    button.disabled = busy || !codex || (button.dataset.action === 'pause' ? state.status !== 'running' : !paused);
+    button.disabled = readOnly || busy || (button.dataset.action === 'pause' ? state.status !== 'running' : !paused) || (!!state.beforeGoStart && ['next','step','stepout'].includes(button.dataset.action || ''));
   });
   $('breakForm').querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button').forEach(element => {
-    element.disabled = busy || !paused;
+    element.disabled = busy || !paused || readOnly;
   });
-  $<HTMLButtonElement>('stop').disabled = busy || !codex;
-  $('evalForm').querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('input,button,select').forEach(element => { element.disabled = busy || !paused; });
-  $<HTMLButtonElement>('addWatch').disabled = busy || !paused || !codex;
-  $('stopReason').textContent = paused ? state.state.stopReason || 'Paused at launch' : state.status === 'running' ? 'Running · showing last pause' : 'Program exited';
+  $<HTMLButtonElement>('stop').disabled = busy || readOnly;
+  $('evalForm').querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('input,button,select').forEach(element => { element.disabled = busy || !paused || readOnly || !!state.beforeGoStart; });
+  $<HTMLButtonElement>('addWatch').disabled = busy || !paused || readOnly;
+  $('stopReason').textContent = state.historical?(state.snapshotUnavailable?'Snapshot unavailable':state.source?'Saved pause':'No recorded pause'):state.beforeGoStart ? 'Paused before Go starts' : paused ? state.state.stopReason || 'Paused at launch' : state.status === 'running' ? 'Running · showing last pause' : 'Program exited';
   $('binary').textContent = 'BINARY  ' + state.binary;
   if (state.error || state.inspectionError) message('error', state.error || state.inspectionError);
   const identity = state.sourceIdentity;
@@ -268,20 +283,28 @@ function render(state: Snapshot): void {
   const isPinned = Boolean(evaluated && state.watches?.some(watch => watch.expression === evaluated?.expression));
   $('addWatch').hidden = !evaluated || isPinned;
   $('evaluation').hidden = isPinned;
-  $('evaluation').querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = busy || !paused; });
+  $('evaluation').querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = busy || !paused || readOnly; });
 
   // Keep the last stop visible during execution. Disable its interactions and
   // label it as stale instead of collapsing and rebuilding every panel.
   const disableInspection = () => {
-    $('frames').querySelectorAll<HTMLButtonElement>('button').forEach(b => { b.disabled = busy || !paused; });
-    $('locals').querySelectorAll<HTMLButtonElement>('button').forEach(b => { b.disabled = busy || !paused || b.dataset.unavailable === 'true' || (b.classList.contains('pinButton') && !codex); });
-    for (const id of ['watches']) $(id).querySelectorAll<HTMLButtonElement>('button').forEach(b => { b.disabled = busy || !paused || !codex; });
-    $<HTMLSelectElement>('goroutines').disabled = busy || !paused;
+    $('frames').querySelectorAll<HTMLButtonElement>('button').forEach(b => { b.disabled = busy || !paused || readOnly; });
+    $('locals').querySelectorAll<HTMLButtonElement>('button').forEach(b => { b.disabled = busy || !paused || readOnly || b.dataset.unavailable === 'true'; });
+    for (const id of ['watches']) $(id).querySelectorAll<HTMLButtonElement>('button').forEach(b => { b.disabled = busy || !paused || readOnly; });
+    $<HTMLSelectElement>('goroutines').disabled = busy || !paused || readOnly;
   };
   disableInspection();
-  $('breakpoints').querySelectorAll<HTMLButtonElement>('button:not(.breakpointLink)').forEach(b => { b.disabled = busy || !paused; });
+  $('breakpoints').querySelectorAll<HTMLButtonElement>('button:not(.breakpointLink)').forEach(b => { b.disabled = busy || !paused || readOnly; });
+  if(state.status==='exited'&&!readOnly){
+    document.querySelector<HTMLElement>('.controls')!.hidden=true;
+    document.querySelector<HTMLElement>('.agentPanel')!.hidden=true;
+    document.querySelector<HTMLElement>('.addBreakpoint')!.hidden=true;
+    $('newQuestion').hidden=true;
+    if(!displayedSource){$('filename').textContent='Program exited';$('source').replaceChildren(node('p','This run has finished. Start another run and set a breakpoint before continuing to inspect the program.'));$('goroutines').hidden=true;$('executionContext').hidden=true;$('frames').replaceChildren(node('p','No paused call stack.','empty'));document.querySelector<HTMLElement>('.inspectionDock')!.hidden=true;}
+    else {$('gutterHint').textContent='Program exited · showing the last captured source';}
+  }
   if (!paused) return;
-  const key = JSON.stringify([state.goroutine, state.frame, state.frames, state.source, state.breakpoints, state.goroutines, state.watches, agentName]);
+  const key = JSON.stringify([state.goroutine, state.frame, state.frames, state.source, state.breakpoints, state.goroutines, state.watches, agentName, state.beforeGoStart]);
   paintBreakpoints();
   if (key === renderKey) return;
   renderKey = key;
@@ -291,10 +314,11 @@ function render(state: Snapshot): void {
   if (!state.source && !activeFile) {
     sourceKey = '';
     displayedSource = undefined;
-    $('source').replaceChildren(node('p', 'No source available at this location.'));
-    $('filename').textContent = 'No source available';
+    $('source').replaceChildren(node('p', state.historical?(state.snapshotUnavailable?'Saved snapshot unavailable.':'No snapshot was saved for this run.'):state.beforeGoStart ? 'The program has not entered Go code yet. Open a source file and set a breakpoint, then press Continue.' : 'No source available at this location.'));if(!state.historical){const open=node('button','Open file…');open.onclick=()=>void showFilePicker();$('source').append(open);}
+    $('filename').textContent = state.historical?'No recorded source':state.beforeGoStart ? 'Paused before Go starts' : 'No source available';
     $('line').textContent = '—';
   }
+  const contexts=state.goroutines||[];$('goroutines').hidden=contexts.length<2;$('executionContext').hidden=contexts.length!==1;$('executionContext').textContent=contexts.length===1?'Goroutine '+contexts[0].id:'';
   (state.goroutines || []).forEach(g => {
     const option = node('option', 'Goroutine ' + g.id);
     option.value = String(g.id);
@@ -307,7 +331,7 @@ function render(state: Snapshot): void {
     button.onclick = () => { frame = index; void refresh(); };
     $('frames').append(button);
   });
-  if (!state.frames?.length) $('frames').append(node('p', 'No Go stack at this location.', 'empty'));
+  if (!state.frames?.length) $('frames').append(node('p', state.beforeGoStart ? 'Call stack appears when Go code is reached.' : state.historical?'No call stack recorded.':'No call stack at this location.', 'empty'));
   if (state.source) {
     const location = [state.source.file,state.source.line,state.frame,state.goroutine].join(':');
     if (!openSources.has(state.source.file)) openSources.set(state.source.file,state.source);
@@ -325,7 +349,7 @@ function render(state: Snapshot): void {
     const pin = node('button', undefined, 'pinButton');
     const unavailable = !value.name || value.name.startsWith('~');
     pin.dataset.unavailable = String(unavailable);
-    pin.disabled = busy || !paused || !codex || unavailable;
+    pin.disabled = busy || !paused || readOnly || unavailable;
     pin.setAttribute('aria-pressed', String(pinned));
     pin.setAttribute('aria-label', `${pinned ? 'Unpin' : 'Pin'} ${value.name}`);
     pin.title = unavailable ? 'This compiler-generated value cannot be pinned' : `${pinned ? 'Unpin' : 'Pin'} ${value.name}`;
@@ -369,7 +393,7 @@ function render(state: Snapshot): void {
       node('span', [bp.Cond, bp.HitCond ? 'hits ' + bp.HitCond : ''].filter(Boolean).join(' · '), 'condition'),
     );
     const remove = node('button', 'Remove');
-    remove.disabled = busy || !paused;
+    remove.disabled = busy || !paused || readOnly;
     remove.onclick = () => { void act('clear', { breakpoint: bp.id }); };
     row.append(remove);
     $('breakpoints').append(row);
@@ -388,31 +412,43 @@ function render(state: Snapshot): void {
 }
 
 async function refresh(): Promise<void> {
-  if (fetching) return;
+  if (fetching || historicalLoaded || landing) return;
   fetching = true;
   try {
-    snapshot = await request<Snapshot>(`state?goroutine=${goroutine}&frame=${frame}`);
+    if(historicalID){snapshot=await request<Snapshot & {discussion:{threads:import('../../client/src/models').CommentThread[]}}>('saved-run?id='+encodeURIComponent(historicalID));ownHistory=(snapshot as Snapshot & {discussion:{threads:import('../../client/src/models').CommentThread[]}}).discussion?.threads||[];historicalLoaded=true;}
+    else snapshot = await request<Snapshot>(`state?goroutine=${goroutine}&frame=${frame}`);
     if (disconnected) { disconnected = false; message('error', ''); }
     render(snapshot);
     comments.update(snapshot);
+    if(snapshot.historical)comments.history(ownHistory);
+    workspace.update(snapshot);
   } catch (error) {
+    // Historical evidence does not change on the live polling interval.
+    // Keep an unavailable archive stable until the user reloads it.
+    if(historicalID){
+      historicalLoaded=true;
+      snapshot={id:historicalID,historical:true,snapshotUnavailable:true,status:'exited',state:{},frame:0,generation:0,owner:'browser',zedConnected:false,project:'',binary:'',label:''};
+      renderKey='';render(snapshot);comments.update(snapshot);workspace.update(snapshot);
+      message('error','Saved snapshot unavailable. Run details and saved discussions remain accessible.');
+      const retry=node('button','Retry saved evidence');retry.onclick=()=>{historicalLoaded=false;void refresh();};$('source').append(retry);
+      return;
+    }
     disconnected = true;
-    $('stopReason').textContent = 'Disconnected · showing last pause';
-    message('error', errorMessage(error));
-    $('status').textContent = 'Disconnected';
-    document.querySelectorAll('button').forEach(button => { button.disabled = true; });
-  } finally {
-    fetching = false;
-  }
+    $('stopReason').textContent = historicalID?'Saved snapshot unavailable':'Connection lost · showing last captured pause';
+    message('error', historicalID?'This run has no readable saved snapshot. Its investigation and run status are still available.':errorMessage(error));
+    $('status').textContent = 'Program · Last state unverified';
+    for(const selector of ['[data-action]','#breakForm button','#evalForm button','#frames button','#locals button','.breakpointGutter'])document.querySelectorAll<HTMLButtonElement>(selector).forEach(b=>b.disabled=true);
+    if(snapshot){workspace.update(snapshot,true);comments.update({...snapshot,capabilities:{...snapshot.capabilities,comments:false}});}else workspace.empty();
+  } finally { fetching = false; }
 }
 
 async function act(action: Action, extra: ActionOptions = {}): Promise<void> {
-  if (busy || !snapshot) return;
+  if (busy || !snapshot || snapshot.historical || disconnected) return;
   busy = true;
   render(snapshot);
   message('error', '');
   try {
-    const result = await request<ActionResult>('action', { action, actor: snapshot.owner === 'codex' ? 'agent' : 'browser', generation: snapshot.generation, ...extra });
+    const result = await request<ActionResult>('action', { action, actor: 'browser', generation: snapshot.generation, ...extra });
     message('notice', result.instructions || result.message || (result.Breakpoint ? `Breakpoint set at ${basename(result.Breakpoint.file)}:${result.Breakpoint.line}` : action === 'break' ? 'Breakpoint set in Delve.' : ''));
     message('error', result.openError || result.notificationError || result.persistenceError || result.cleanupError);
     if (action === 'eval' && result.value) {
@@ -442,9 +478,11 @@ async function act(action: Action, extra: ActionOptions = {}): Promise<void> {
 document.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(button => {
   button.onclick = () => { void act(button.dataset.action as Action); };
 });
-$('takeBrowser').onclick = () => { void act('handover', {editor:'browser',open:false}); };
-$('handover').onclick = () => {
-  if (snapshot) void act(snapshot.owner === 'agent' || snapshot.owner === 'codex' ? 'handover' : 'reclaim', { open: true, editor: $<HTMLSelectElement>('editor').value, notify: Boolean(snapshot.thread) });
+$('stopAgent').onclick = () => { void act('task-cancel', {task: snapshot?.task?.id}); };
+$('taskForm').onsubmit = event => {
+  event.preventDefault();
+  const instruction = $<HTMLTextAreaElement>('taskInstruction').value.trim();
+  if (instruction) void act('task-authorize', {instruction});
 };
 async function evaluate(): Promise<void> {
   if (!snapshot) return;
@@ -453,10 +491,6 @@ async function evaluate(): Promise<void> {
 $('evalForm').onsubmit = event => { event.preventDefault(); void evaluate(); };
 $('addWatch').append(pinIcon());
 $('addWatch').onclick = () => { if (evaluated) void act('watch', { expression: evaluated.expression }); };
-$('retryNotification').onclick = () => {
-  if (snapshot?.notification?.status === 'unknown' && !confirm('Delivery is uncertain. Check your Codex task first. Retry anyway?')) return;
-  void act('retry-notification');
-};
 $('goroutines').onchange = () => { goroutine = Number($<HTMLSelectElement>('goroutines').value); frame = 0; void refresh(); };
 $('breakForm').onsubmit = event => {
   event.preventDefault();
@@ -466,64 +500,8 @@ $('breakForm').onsubmit = event => {
     condition: $<HTMLInputElement>('breakCondition').value,
   });
 };
-$('stop').onclick = () => {
-  if (confirm('End this session and terminate its program?')) void act('stop');
-};
 const timer = setInterval(() => { void refresh(); }, 800);
-void refresh();
-
-$('editor').onchange = () => { $('editor').dataset.chosen = 'true'; if (snapshot) render(snapshot); };
-
-interface SessionSummary { id: string; project: string; binary: string; status: string; owner?: string; panel?: string; binding?: { name: string }; recoverable?: boolean }
-async function loadSessions(): Promise<void> {
-  $<HTMLButtonElement>('refreshSessions').disabled = true;
-  try {
-    const result = await request<{sessions: SessionSummary[]}>('sessions');
-    $('sessionList').replaceChildren();
-    $('sessionCount').textContent = `(${result.sessions.length})`;
-    for (const item of result.sessions) {
-      const row = node('div', undefined, 'sessionRow');
-      const title = node('strong', `${basename(item.project)} · ${basename(item.binary)}`);
-      title.title = item.project + '\n' + item.binary;
-      const owner = item.owner === 'agent' || item.owner === 'codex' ? item.binding?.name || 'Agent' : item.owner;
-      row.append(title, node('span', `${item.id} · ${item.status}${owner ? ' · ' + owner : ''}`));
-      if (item.id === snapshot?.id) row.append(node('span', 'Current', 'currentSession'));
-      else if (item.panel && ['paused', 'running', 'exited'].includes(item.status)) {
-        const url = new URL(item.panel);
-        if (url.protocol === 'http:' && url.hostname === '127.0.0.1' && !url.username && !url.password) {
-          const link = node('a', 'Open session'); link.href = url.href; row.append(link);
-        }
-      } else row.append(node('small', item.recoverable ? `Offline · recover with: delve-llm-adapter recover ${item.id}` : 'No live broker'));
-      if (item.panel && ['paused', 'running', 'exited'].includes(item.status)) {
-        const end = node('button', 'End session', 'endSession');
-        end.onclick = async () => {
-          if (!confirm(`End ${basename(item.binary)} (${item.id})? This terminates its program and debugger, including any editor attachment.`)) return;
-          end.disabled = true;
-          try {
-            await request('sessions/stop', {id:item.id,confirmed:true});
-            if (item.id === snapshot?.id) {
-              clearInterval(timer);
-              $('status').textContent = 'Ended';
-              message('notice', 'Session ended. Choose another session from the list.');
-              document.querySelectorAll<HTMLButtonElement>('button:not(.endSession):not(#refreshSessions)').forEach(b => { b.disabled = true; });
-              // A native inspector loses its broker when ending itself. Existing
-              // links remain usable; do not poll the stopped endpoint.
-              row.replaceChildren(title, node('span', item.id + ' · ended'));
-            } else await loadSessions();
-          } catch (error) { message('sessionsError',errorMessage(error)); end.disabled=false; }
-        };
-        row.append(end);
-      }
-      $('sessionList').append(row);
-    }
-    message('sessionsError', result.sessions.length ? '' : 'No saved sessions.');
-  } catch (error) { message('sessionsError', errorMessage(error)); }
-  finally { $<HTMLButtonElement>('refreshSessions').disabled = false; }
-}
-$('refreshSessions').onclick = () => { void loadSessions(); };
-document.querySelector<HTMLDetailsElement>('.sessionPicker')!.ontoggle = event => {
-  if ((event.currentTarget as HTMLDetailsElement).open) void loadSessions();
-};
+if(landing){workspace.empty();$('status').textContent='No run selected';$('debuggerStatus').textContent='Debugger · No run';$('source').replaceChildren(node('p','Open an investigation or start a new one to debug a precompiled executable.'));document.querySelectorAll<HTMLButtonElement>('[data-action],#stop,#newQuestion,#openFile,#followSource,#copyPath').forEach(b=>b.disabled=true);}else void refresh();
 
 function rememberScroll(): void {
   if (activeFile) sourceScroll.set(activeFile,{top:$('source').scrollTop,left:$('source').scrollLeft});
@@ -541,20 +519,23 @@ function showActiveSource(): void {
     group.append(button,close);$('fileTabs').append(group);
   }
   paintBreakpoints();
+  if(snapshot)syncQuestion(snapshot);
 }
 function paintBreakpoints(): void {
   $('source').querySelectorAll<HTMLElement>('.sourceHighlight').forEach(el=>el.classList.toggle('navigated',navigationTarget?.file===activeFile && navigationTarget.line===Number(el.dataset.line)));
-  $('gutterHint').textContent = snapshot?.status !== 'paused' ? 'Pause execution to edit breakpoints.' : 'Click beside a line number to toggle a breakpoint · right-click for a condition';
-  const allowed = !busy && snapshot?.status==='paused';
+  $('gutterHint').textContent = snapshot?.historical?'Saved source · execution and breakpoints are read only':snapshot?.status !== 'paused' ? 'Pause execution to edit breakpoints.' : 'Click beside a line number to toggle a breakpoint · right-click for a condition';
+  const archived=!!historicalID||!!snapshot?.historical;
+  const allowed = !archived && !disconnected && !busy && snapshot?.status==='paused';
   $('source').querySelectorAll<HTMLButtonElement>('button.breakpointGutter').forEach(button=>{
     const bp=snapshot?.breakpoints?.find(bp=>bp.id>0 && bp.file===activeFile && bp.line===Number(button.dataset.line));
     button.classList.toggle('hasBreakpoint',Boolean(bp));button.disabled=!allowed;
-    button.title=!allowed ? 'Pause execution to edit breakpoints' : bp ? `Breakpoint ${bp.id}${bp.Cond ? ': '+bp.Cond : ''} · click to remove` : 'Click to set breakpoint · right-click for condition';
+    button.setAttribute('aria-label',archived?`Saved ${bp?'breakpoint':'source line'} ${button.dataset.line}${bp?.Cond?': '+bp.Cond:''}`:`Toggle breakpoint at line ${button.dataset.line}`);
+    button.title=archived ? `Saved ${bp?'breakpoint':'source line'}${bp?.Cond?': '+bp.Cond:''}` : !allowed ? 'Pause execution to edit breakpoints' : bp ? `Breakpoint ${bp.id}${bp.Cond ? ': '+bp.Cond : ''} · click to remove` : 'Click to set breakpoint · right-click for condition';
     button.setAttribute('aria-pressed',String(Boolean(bp)));
   });
 }
 async function gutterBreakpoint(file: string,line: number,conditional: boolean): Promise<void> {
-  if (busy || snapshot?.status!=='paused') return;
+  if (historicalID || snapshot?.historical || disconnected || busy || snapshot?.status!=='paused') return;
   const bp=snapshot.breakpoints?.find(bp=>bp.id>0 && bp.file===file && bp.line===line);
   if (bp && conditional) { message('notice','Remove this breakpoint first to replace its condition.');return; }
   const condition=conditional ? prompt('Breakpoint condition (Go expression):','') : '';
@@ -562,10 +543,11 @@ async function gutterBreakpoint(file: string,line: number,conditional: boolean):
   await act(bp?'clear':'break',bp?{breakpoint:bp.id}:{file,line,condition});
   paintBreakpoints();
 }
-async function openSourceFile(file: string, targetLine?: number): Promise<void> {
+async function openSourceFile(file: string, targetLine?: number,quiet=false): Promise<void> {
   const revision=++fileRequest;
   try {
-    const source=await request<Source>('sources?file='+encodeURIComponent(file));
+    const source=(historicalID||snapshot?.historical)?(snapshot?.source?.file===file?snapshot.source:undefined):await request<Source>('sources?file='+encodeURIComponent(file));
+    if(!source)throw Error('This file was not captured in the saved snapshot.');
     if(revision!==fileRequest)return;
     rememberScroll();openSources.set(file,source);activeFile=file;navigationTarget=targetLine ? {file,line:targetLine} : undefined;showActiveSource();
     if (targetLine) {
@@ -574,26 +556,33 @@ async function openSourceFile(file: string, targetLine?: number): Promise<void> 
       $('line').textContent='line '+targetLine;
     } else $('source').scrollTop=0;
     $<HTMLDialogElement>('filePicker').close();
-  } catch(error){$('fileSearchStatus').textContent=errorMessage(error);message('error',errorMessage(error));}
+  } catch(error){if(quiet)throw error;$('fileSearchStatus').textContent=errorMessage(error);message('error',errorMessage(error));}
 }
+let fileLoadError='';
 function filterFiles(): void {
+  if(fileLoadError){$('fileResults').replaceChildren();$('fileSearchStatus').textContent=fileLoadError;return;}
   const query=$<HTMLInputElement>('fileSearch').value.toLowerCase().replace(/^@/,'');
   const matches=knownFiles.filter(file=>file.toLowerCase().includes(query));
-  matches.sort((a,b)=>Number(!a.startsWith((snapshot?.project||'')+'/'))-Number(!b.startsWith((snapshot?.project||'')+'/')) || a.localeCompare(b));
+  const sourceRoot=snapshot?.source?.file.slice(0,snapshot.source.file.lastIndexOf('/')+1);const rank=(file:string)=>/\/(vendor|node_modules|site-packages)\//.test(file)?2:file.startsWith((snapshot?.project||'')+'/')?0:sourceRoot&&file.startsWith(sourceRoot)?1:3;matches.sort((a,b)=>rank(a)-rank(b)||a.localeCompare(b));
   $('fileResults').replaceChildren();
   for(const file of matches.slice(0,100)){
     const button=node('button',undefined,'fileResult');button.append(node('strong',basename(file)),node('small',file));button.onclick=()=>{void openSourceFile(file);};$('fileResults').append(button);
   }
-  $('fileSearchStatus').textContent=`${matches.length} files${matches.length>100?' · type to narrow results':''}`;
+  $('fileSearchStatus').textContent=matches.length?`${matches.length} files${matches.length>100?' · type to narrow results':''}`:query?'No files match this search.':'The debugger returned no source files for this binary.';
 }
 async function showFilePicker(): Promise<void> {
+  if((historicalID||snapshot?.historical)&&!snapshot?.source)return;
   const dialog=$<HTMLDialogElement>('filePicker');if(!dialog.open)dialog.showModal();
-  $<HTMLInputElement>('fileSearch').focus();$('fileSearchStatus').textContent='Loading source files…';
-  try {knownFiles=(await request<{files:string[]}>('sources')).files;filterFiles();}catch(error){$('fileSearchStatus').textContent=errorMessage(error);}
+  fileLoadError='';knownFiles=[];$('fileResults').replaceChildren();$<HTMLInputElement>('fileSearch').value='';$<HTMLInputElement>('fileSearch').focus();$('fileSearchStatus').textContent='Loading source files…';
+  if(snapshot?.status==='exited'&&!snapshot.historical){fileLoadError='This program has exited. Choose Run again, then open a file and set a breakpoint before Continue.';filterFiles();return;}
+  try {knownFiles=snapshot?.historical?[snapshot.source!.file]:(await request<{files:string[]}>('sources')).files;filterFiles();}catch(error){fileLoadError=errorMessage(error);filterFiles();}
 }
 $('openFile').onclick=()=>{void showFilePicker();};
 $('closePicker').onclick=()=>{$<HTMLDialogElement>('filePicker').close();};
 $('fileSearch').oninput=filterFiles;
 $('fileSearch').onkeydown=event=>{if(event.key==='ArrowDown'||event.key==='Enter'){event.preventDefault();$('fileResults').querySelector<HTMLButtonElement>('button')?.focus();}};
 $('followSource').onclick=()=>{if(snapshot?.source){rememberScroll();activeFile=snapshot.source.file;openSources.set(activeFile,snapshot.source);showActiveSource();}};
-document.addEventListener('keydown',event=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='p'){event.preventDefault();void showFilePicker();}});
+document.addEventListener('keydown',event=>{if(!document.querySelector('dialog[open]')&&(event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='p'){event.preventDefault();void showFilePicker();}});
+
+$('toggleNavigation').onclick=()=>{const main=document.querySelector('main')!;const open=main.dataset.navigation!=='open';main.dataset.navigation=open?'open':'closed';$('toggleNavigation').setAttribute('aria-expanded',String(open));};
+document.querySelectorAll<HTMLButtonElement>('.paneNav [data-pane]').forEach(button=>{button.onclick=()=>{document.querySelector('main')!.dataset.pane=button.dataset.pane;document.querySelectorAll('.paneNav [data-pane]').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));};});

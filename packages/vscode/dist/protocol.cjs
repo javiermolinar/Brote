@@ -50,8 +50,8 @@ function createClient(options) {
     if (options.session) target.searchParams.set("session", options.session);
     return target;
   };
-  async function request2(route, body) {
-    const response = await (options.fetch || fetch)(url(route).href, { method: body === void 0 ? "GET" : "POST", headers: { "Content-Type": "application/json", ...options.token ? { Authorization: "Bearer " + options.token } : {} }, body: body === void 0 ? void 0 : JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(options.timeoutMs || 8e3) });
+  async function request2(route, body, signal) {
+    const response = await (options.fetch || fetch)(url(route).href, { method: body === void 0 ? "GET" : "POST", headers: { "Content-Type": "application/json", ...options.token ? { Authorization: "Bearer " + options.token } : {} }, body: body === void 0 ? void 0 : JSON.stringify(body), redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(options.timeoutMs || 8e3)]) : AbortSignal.timeout(options.timeoutMs || 8e3) });
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || `Broker returned ${response.status}`);
     if (value.version !== void 0 && value.version > PROTOCOL_VERSION) throw new Error("Unsupported broker protocol version");
@@ -109,9 +109,9 @@ function validateSession(value, id) {
 function pending(s, v, attempted) {
   return !s.stopped && v.id === s.id && v.project === s.project && v.owner === "vscode" && v.status === "paused" && !v.state.NextInProgress && !v.editorConnected && /^[a-f0-9]{16}$/.test(v.handoverId) && v.handoverId !== attempted;
 }
-async function request(s, route, body) {
+async function request(s, route, body, signal) {
   validateSession(s, s.id);
-  return createClient({ baseURL: s.http, token: s.token }).request(route.slice(5), body);
+  return createClient({ baseURL: s.http, token: s.token }).request(route.slice(5), body, signal);
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

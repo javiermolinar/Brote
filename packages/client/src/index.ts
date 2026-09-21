@@ -2,7 +2,7 @@ export * from './models';
 export const PROTOCOL_VERSION = 2;
 export interface Binding {id:string;name:string;revision:number}
 export interface SessionEvent {id:number;kind:string;owner:string;binding?:Binding;note?:string;created:string}
-export interface ClientOptions {baseURL:string;token?:string;session?:string;timeoutMs?:number;fetch?:typeof fetch}
+export interface ClientOptions {baseURL:string;token?:string;session?:string;binding?:string;timeoutMs?:number;fetch?:typeof fetch}
 
 /** Shared local HTTP transport. Legacy bearer tokens are supported for migration. */
 export function createClient(options:ClientOptions){
@@ -14,8 +14,8 @@ export function createClient(options:ClientOptions){
   if(options.session)target.searchParams.set('session',options.session);
   return target;
  };
- async function request<T>(route:string,body?:unknown):Promise<T>{
-  const response=await (options.fetch||fetch)(url(route).href,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json',...(options.token?{Authorization:'Bearer '+options.token}:{})},body:body===undefined?undefined:JSON.stringify(body),redirect:'error',signal:AbortSignal.timeout(options.timeoutMs||8000)});
+ async function request<T>(route:string,body?:unknown,signal?:AbortSignal):Promise<T>{
+  const response=await (options.fetch||fetch)(url(route).href,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json',...(options.token?{Authorization:'Bearer '+options.token}:{})},body:body===undefined?undefined:JSON.stringify(body),redirect:'error',signal:signal?AbortSignal.any([signal,AbortSignal.timeout(options.timeoutMs||8000)]):AbortSignal.timeout(options.timeoutMs||8000)});
   const value=await response.json() as T&{error?:string;version?:number};
   if(!response.ok)throw new Error(value.error||`Broker returned ${response.status}`);
   if(value.version!==undefined&&value.version>PROTOCOL_VERSION)throw new Error('Unsupported broker protocol version');
@@ -39,7 +39,7 @@ export function createClient(options:ClientOptions){
  */
 export async function* readEvents(options:ClientOptions,cursor=0,signal?:AbortSignal):AsyncGenerator<SessionEvent|{kind:'reset'}>{
  createClient(options); // Apply the same loopback validation.
- const endpoint=new URL('/api/events',options.baseURL);endpoint.searchParams.set('cursor',String(cursor));if(options.session)endpoint.searchParams.set('session',options.session);
+ const endpoint=new URL('/api/events',options.baseURL);endpoint.searchParams.set('cursor',String(cursor));if(options.session)endpoint.searchParams.set('session',options.session);if(options.binding)endpoint.searchParams.set('binding',options.binding);
  const response=await (options.fetch||fetch)(endpoint.href,{headers:options.token?{Authorization:'Bearer '+options.token}:{},redirect:'error',signal});
  if(!response.ok||!response.body)throw new Error(`Event stream returned ${response.status}`);
  const reader=response.body.getReader(),decoder=new TextDecoder();let pending='';

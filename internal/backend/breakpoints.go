@@ -13,9 +13,9 @@ func (d *Delve) ReplaceBreakpoints(owner, file string, requested []any, function
 	merged := []any{}
 	for _, raw := range previous {
 		bp := asObj(raw)
-		same := str(bp["file"]) == file
+		same := str(bp["kind"]) != "function" && str(bp["file"]) == file
 		if functions {
-			same = str(bp["functionName"]) != "" && str(bp["file"]) == ""
+			same = str(bp["kind"]) == "function"
 		}
 		if same && str(bp["client"]) == owner {
 			continue
@@ -24,9 +24,10 @@ func (d *Delve) ReplaceBreakpoints(owner, file string, requested []any, function
 	}
 	for _, raw := range requested {
 		r := asObj(raw)
-		bp := obj{"file": file, "line": r["line"], "Cond": r["condition"], "HitCond": r["hitCondition"], "client": owner, "name": r["name"]}
+		bp := obj{"kind": "source", "file": file, "line": r["line"], "Cond": r["condition"], "HitCond": r["hitCondition"], "client": owner, "name": r["name"]}
 		if functions {
 			bp["functionName"] = r["name"]
+			bp["kind"] = "function"
 		}
 		merged = append(merged, bp)
 	}
@@ -34,9 +35,9 @@ func (d *Delve) ReplaceBreakpoints(owner, file string, requested []any, function
 	indexes := []int{}
 	for i, raw := range merged {
 		bp := asObj(raw)
-		same := str(bp["file"]) == file
+		same := str(bp["kind"]) != "function" && str(bp["file"]) == file
 		if functions {
-			same = str(bp["functionName"]) != "" && str(bp["file"]) == ""
+			same = str(bp["kind"]) == "function"
 		}
 		if !same {
 			continue
@@ -120,13 +121,13 @@ func (d *Delve) clearBreakpoint(id int) (obj, error) {
 	d.mu.Lock()
 	for _, raw := range d.breakpoints {
 		bp := asObj(raw)
-		if num(bp["id"]) == id || str(bp["client"]) != str(selected["client"]) || str(bp["file"]) != str(selected["file"]) {
+		if num(bp["id"]) == id || str(bp["client"]) != str(selected["client"]) || (str(bp["kind"]) != str(selected["kind"]) || (str(selected["kind"]) != "function" && str(bp["file"]) != str(selected["file"]))) {
 			continue
 		}
 		requested = append(requested, obj{"line": bp["line"], "condition": bp["Cond"], "hitCondition": bp["HitCond"], "name": bp["functionName"]})
 	}
 	d.mu.Unlock()
-	_, e := d.ReplaceBreakpoints(str(selected["client"]), str(selected["file"]), requested, str(selected["functionName"]) != "" && str(selected["file"]) == "")
+	_, e := d.ReplaceBreakpoints(str(selected["client"]), str(selected["file"]), requested, str(selected["kind"]) == "function")
 	return obj{"Breakpoint": selected}, e
 }
 
@@ -138,6 +139,20 @@ func (d *Delve) BreakpointOwners() map[string]string {
 		bp := asObj(raw)
 		if num(bp["id"]) > 0 {
 			out[fmt.Sprint(num(bp["id"]))] = str(bp["client"])
+		}
+	}
+	return out
+}
+
+// FunctionBreakpoints preserves the original expression rather than a resolved source location.
+func (d *Delve) FunctionBreakpoints() map[string]string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := map[string]string{}
+	for _, raw := range d.breakpoints {
+		bp := asObj(raw)
+		if str(bp["kind"]) == "function" {
+			out[fmt.Sprint(num(bp["id"]))] = str(bp["functionName"])
 		}
 	}
 	return out

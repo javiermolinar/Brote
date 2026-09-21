@@ -80,3 +80,33 @@ else throw new Error(command);
  await handlers.get('session_start')({},context('conversation'));await delay(100);
  assert.equal(JSON.parse(await readFile(store)).threads[0].delivery.status,'unknown');assert.equal(messages.length,1);
 });
+
+test('Pi lists current sessions and stops only the explicitly named session',async t=>{
+ const dir=await mkdtemp(join(tmpdir(),'sessions-pi-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const cli=join(dir,'cli.cjs'),log=join(dir,'calls.jsonl'),module=join(dir,'extension.mjs');
+ const original=process.env.DELVE_LLM_ADAPTER_BIN;process.env.DELVE_LLM_ADAPTER_BIN=cli;
+ t.after(()=>{if(original===undefined)delete process.env.DELVE_LLM_ADAPTER_BIN;else process.env.DELVE_LLM_ADAPTER_BIN=original;});
+ await writeFile(cli,`#!${process.execPath}
+const fs=require('node:fs');const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+'\\n');
+if(args[0]==='sessions') console.log(JSON.stringify([{id:'0123456789',status:'paused',project:'/demo',panel:'http://127.0.0.1:1234/'},{id:'aaaaaaaaaa',status:'ended'}]));
+else if(args[0]==='state') console.log('{}');
+else if(args[0]==='end-session') console.log('{"status":"ended"}');
+else throw new Error(args[0]);
+`,{mode:0o755});
+ await build({entryPoints:['adapters/pi/index.ts'],bundle:true,platform:'node',format:'esm',outfile:module,logLevel:'silent'});
+ const extension=(await import(pathToFileURL(module).href)).default,handlers=new Map(),commands=new Map(),tools=new Map(),notifications=[];
+ extension({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,command)=>commands.set(name,command),registerTool:tool=>tools.set(tool.name,tool)});
+ t.after(()=>handlers.get('session_shutdown')());
+ await handlers.get('session_start')({}, {sessionManager:{getSessionId:()=> 'conversation'},ui:{notify:text=>notifications.push(text)}});
+ await commands.get('debug-sessions').handler('');
+ assert.match(notifications.at(-1),/0123456789.*paused/);
+ assert.match(notifications.at(-1),/http:\/\/127.0.0.1:1234\//);
+ assert.doesNotMatch(notifications.at(-1),/aaaaaaaaaa/);
+ const listed=await tools.get('debug_sessions').execute('call',{});
+ assert.equal(listed.details.sessions.length,1);
+ await assert.rejects(commands.get('debug-stop').handler(''),/Expected debugger session ID/);
+ await commands.get('debug-stop').handler('0123456789');
+ const calls=(await readFile(log,'utf8')).trim().split('\n').map(JSON.parse);
+ assert.deepEqual(calls.filter(args=>args[0]==='end-session'),[['end-session','0123456789','--confirmed']]);
+ assert.ok(tools.has('debug_stop'));
+});

@@ -23,6 +23,54 @@ func (b *broker) comments(a obj) (obj, error) {
 	action := str(a["action"])
 	body := strings.TrimSpace(str(a["body"]))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if action == "continue-thread" {
+		previous := str(a["previousRun"])
+		aGroup, e := session.InvestigationFor(previous)
+		if e != nil {
+			return nil, e
+		}
+		bGroup, e := session.InvestigationFor(b.s.ID)
+		if e != nil {
+			return nil, e
+		}
+		if previous == b.s.ID || aGroup != bGroup {
+			return nil, fmt.Errorf("thread must belong to an earlier run of this investigation")
+		}
+		old, e := session.ReadDiscussion(previous)
+		if e != nil {
+			return nil, e
+		}
+		found := false
+		for _, thread := range old.Threads {
+			if thread.ID == str(a["thread"]) {
+				exists := false
+				for _, current := range d.Threads {
+					if current.ID == thread.ID {
+						exists = true
+					}
+				}
+				if !exists {
+					if len(d.Threads) >= 200 {
+						return nil, fmt.Errorf("thread limit reached")
+					}
+					for i := range thread.Messages {
+						if thread.Messages[i].Context == nil && thread.Messages[i].Author == "human" {
+							thread.Messages[i].Context = thread.Context
+							thread.Messages[i].Run = previous
+						}
+					}
+					thread.Resolved = true
+					d.Threads = append(d.Threads, thread)
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("previous thread not found")
+		}
+		action = "ask"
+	}
 	if action == "create" || action == "ask" || action == "reply" {
 		if body == "" || len(body) > 16000 {
 			return nil, fmt.Errorf("comment must contain 1–16000 bytes")
@@ -105,8 +153,38 @@ func (b *broker) comments(a obj) (obj, error) {
 		if len(t.Messages) >= 200 {
 			return nil, fmt.Errorf("thread message limit reached")
 		}
+		context := t.Context
+		if action == "ask" && str(a["contextMode"]) == "current" {
+			if num(a["generation"]) != b.generation {
+				return nil, fmt.Errorf("pause changed; refresh before replying")
+			}
+			fresh, e := b.snapshotLocked(num(a["goroutine"]), num(a["frame"]), false)
+			if e != nil {
+				return nil, e
+			}
+			if fresh["status"] != "paused" {
+				return nil, fmt.Errorf("pause the program before capturing current context")
+			}
+			context = pick(fresh, "generation", "goroutine", "frame", "frames", "source", "sourceIdentity", "state", "breakpoints", "watches")
+			context["capturedAt"] = now
+			encoded, _ := json.Marshal(context)
+			if len(encoded) > 1024*1024 {
+				return nil, fmt.Errorf("captured context exceeds 1 MiB")
+			}
+		} else if action == "ask" && len(t.Messages) > 0 && t.Messages[0].Context != nil {
+			context = t.Messages[0].Context
+		}
+		// Older documents stored only thread-level context. Preserve it before
+		// replacing the latest-question view consumed by existing agent adapters.
+		for i := range t.Messages {
+			if t.Messages[i].Author == "human" && t.Messages[i].Context == nil {
+				t.Messages[i].Context = t.Context
+				t.Messages[i].Run = b.s.ID
+			}
+		}
+		t.Context = context
 		id := session.NewID(8)
-		t.Messages = append(t.Messages, session.CommentMessage{ID: id, Author: "human", Body: body, Created: now})
+		t.Messages = append(t.Messages, session.CommentMessage{ID: id, Author: "human", Body: body, Created: now, Context: context, Run: b.s.ID})
 		t.Resolved = false
 		t.Delivery = session.CommentDelivery{Question: id, Status: "pending", Binding: copyBinding(b.s.Binding)}
 		kind = "question.created"
@@ -166,6 +244,11 @@ func (b *broker) comments(a obj) (obj, error) {
 		kind = "question.created"
 	default:
 		return nil, fmt.Errorf("unknown comment action")
+	}
+	if encoded, e := json.Marshal(d); e != nil {
+		return nil, e
+	} else if len(encoded) > 16*1024*1024 {
+		return nil, fmt.Errorf("discussion exceeds 16 MiB; start another investigation")
 	}
 	if err = session.WriteDiscussion(d); err != nil {
 		return nil, err
