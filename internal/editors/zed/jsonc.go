@@ -4,98 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"agentdebugger/internal/jsonc"
 )
 
 type obj = map[string]any
 
-// Replace comments with spaces, keeping string contents and byte offsets intact.
-func stripComments(data []byte) ([]byte, error) {
-	out := append([]byte(nil), data...)
-	inString := false
-	for i := 0; i < len(data); i++ {
-		if inString {
-			if data[i] == '\\' {
-				i++
-				continue
-			}
-			if data[i] == '"' {
-				inString = false
-			}
-			continue
-		}
-		if data[i] == '"' {
-			inString = true
-			continue
-		}
-		if data[i] != '/' || i+1 >= len(data) {
-			continue
-		}
-		if data[i+1] == '/' {
-			for i < len(data) && data[i] != '\n' {
-				out[i] = ' '
-				i++
-			}
-			continue
-		}
-		if data[i+1] == '*' {
-			out[i] = ' '
-			out[i+1] = ' '
-			i += 2
-			for i+1 < len(data) && !(data[i] == '*' && data[i+1] == '/') {
-				if data[i] != '\n' {
-					out[i] = ' '
-				}
-				i++
-			}
-			if i+1 >= len(data) {
-				return nil, fmt.Errorf("unclosed JSONC comment")
-			}
-			out[i] = ' '
-			out[i+1] = ' '
-			i++
-		}
-	}
-	return out, nil
-}
-
-func stripTrailingCommas(clean []byte) []byte {
-	// Strip trailing commas only outside strings. JSON decoding validates the rest.
-	valid := append([]byte(nil), clean...)
-	inString := false
-	for i := 0; i < len(valid); i++ {
-		if inString {
-			if valid[i] == '\\' {
-				i++
-				continue
-			}
-			if valid[i] == '"' {
-				inString = false
-			}
-			continue
-		}
-		if valid[i] == '"' {
-			inString = true
-			continue
-		}
-		if valid[i] == ',' {
-			j := i + 1
-			for j < len(valid) && strings.ContainsRune(" \r\n\t", rune(valid[j])) {
-				j++
-			}
-			if j < len(valid) && (valid[j] == ']' || valid[j] == '}') {
-				valid[i] = ' '
-			}
-		}
-	}
-	return valid
-}
-
 func appendZedProfile(data []byte, profile obj) ([]byte, error) {
-	clean, e := stripComments(data)
+	clean, e := jsonc.StripComments(data)
 	if e != nil {
 		return nil, e
 	}
-	valid := stripTrailingCommas(clean)
+	valid := jsonc.StripTrailingCommas(clean)
 	var entries []obj
 	if e = json.Unmarshal(valid, &entries); e != nil {
 		return nil, fmt.Errorf("existing .zed/debug.json is not a JSONC array: %w", e)
@@ -126,11 +46,11 @@ func appendZedProfile(data []byte, profile obj) ([]byte, error) {
 
 // Locate top-level profile objects without reformatting the surrounding JSONC.
 func zedProfileRange(data []byte, label string) (int, int, error) {
-	clean, e := stripComments(data)
+	clean, e := jsonc.StripComments(data)
 	if e != nil {
 		return 0, 0, e
 	}
-	valid := stripTrailingCommas(clean)
+	valid := jsonc.StripTrailingCommas(clean)
 	var entries []obj
 	if e = json.Unmarshal(valid, &entries); e != nil {
 		return 0, 0, e
@@ -202,7 +122,7 @@ func removeZedProfile(data []byte, label string) ([]byte, error) {
 		if start < 0 {
 			return data, nil
 		}
-		clean, _ := stripComments(data)
+		clean, _ := jsonc.StripComments(data)
 		out := append([]byte(nil), data...)
 		for i := start; i < end; i++ {
 			if out[i] != '\n' && out[i] != '\r' {

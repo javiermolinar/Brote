@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"agentdebugger/internal/jsonc"
 )
 
 func TestAppendZedPreservesJSONC(t *testing.T) {
@@ -73,9 +75,9 @@ func TestProfileUpdateAndCleanupPreserveOtherEntries(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		clean, _ := stripComments(cleaned)
+		clean, _ := jsonc.StripComments(cleaned)
 		var entries []obj
-		if e = json.Unmarshal(stripTrailingCommas(clean), &entries); e != nil {
+		if e = json.Unmarshal(jsonc.StripTrailingCommas(clean), &entries); e != nil {
 			t.Fatalf("invalid cleanup %s: %v", cleaned, e)
 		}
 		for _, entry := range entries {

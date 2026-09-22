@@ -1,6 +1,6 @@
 ---
 name: debug-handover
-description: Use Brote to inspect precompiled Go programs, set breakpoints, answer debugger comments, and execute explicitly authorized debugging tasks shared with the browser or VS Code.
+description: Use Brote to debug Go programs from existing binaries or VS Code launch configurations, set breakpoints, answer debugger comments, and execute explicitly authorized debugging tasks shared with the browser or VS Code.
 ---
 
 Use the shared JSON CLI. In the Codex release plugin, resolve
@@ -11,6 +11,22 @@ for the commands below, since Git installation does not add a global executable.
 `brote` on PATH (`agentdebugger` and `delve-llm-adapter` remain aliases). Release packages
 include the browser and require no compiler. Delve must be installed separately.
 Never compile the target implicitly.
+
+When the project has `.vscode/launch.json`, use `brote configs --project DIR` to
+discover its profiles before reconstructing launch arguments. Start a named Go
+profile with `brote start --project DIR --config "Profile name"`. For `debug`,
+`test`, or `auto` profiles, add `--build` when building is within the user's
+request; `exec` profiles launch their prebuilt binary without that flag.
+`--file PATH` supplies an active file for `${file}`/`${fileDirname}` and `auto`
+mode. `--launch-file PATH` reads another launch file. Brote imports args, cwd,
+env/envFile, build flags and platform overrides; unsupported features such as
+task hooks, interactive terminals and command/input variables fail explicitly.
+Arguments after `--` append to the profile's arguments. New runs remain paused;
+recovery, handover and Run again never rebuild the target.
+
+For reusable launch settings, create or edit `.vscode/launch.json` directly.
+Preserve unrelated profiles and comments, use `${workspaceFolder}` for project
+paths, and retain `envFile` or `${env:NAME}` references for environment settings.
 
 ## Connect and inspect
 

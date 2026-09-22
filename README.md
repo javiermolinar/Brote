@@ -69,6 +69,10 @@ follow-up questions in the same thread.
 
 [Debugging guide](docs/debugging.md)
 
+Already have a Go debug profile in `.vscode/launch.json`? List it with
+`brote configs`, then launch it with `brote start --config "Launch server" --build`.
+For `exec` profiles that use a prebuilt binary, omit `--build`.
+
 ## How it fits together
 
 ```text

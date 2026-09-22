@@ -75,6 +75,7 @@ func Serve(options Options) (err error) {
 		}
 	}()
 	var process *exec.Cmd
+	var settings *session.LaunchSettings
 	committed := false
 	defer func() {
 		if process != nil && process.Process != nil && !committed {
@@ -104,6 +105,10 @@ func Serve(options Options) (err error) {
 			n.Error = "broker stopped during delivery; check the bound conversation before retrying"
 		}
 	} else {
+		settings, e = session.ReadLaunchSettings(dir)
+		if e != nil {
+			return fmt.Errorf("read launch settings: %w", e)
+		}
 		log, e := os.OpenFile(filepath.Join(dir, "delve.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if e != nil {
 			return e
@@ -112,6 +117,12 @@ func Serve(options Options) (err error) {
 		argv := append([]string{"exec", s.Binary, "--headless", "--listen=127.0.0.1:0", "--api-version=2", "--accept-multiclient", "--"}, options.Args...)
 		process = exec.Command(options.Delve, argv...)
 		process.Dir = s.Project
+		if settings != nil {
+			if settings.Cwd != "" {
+				process.Dir = settings.Cwd
+			}
+			process.Env = settings.Environment(process.Environ())
+		}
 		process.Stdout = log
 		process.Stderr = log
 		// Delve has its own session and a file-backed log, so a broker crash does not
@@ -223,14 +234,20 @@ func Serve(options Options) (err error) {
 	}
 	server := &http.Server{Handler: b.handler(), ReadHeaderTimeout: 5 * time.Second}
 	defer server.Close()
-	if e = b.persist(); e != nil {
-		return e
-	}
 	b.history, e = session.OpenHistory(b.s, options.Args)
 	if e != nil {
 		return fmt.Errorf("open session history: %w", e)
 	}
 	defer b.history.Close()
+	if settings != nil {
+		if err := session.Write(filepath.Join(b.history.Dir, "launch.json"), settings); err != nil {
+			return fmt.Errorf("save launch settings: %w", err)
+		}
+	}
+	// Publish only after the settings needed by Run again are safely archived.
+	if e = b.persist(); e != nil {
+		return e
+	}
 	b.record("broker.connected", "core", obj{"recovered": options.Recover})
 	if discussion, err := session.ReadDiscussion(b.s.ID); err != nil {
 		return err

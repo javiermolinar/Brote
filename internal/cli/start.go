@@ -10,16 +10,25 @@ import (
 	"time"
 
 	"agentdebugger/internal/agents/codex"
+	"agentdebugger/internal/editors/vscode"
 	"agentdebugger/internal/session"
 )
 
-func start(args []string) (result obj, err error) {
+func start(args []string) (obj, error) {
+	return startWithLaunch(args, nil)
+}
+
+func startWithLaunch(args []string, settings *session.LaunchSettings) (result obj, err error) {
 	f := flag.NewFlagSet("start", flag.ContinueOnError)
 	noUI := f.Bool("no-ui", false, "return the broker URL without starting the persistent workspace")
 	investigation := f.String("investigation", "", "existing investigation ID")
 	title := f.String("title", "", "new investigation title")
 	backend := f.String("backend", "dap", "debug backend: dap or legacy rpc")
 	bin := f.String("binary", "", "Existing Go executable or test binary")
+	config := f.String("config", "", "VS Code launch configuration name")
+	launchFile := f.String("launch-file", "", "VS Code launch.json path (default: PROJECT/.vscode/launch.json)")
+	activeFile := f.String("file", "", "Active source file for VS Code variables and auto mode")
+	build := f.Bool("build", false, "Build the selected Go debug/test configuration before launching")
 	project := f.String("project", ".", "Project/source directory")
 	dlv := f.String("dlv", "dlv", "Delve executable")
 	binding := f.String("binding", "", "opaque client binding ID")
@@ -31,8 +40,15 @@ func start(args []string) (result obj, err error) {
 	if *backend != "dap" && *backend != "rpc" {
 		return nil, fmt.Errorf("backend must be dap or rpc")
 	}
-	if *bin == "" {
-		return nil, fmt.Errorf("--binary is required; build once with go build -gcflags='all=-N -l'")
+	fromConfig := *config != "" || *launchFile != ""
+	if *bin == "" && !fromConfig {
+		return nil, fmt.Errorf("--binary or --config is required; use 'brote configs' to list VS Code profiles")
+	}
+	if fromConfig && *bin != "" {
+		return nil, fmt.Errorf("--binary cannot be combined with --config or --launch-file")
+	}
+	if !fromConfig && (*build || *activeFile != "") {
+		return nil, fmt.Errorf("--build and --file require --config or --launch-file")
 	}
 	if *thread != "" && !codex.ValidThread(*thread) {
 		return nil, fmt.Errorf("--thread must be a Codex task UUID")
@@ -43,24 +59,67 @@ func start(args []string) (result obj, err error) {
 	if *thread != "" {
 		*name = "Codex"
 	}
-	abs, e := filepath.Abs(*bin)
-	if e != nil {
-		return nil, e
-	}
-	st, e := os.Stat(abs)
-	if e != nil {
-		return nil, e
-	}
-	if st.IsDir() || st.Mode()&0111 == 0 {
-		return nil, fmt.Errorf("binary is not executable: %s", abs)
-	}
 	root, e := filepath.Abs(*project)
 	if e != nil {
 		return nil, e
 	}
-	st, e = os.Stat(root)
-	if e != nil || !st.IsDir() {
+	if st, e := os.Stat(root); e != nil || !st.IsDir() {
 		return nil, fmt.Errorf("project directory does not exist: %s", root)
+	}
+	programArgs := f.Args()
+	var launch *vscode.Launch
+	if fromConfig {
+		launch, e = vscode.Load(root, *launchFile, *config, *activeFile)
+		if e != nil {
+			return nil, e
+		}
+		if launch.Mode != "exec" && !*build {
+			return nil, fmt.Errorf("configuration %q uses mode %s and needs a build; pass --build, or use an exec configuration with a precompiled binary", launch.Name, launch.Mode)
+		}
+		if launch.Mode == "exec" && *build {
+			return nil, fmt.Errorf("--build does not apply to an exec configuration")
+		}
+		settings = &launch.Settings
+		if *title == "" {
+			*title = launch.Name
+		}
+		programArgs = append(append([]string{}, launch.Args...), programArgs...)
+		dlvExplicit := false
+		f.Visit(func(flag *flag.Flag) {
+			if flag.Name == "dlv" {
+				dlvExplicit = true
+			}
+		})
+		if !dlvExplicit && launch.Delve != "" {
+			*dlv = launch.Delve
+		}
+		*bin = launch.Program
+	}
+	id := session.NewID(5)
+	dir, e := filepath.Abs(filepath.Join(session.Root(), id))
+	if e != nil {
+		return nil, e
+	}
+	if launch != nil && launch.Mode != "exec" {
+		*bin = filepath.Join(dir, "target")
+	}
+	abs, e := filepath.Abs(*bin)
+	if e != nil {
+		return nil, e
+	}
+	if launch == nil || launch.Mode == "exec" {
+		st, e := os.Stat(abs)
+		if e != nil {
+			return nil, e
+		}
+		if st.IsDir() || st.Mode()&0111 == 0 {
+			return nil, fmt.Errorf("binary is not executable: %s", abs)
+		}
+	}
+	if settings != nil && settings.Cwd != "" {
+		if st, e := os.Stat(settings.Cwd); e != nil || !st.IsDir() {
+			return nil, fmt.Errorf("launch working directory does not exist: %s", settings.Cwd)
+		}
 	}
 	delve, e := exec.LookPath(*dlv)
 	if e != nil && *dlv == "dlv" {
@@ -70,7 +129,6 @@ func start(args []string) (result obj, err error) {
 	if e != nil {
 		return nil, fmt.Errorf("Delve not found: install dlv for your Go version or pass --dlv /absolute/path/dlv; run agentdebugger doctor for diagnostics: %w", e)
 	}
-	id := session.NewID(5)
 	if *investigation != "" {
 		if _, err := session.ReadInvestigation(*investigation); err != nil {
 			old, readErr := session.Read(*investigation)
@@ -89,14 +147,23 @@ func start(args []string) (result obj, err error) {
 	defer func() {
 		if err != nil && !childStarted {
 			d := session.Descriptor{ID: id, Project: root, Binary: abs, Created: time.Now().UTC().Format(time.RFC3339Nano)}
-			if recordErr := session.RecordFailedLaunch(d, f.Args(), err.Error()); recordErr != nil {
+			if recordErr := session.RecordFailedLaunch(d, programArgs, err.Error()); recordErr != nil {
 				err = fmt.Errorf("%w; recording failed launch: %v", err, recordErr)
 			}
 		}
 	}()
-	dir := filepath.Join(session.Root(), id)
 	if e = os.MkdirAll(dir, 0700); e != nil {
 		return nil, e
+	}
+	if settings != nil {
+		if e = session.Write(filepath.Join(dir, "launch.json"), settings); e != nil {
+			return nil, e
+		}
+	}
+	if launch != nil && launch.Mode != "exec" {
+		if e = launch.Build(abs); e != nil {
+			return nil, e
+		}
 	}
 	log, e := os.OpenFile(filepath.Join(dir, "broker.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if e != nil {
@@ -108,7 +175,7 @@ func start(args []string) (result obj, err error) {
 		return nil, e
 	}
 	childArgs := []string{"serve", "--backend", *backend, "--id", id, "--binary", abs, "--project", root, "--dlv", delve, "--binding", *binding, "--name", *name, "--"}
-	childArgs = append(childArgs, f.Args()...)
+	childArgs = append(childArgs, programArgs...)
 	cmd := exec.Command(exe, childArgs...)
 	cmd.Stdout = log
 	cmd.Stderr = log

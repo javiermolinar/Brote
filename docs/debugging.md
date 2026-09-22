@@ -6,8 +6,9 @@ backend in this release; other language backends are not included yet.
 ## Start from your agent
 
 Open your Go project in Pi or Codex and ask Brote to start a debug session. It
-uses an existing executable with debugging information. If one is needed, ask
-your agent to build it first; starting a session never compiles the target.
+can use an existing executable with debugging information or a Go configuration
+from `.vscode/launch.json`. Source configurations require `--build` to compile;
+launching an existing executable never rebuilds it.
 
 For Pi, `/debug-sessions` lists current runs and their inspector URLs.
 `/debug-connect SESSION_ID` attaches the current conversation to an existing run.
@@ -87,6 +88,101 @@ To use a shared Brote run instead, launch it from `@brote` Chat or choose
 and browser. Execution tools request confirmation through VS Code and use the
 same scoped task contract. A run's questions are routed to its attached agent;
 they are not broadcast to every open frontend.
+
+## Use a VS Code launch configuration
+
+List the profiles in your project's `.vscode/launch.json`, then select one by name:
+
+```sh
+brote configs --project "$PWD"
+brote start --project "$PWD" --config "Launch server" --build
+```
+
+Go `launch` profiles support `debug`, `test`, `auto`, and `exec` modes. The first
+three build a session-owned executable with debug symbols when you pass
+`--build`; `exec` uses the existing `program` executable and does not accept
+`--build`. Every session starts paused, including profiles with
+`stopOnEntry: false`. Recovery and **Run again** reuse the executable.
+
+Brote reads JSON comments, trailing commas, platform overrides (`osx`, `linux`,
+`windows`), `program`, `cwd`, `args`, `env`, `envFile`, `buildFlags`, and
+`dlvToolPath`. Relative program, working-directory and environment-file paths
+resolve from `--project`; an omitted `cwd` uses the program's directory.
+`envFile` accepts one path or an array of paths: later files override earlier
+ones, and `env` overrides the files and inherited environment. An `env` value of
+`null` removes the variable. Build flags accept an array or a quoted string;
+Brote reserves output, build-directory and debug-symbol flags.
+
+Variables include `${workspaceFolder}`, `${workspaceFolderBasename}`,
+`${env:NAME}`, `${userHome}`, and file variables such as `${file}` and
+`${fileDirname}`. Pass `--file path/to/main.go` to supply the active file for
+file variables or `auto` mode. Use `--launch-file PATH` to read a different
+configuration file; that path is relative to the shell's current directory.
+If it contains exactly one Go launch profile, its name can be omitted.
+Arguments after `--` append to the profile's arguments.
+
+```sh
+brote start --config "Launch file" --file cmd/server/main.go --build
+brote start --config "Prebuilt server" -- --port 8080
+```
+
+This supports local Go launches through Delve. Attach/remote profiles, compound
+launches, task hooks, interactive terminals, source-path mappings,
+`${command:...}`/`${input:...}` variables and VS Code settings are not imported.
+Unsupported attributes or unresolved variables produce an error. Use
+`console: "internalConsole"` or omit `console`; output goes to the session's
+Delve log. The [VS Code variables reference](https://code.visualstudio.com/docs/reference/variables-reference)
+describes the editor's variable syntax.
+
+**Run again** retains the resolved arguments, working directory and environment
+overrides even if the original configuration changes. Environment overrides are
+stored in a private launch file alongside the saved run, outside the public
+session metadata and event stream.
+
+To keep reusable settings for later sessions, create or edit a named profile in
+`.vscode/launch.json` directly, or ask your agent to do it. Use
+`${workspaceFolder}` for project paths and `envFile` or `${env:NAME}` references
+for environment settings. Brote lists and launches those profiles.
+
+## Debug Go tests
+
+Use a Go launch profile with `mode: "test"` to debug a package's tests, including
+library packages without a `main` function:
+
+```json
+{
+  "name": "Package tests",
+  "type": "go",
+  "request": "launch",
+  "mode": "test",
+  "program": "${workspaceFolder}/internal/example",
+  "args": ["-test.run", "^TestExample$/^subtest$", "-test.v"]
+}
+```
+
+Add this entry to `configurations` in `.vscode/launch.json`, then launch it:
+
+```sh
+brote start --config "Package tests" --build
+```
+
+Brote compiles the package with `go test -c` and debug symbols, then launches the
+test binary paused. Set breakpoints in production code or `_test.go` files and
+inspect test locals as usual. The build itself does not execute the tests.
+
+Omit `-test.run` to run the package's full suite, use `^TestExample$` for one test,
+or use `^TestExample$/^subtest$` for one subtest. These are compiled test-binary
+arguments, so use `-test.run`, `-test.v`, and `-test.count`, including when adding
+arguments after `--`:
+
+```sh
+brote start --config "Package tests" --build -- -test.count=1
+```
+
+Profiles using `program: "${file}"` with an active `_test.go` file build its whole
+package, including sibling files. For an `auto` profile, pass
+`--file path/to/example_test.go` to select test mode. Existing test binaries can
+also use `mode: "exec"` or `--binary` without `--build`.
 
 ## Use a precompiled binary
 

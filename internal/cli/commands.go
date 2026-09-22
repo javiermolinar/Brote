@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"agentdebugger/internal/editors/vscode"
 	"agentdebugger/internal/session"
 )
 
@@ -15,6 +16,8 @@ func usage() string {
 	return `Brote — persistent Go / Delve sessions
 
   brote start --binary PATH --project DIR [--title TITLE] [--investigation ID] [--no-ui] -- [program args]
+  brote configs [--project DIR] [--launch-file PATH]
+  brote start --config NAME [--project DIR] [--launch-file PATH] [--file PATH] [--build] -- [extra args]
   brote ui  (persistent investigation workspace)
   brote run-again ID  (new run with saved executable and arguments)
   brote setup --agent codex|pi [--editor vscode]
@@ -50,7 +53,8 @@ func usage() string {
   brote reclaim ID
   brote stop ID
 
-All commands print JSON. start never compiles the target. Closing Zed or the panel
+All commands print JSON. Source launch configurations require --build; --binary
+and exec configurations never compile the target. Closing Zed or the panel
 does not stop the program. Agent execution requires a human-authorized task;
 --human is for direct human operations. end-session explicitly terminates a run.`
 }
@@ -61,6 +65,18 @@ func Run(args []string) (any, error) {
 		return nil, nil
 	}
 	verb := args[0]
+	if verb == "configs" {
+		f := flag.NewFlagSet("configs", flag.ContinueOnError)
+		project := f.String("project", ".", "Project/source directory")
+		path := f.String("launch-file", "", "VS Code launch.json path")
+		if err := f.Parse(args[1:]); err != nil {
+			return nil, err
+		}
+		if f.NArg() != 0 {
+			return nil, fmt.Errorf("usage: configs [--project DIR] [--launch-file PATH]")
+		}
+		return vscode.List(*project, *path)
+	}
 	if verb == "ui-serve" {
 		return nil, serveUI()
 	}
@@ -87,7 +103,11 @@ func Run(args []string) (any, error) {
 				}
 				argv := []string{"--binary", h.Binary, "--project", h.Project, "--investigation", group, "--thread", "", "--"}
 				argv = append(argv, h.Args...)
-				return start(argv)
+				settings, err := session.ReadLaunchSettings(h.Directory)
+				if err != nil {
+					return nil, err
+				}
+				return startWithLaunch(argv, settings)
 			}
 		}
 		return nil, fmt.Errorf("saved launch configuration not found")
