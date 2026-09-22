@@ -2,7 +2,7 @@
   "name": "brote",
   "displayName": "Brote",
   "description": "Your LLM debugger companion. Ask about live debugger state, right beside your code.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "brote-local",
   "engines": {
     "vscode": "^1.138.0"

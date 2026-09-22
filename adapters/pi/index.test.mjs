@@ -35,7 +35,7 @@ else throw new Error(command);
  assert.equal(messages[0].message.display,false,'transport details stay out of the transcript');
  assert.equal(messages[0].options.triggerTurn,true);
  assert.equal(messages[0].options.deliverAs,'followUp');
- assert.match(messages[0].message.content,/Do not resume/);
+ assert.match(messages[0].message.content,/Handback alone permits inspection; execution requires a current task for a user-requested debugging investigation/);
  assert.equal(JSON.parse(await readFile(store)).notification.status,'queued');
  assert.ok(tools.has('debug_connect'));
  await handlers.get('session_shutdown')();
