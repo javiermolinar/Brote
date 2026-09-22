@@ -12,3 +12,7 @@ __pycache__/
 
 # Local agent conversation exports
 /examples/demo/pi-session-*.html
+
+# Generated VS Code package notices
+/packages/vscode/LICENSE
+/packages/vscode/THIRD_PARTY_NOTICES.md

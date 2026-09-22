@@ -5,93 +5,47 @@
 <p align="center"><strong>Your LLM debugger companion.</strong></p>
 <p align="center">Pause the program. Ask beside the code. Figure it out together.</p>
 
-Brote brings your debugger and your agent into the same conversation. See the
-actual stack and variables, ask why a value looks wrong, and keep the answer
-attached to the code and the pause that prompted it.
+Start your normal VS Code debugger with **F5**, pause, and choose **Ask Brote About
+Selection**. Brote captures the stack and variables, then keeps your conversation
+beside the code in native comments. Use **Continue in Chat** for a longer discussion.
+Your existing debug adapter and VS Code controls handle execution—no handover needed.
 
-Brote uses the **Debug Adapter Protocol (DAP)**. The currently supported language
-is **Go**, through **Delve**; other language backends are not included yet.
+![Brote showing debugger state and a threaded conversation](assets/debugger-conversation.png)
 
-Use the browser inspector with **Codex or Pi**, or stay in **VS Code** with native
-debugger comments and Chat. You can inspect and set breakpoints together. The
-agent can step and continue when you ask it to debug. Attaching and asking
-questions about captured state remain read-only.
-
-![Brote paused in a Go program, with the call stack, locals, and a threaded agent conversation](assets/debugger-conversation.png)
-
-*An example conversation in the browser inspector: explain a surprising value,
-then ask where to break next. The program stays paused throughout.*
+*The earlier browser inspector illustrates the workflow; the VS Code extension uses native comments and Chat.*
 
 ## Install
 
-Each integration includes the precompiled core and browser inspector—no clone
-or build needed. Release checksums are verified automatically. Shared Go sessions
-support **macOS and Linux, arm64 and x64**, and require
-[Delve](https://github.com/go-delve/delve).
-
-### Codex
-```sh
-curl -fsSL https://github.com/javiermolinar/Brote/releases/latest/download/install.sh | sh -s -- --agent codex
-```
-### Pi
-```sh
-pi install git:github.com/javiermolinar/Brote
-```
-### VS Code
 ```sh
 curl -fsSL https://github.com/javiermolinar/Brote/releases/latest/download/install.sh | sh -s -- --editor vscode
 ```
-Start your normal debugger with **F5**, pause, and choose **Ask Brote About
-Selection**. Pick an available model when prompted; answers appear in native
-comment threads. Use **Continue in Chat** for a longer conversation, or `@brote`
-to start a shared session from Chat.
 
-## Try it
+Choose an available model when you ask your first question. Brote requires VS Code
+1.138 or later. Go through Delve is the tested adapter; capture support for other
+languages depends on their DAP implementation.
 
-Open your Go project and start Pi:
+## OpenTelemetry traces
 
-```sh
-cd mycoolproject
-pi
-```
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` in VS Code's environment to export debugger
+actions and captured program state to Tempo, Grafana Cloud, or another OTLP/HTTP
+backend. Stable capture names and selected values help compare runs with trace diff.
 
-Then ask:
-
-> Let's debug this project with Brote. Start a session, stop at `main`, and
-> give me the debugger URL. Leave it paused so I can explore.
-
-Open the URL to see your code, call stack, and variables. Select a line or click
-a variable and ask:
-
-> Where does this value come from?
-
-The reply appears beside the code. Step through the program and keep asking
-follow-up questions in the same thread.
-
-[Debugging guide](docs/debugging.md)
-
-Already have a Go debug profile in `.vscode/launch.json`? List it with
-`brote configs`, then launch it with `brote start --config "Launch server" --build`.
-For `exec` profiles that use a prebuilt binary, omit `--build`.
-
-## How it fits together
+[Tracing setup](docs/tracing.md) · [VS Code guide](packages/vscode/README.md)
 
 ```text
-Codex / Pi ─── tools + events ───┐
-                               │
-Browser inspector ─── HTTP ─── Brote core ─── DAP ─── Delve ─── Go program
-                               │
-VS Code extension ──────────────┘
-        └── also works with your existing F5 debug session
+VS Code debugger ─── DAP ─── language adapter ─── program
+        │
+      Brote ─── native comments + Chat
+        └── optional OTLP exporter ─── Tempo / Grafana Cloud
 ```
 
-The Go core coordinates sessions, bounded agent execution, and durable history.
-A typed client connects the integrations over a local HTTP API and SSE events.
-The browser UI is embedded in the native binary; running a release needs no Go
-or Node build tools.
+## Development
 
-The local API listens on `127.0.0.1` without bearer authentication. It is intended
-for a trusted local machine, not network exposure. Saved debugger evidence can
-contain application data.
+```sh
+npm ci
+make build
+make test
+make vsix
+```
 
 MIT licensed. Third-party notices are retained.

@@ -139,8 +139,7 @@ def package_release(args):
             copy_integration_readme(ROOT / 'packages/vscode/README.md', ext / 'README.md')
             shutil.copy2(ROOT / 'LICENSE', ext / 'LICENSE')
             shutil.copy2(ROOT / 'THIRD_PARTY_NOTICES.md', ext / 'THIRD_PARTY_NOTICES.md')
-            (ext / '.vscodeignore').write_text('dist/protocol.cjs\n')
-            copy_runtime(binary, ext / 'bin/brote')
+            (ext / '.vscodeignore').write_text('')
             write_json(ext / 'package.json', extension_manifest)
             vsix = out / f'brote-{version}-{TARGETS[target]}.vsix'
             command = ['npm', 'exec', '--yes', '--package=@vscode/vsce@4.0.0', '--', 'vsce', 'package', '--no-dependencies', '--target', TARGETS[target], '--out', str(vsix)]
