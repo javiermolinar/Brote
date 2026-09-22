@@ -7,7 +7,7 @@ const http=require('node:http');
 async function harness(t, hooks={}){
  const calls=[],tools=new Map(),commands=new Map(),native=[],messages=[];
  let participant;
- const state={id:'0123456789',version:2,generation:1,status:'paused',binding:{id:'vscode:test',name:'VS Code Chat',revision:1},frames:[{file:'/tmp/main.go',line:17,Locals:[{name:'total',value:'21',type:'int'}]}],goroutine:1,frame:0};
+ const state={id:'0123456789',version:2,generation:1,status:'paused',capabilities:{taskStart:true},binding:{id:'vscode:test',name:'VS Code Chat',revision:1},frames:[{file:'/tmp/main.go',line:17,Locals:[{name:'total',value:'21',type:'int'}]}],goroutine:1,frame:0};
  const thread={id:'thread',file:'/tmp/main.go',line:17,context:{generation:1,frames:state.frames},messages:[{id:'question',author:'human',body:'Why 21?'}],delivery:{question:'question',status:'pending',binding:state.binding}};
  const server=http.createServer(async(req,res)=>{
   if(req.url.startsWith('/api/events')){res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(': connected\n\n');return;}
@@ -22,7 +22,7 @@ async function harness(t, hooks={}){
   }
   if(req.url==='/api/action'){
    if(input.action==='bind'){state.binding={id:input.binding,revision:2};}
-   else if(input.action==='task-authorize'){state.task={id:'task',status:'authorized'};result={task:state.task};}
+   else if(input.action==='task-start'){state.task={id:'task',status:'authorized',delivery:'acknowledged',binding:state.binding,instruction:input.instruction};result={task:state.task};}
    else if(input.action==='next'){state.task.status='active';state.frames[0].line++;}
    else if(input.action==='task-complete'){state.task.status='completed';}
    else if(input.action==='task-cancel'){state.task.status='cancelled';}
@@ -77,42 +77,74 @@ test('obsolete binding refuses an inline answer',async t=>{
  assert.equal(h.thread.messages.length,1);
 });
 
-test('agent step is scoped to a task and completes at the pause',async t=>{
+test('requested investigation starts without confirmation and keeps one scope across steps',async t=>{
  const h=await harness(t);
- await h.tools.get('agentdebugger_debug').invoke({input:{operation:'next',session:'0123456789'}},{isCancellationRequested:false});
+ const tool=h.tools.get('agentdebugger_debug'),token={isCancellationRequested:false};
+ const request={operation:'task-start',session:'0123456789',instruction:'Debug why total reaches 21, then leave it paused'};
+ assert.equal((await tool.prepareInvocation({input:request})).confirmationMessages,undefined);
+ await tool.invoke({input:request},token);
+ for(let i=0;i<2;i++)await tool.invoke({input:{operation:'next',session:'0123456789',task:'task'}},token);
+ assert.equal(h.state.task.status,'active','a pause does not finish an investigation');
+ await tool.invoke({input:{operation:'task-complete',session:'0123456789',task:'task'}},token);
  const actions=h.calls.filter(c=>c.url==='/api/action').map(c=>c.input);
- assert.deepEqual(actions.map(a=>a.action),['task-authorize','next','task-complete']);
- assert.equal(actions[1].actor,'agent');assert.equal(actions[1].task,'task');
+ assert.deepEqual(actions.map(a=>a.action),['task-start','task-heartbeat','next','task-heartbeat','next','task-complete']);
+ assert.ok(actions.every(a=>a.actor==='agent'));assert.equal(actions[0].revision,1);
+ assert.equal(actions[0].instruction,request.instruction);assert.equal(actions[2].task,'task');
  assert.equal(h.state.task.status,'completed');
+});
+
+test('attach and inspection never create execution scope, and execution requires a task',async t=>{
+ const h=await harness(t),tool=h.tools.get('agentdebugger_debug'),token={isCancellationRequested:false};
+ await tool.invoke({input:{operation:'attach'}},token);
+ await tool.invoke({input:{operation:'inspect'}},token);
+ await assert.rejects(tool.invoke({input:{operation:'next'}},token),/task-start/);
+ await assert.rejects(tool.invoke({input:{operation:'task-start'}},token),/instruction/);
+ assert.equal(h.calls.filter(c=>c.url==='/api/action').length,0);
 });
 
 function cancellation(){
  const listeners=new Set();
  return {isCancellationRequested:false,onCancellationRequested(fn){listeners.add(fn);return {dispose(){listeners.delete(fn);}};},cancel(){this.isCancellationRequested=true;for(const fn of listeners)fn();}};
 }
-test('cancellation during authorization revokes grant without dispatching execution',async t=>{
+test('cancellation while recording a request cancels its task without execution',async t=>{
  const token=cancellation();
- const h=await harness(t,{response:async(_url,input)=>{if(input?.action==='task-authorize')token.cancel();}});
- await assert.rejects(h.tools.get('agentdebugger_debug').invoke({input:{operation:'next'}},token),/cancel/i);
- assert.deepEqual(h.calls.filter(c=>c.url==='/api/action').map(c=>c.input.action),['task-authorize','task-cancel']);
+ const h=await harness(t,{response:async(_url,input)=>{if(input?.action==='task-start')token.cancel();}});
+ await assert.rejects(h.tools.get('agentdebugger_debug').invoke({input:{operation:'task-start',instruction:'Debug the retry'}},token),/cancel/i);
+ assert.deepEqual(h.calls.filter(c=>c.url==='/api/action').map(c=>c.input.action),['task-start','task-cancel']);
  assert.equal(h.state.task.status,'cancelled');
 });
 
 test('execution rejects another conversation binding',async t=>{
  const h=await harness(t);h.state.binding={id:'pi:other',revision:2};
- await assert.rejects(h.tools.get('agentdebugger_debug').invoke({input:{operation:'next'}},{isCancellationRequested:false}),/another agent|another conversation/i);
+ await assert.rejects(h.tools.get('agentdebugger_debug').invoke({input:{operation:'task-start',instruction:'Debug the retry'}},{isCancellationRequested:false}),/another agent|another conversation/i);
  assert.equal(h.calls.filter(c=>c.url==='/api/action').length,0);
 });
-test('execution binds an unbound session to VS Code',async t=>{
+test('a requested investigation binds an unbound session to VS Code',async t=>{
  const h=await harness(t);delete h.state.binding;
- await h.tools.get('agentdebugger_debug').invoke({input:{operation:'next'}},{isCancellationRequested:false});
+ await h.tools.get('agentdebugger_debug').invoke({input:{operation:'task-start',instruction:'Debug the retry'}},{isCancellationRequested:false});
  const actions=h.calls.filter(c=>c.url==='/api/action').map(c=>c.input);
  assert.equal(actions[0].action,'bind');assert.ok(actions.every(a=>a.binding==='vscode:test'));
 });
-test('binding change after authorization prevents execution and foreign cleanup',async t=>{
- const h=await harness(t,{response:async(_url,input,state)=>{if(input?.action==='task-authorize')state.binding={id:'pi:new',revision:3};}});
- await assert.rejects(h.tools.get('agentdebugger_debug').invoke({input:{operation:'next'}},{isCancellationRequested:false}),/binding|another/i);
- assert.deepEqual(h.calls.filter(c=>c.url==='/api/action').map(c=>c.input.action),['task-authorize']);
+test('binding revision change during heartbeat prevents execution and foreign cleanup',async t=>{
+ const h=await harness(t,{response:async(_url,input,state)=>{if(input?.action==='task-heartbeat')state.binding={id:'vscode:test',revision:3};}});
+ h.state.task={id:'task',status:'authorized'};
+ await assert.rejects(h.tools.get('agentdebugger_debug').invoke({input:{operation:'next',task:'task'}},{isCancellationRequested:false}),/binding|another/i);
+ assert.deepEqual(h.calls.filter(c=>c.url==='/api/action').map(c=>c.input.action),['task-heartbeat']);
+});
+
+test('human pause ends the task without recreating it',async t=>{
+ const h=await harness(t,{response:async(_url,input,state)=>{if(input?.action==='next')state.task.status='cancelled';}});
+ h.state.task={id:'task',status:'active'};
+ await assert.rejects(h.tools.get('agentdebugger_debug').invoke({input:{operation:'next',task:'task'}},{isCancellationRequested:false}),/interrupted/i);
+ assert.deepEqual(h.calls.filter(c=>c.url==='/api/action').map(c=>c.input.action),['task-heartbeat','next']);
+});
+
+test('target exit completes the task and returns a successful stopped snapshot',async t=>{
+ const h=await harness(t,{response:async(_url,input,state)=>{if(input?.action==='next'){state.task.status='completed';state.status='exited';}}});
+ h.state.task={id:'task',status:'active'};
+ const result=await h.tools.get('agentdebugger_debug').invoke({input:{operation:'next',task:'task'}},{isCancellationRequested:false});
+ assert.equal(JSON.parse(result.content[0].value).status,'exited');
+ assert.deepEqual(h.calls.filter(c=>c.url==='/api/action').map(c=>c.input.action),['task-heartbeat','next']);
 });
 
 test('evaluate uses selected frame with explicit scope overrides',async t=>{

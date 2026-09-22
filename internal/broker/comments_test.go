@@ -52,8 +52,11 @@ func TestCommentsPersistAndNeverTransferControl(t *testing.T) {
 	if len(persisted.Threads[0].Messages) != 2 || persisted.Threads[0].Delivery.Status != "answered" {
 		t.Fatal(persisted)
 	}
-	if b.owner != "browser" || b.generation != 9 || b.s.Notification != nil {
+	if b.owner != "browser" || b.generation != 9 || b.s.Notification != nil || b.s.Task != nil {
 		t.Fatal("discussion modified execution or handback state")
+	}
+	if _, err := b.action(obj{"action": "continue", "binding": binding.ID, "generation": b.generation}); err == nil {
+		t.Fatal("answering a read-only comment allowed execution")
 	}
 	if b.s.Events[len(b.s.Events)-1].Kind != "reply.added" {
 		t.Fatal(b.s.Events)

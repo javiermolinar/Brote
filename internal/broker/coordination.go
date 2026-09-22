@@ -23,10 +23,14 @@ func human(actor string) bool {
 func (b *broker) activeTask() bool {
 	return b.s.Task != nil && (b.s.Task.Status == "authorized" || b.s.Task.Status == "active")
 }
+func (b *broker) taskMatches(a obj) bool {
+	t := b.s.Task
+	return t != nil && t.ID == str(a["task"]) && t.Binding != nil && b.s.Binding != nil && *t.Binding == *b.s.Binding && str(a["binding"]) == t.Binding.ID
+}
 func (b *broker) taskValid(a obj) error {
 	t := b.s.Task
-	if !b.activeTask() || t.ID != str(a["task"]) || t.Binding == nil || b.s.Binding == nil || *t.Binding != *b.s.Binding || str(a["binding"]) != t.Binding.ID {
-		return fmt.Errorf("agent execution requires a current explicitly authorized task")
+	if !b.activeTask() || !b.taskMatches(a) {
+		return fmt.Errorf("agent execution requires a current debugging task; record the user's request with task-start")
 	}
 	deadline, err := time.Parse(time.RFC3339Nano, t.Expires)
 	if err != nil || !time.Now().Before(deadline) {
@@ -48,9 +52,15 @@ func (b *broker) cancelTask(reason string) {
 func (b *broker) coordinate(a obj) (obj, error) {
 	verb := str(a["action"])
 	switch verb {
-	case "task-authorize":
-		if !human(str(a["actor"])) {
-			return nil, fmt.Errorf("execution must be explicitly authorized by a human")
+	case "task-start", "task-authorize":
+		actor := str(a["actor"])
+		fromAgent := verb == "task-start"
+		if fromAgent {
+			if actor != "agent" || b.s.Binding == nil || str(a["binding"]) != b.s.Binding.ID || uint64(num(a["revision"])) != b.s.Binding.Revision {
+				return nil, fmt.Errorf("task-start requires the current agent binding and revision")
+			}
+		} else if !human(actor) {
+			return nil, fmt.Errorf("use task-start to record the user's debugging request")
 		}
 		instruction := strings.TrimSpace(str(a["instruction"]))
 		if instruction == "" || len(instruction) > 4096 {
@@ -64,18 +74,25 @@ func (b *broker) coordinate(a obj) (obj, error) {
 			return nil, err
 		}
 		if stateStatus(state, b.moving) != "paused" || truth(state["NextInProgress"]) {
-			return nil, fmt.Errorf("authorize at a settled pause")
+			return nil, fmt.Errorf("start a debugging task at a settled pause")
 		}
 		if b.s.Binding == nil {
 			return nil, fmt.Errorf("bind an agent first")
 		}
 		b.s.Task = &session.ExecutionTask{ID: session.NewID(16), Instruction: instruction, Status: "authorized", Delivery: "pending", Binding: copyBinding(b.s.Binding), Expires: time.Now().Add(taskLease).UTC().Format(time.RFC3339Nano)}
+		kind := "task.authorized"
+		if fromAgent {
+			// The request is already in this conversation. Do not deliver it back
+			// through the event bridge as a duplicate follow-up turn.
+			b.s.Task.Delivery = "acknowledged"
+			kind = "task.started"
+		}
 		b.generation++
-		if err := b.emit("task.authorized", b.s.Task.ID); err != nil {
+		if err := b.emit(kind, b.s.Task.ID); err != nil {
 			b.s.Task = nil
 			return nil, err
 		}
-		b.record("task.authorized", "human", b.s.Task)
+		b.record(kind, actor, b.s.Task)
 	case "task-delivery":
 		if err := b.taskValid(a); err != nil {
 			return nil, err
@@ -116,6 +133,11 @@ func (b *broker) coordinate(a obj) (obj, error) {
 			return nil, err
 		}
 	case "task-heartbeat", "task-complete":
+		// Target exit completes its task automatically. Closing that same scope
+		// again is harmless, including when the caller missed the exit event.
+		if verb == "task-complete" && b.taskMatches(a) && b.s.Task.Status == "completed" {
+			return obj{"task": b.taskView()}, nil
+		}
 		if err := b.taskValid(a); err != nil {
 			return nil, err
 		}
@@ -124,8 +146,8 @@ func (b *broker) coordinate(a obj) (obj, error) {
 			if err != nil {
 				return nil, err
 			}
-			if stateStatus(state, b.moving) == "running" {
-				return nil, fmt.Errorf("pause before completing the task")
+			if stateStatus(state, b.moving) == "running" || truth(state["NextInProgress"]) || b.interrupting {
+				return nil, fmt.Errorf("settle execution before completing the task")
 			}
 			b.s.Task.Status = "completed"
 			b.record("task.completed", "agent", b.s.Task)

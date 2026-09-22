@@ -331,7 +331,7 @@ func testRoundTrip(t *testing.T, worker bool) {
 	if count != 2 {
 		t.Fatalf("breakpoints not preserved: %v", attached["breakpoints"])
 	}
-	if _, e = api(s, "POST", "/api/action", obj{"action": "next", "binding": s.Binding.ID, "generation": attached["generation"]}); e == nil || !strings.Contains(e.Error(), "authorized task") {
+	if _, e = api(s, "POST", "/api/action", obj{"action": "next", "binding": s.Binding.ID, "generation": attached["generation"]}); e == nil || !strings.Contains(e.Error(), "task-start") {
 		t.Fatalf("Agent executed without a task ID: %v", e)
 	}
 	d.ok("next", obj{"threadId": gid})

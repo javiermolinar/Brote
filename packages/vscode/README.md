@@ -27,14 +27,14 @@ The `#brote` inspection tool also prefers the active native session. Use the nor
 4. The extension creates a persisted native comment thread and submits an `@brote /answer SESSION THREAD` request in Chat using the selected model. The reply appears in Chat, the native comment thread, and the browser inspector.
 5. Use the comment thread's **Ask Follow-up**, **Answer in VS Code Chat**, and **Resolve Discussion** actions.
 
-The `#brote` tool is also available to VS Code's built-in agent. It supports listing sessions, launch, attachment, stack/locals inspection, read-only evaluation, conditional breakpoints, and single execution commands. Inline `/answer` requests do not receive execution tools.
+The `#brote` tool is also available to VS Code's built-in agent. It supports listing sessions, launch, attachment, stack/locals inspection, read-only evaluation, conditional breakpoints, and debugging tasks. Inline `/answer` requests do not receive execution tools.
 
 **Brote: Attach Session** connects an existing paused session without the old control-handover ceremony. Disconnecting the editor leaves the target alive. Session discovery is limited to projects inside the open workspace folders.
 
 ## Behavior and current limits
 
 - Launch requires an existing Go executable with debug information. It never compiles implicitly.
-- Execution tools request confirmation through VS Code and use scoped core task grants. A command waits at most 30 seconds for a stop; timeout or cancellation cancels the task and requests a pause.
+- Asking the agent to debug authorizes execution within that request, without a second confirmation. It records the scope with `task-start`, keeps the task across steps, and uses `task-complete` when done or `task-cancel` on failure. A command waits at most 30 seconds for a stop; timeout or cancellation cancels the task and requests a pause. Attachment and state questions do not start execution tasks.
 - Asking through VS Code binds that session's questions to VS Code Chat. It does not broadcast to Pi. Finish any active agent investigation before switching bindings.
 - Source-line questions capture the selected native stack frame when available. Selected text is not automatically evaluated.
 - Discussions synchronize with the broker, including browser-created threads. Answering an existing question requires it to be bound to this VS Code workspace; another agent's questions are not silently taken over.

@@ -1,6 +1,6 @@
 ---
 name: debug-handover
-description: Use Brote to debug Go programs from existing binaries or VS Code launch configurations, set breakpoints, answer debugger comments, and execute explicitly authorized debugging tasks shared with the browser or VS Code.
+description: Use Brote to debug Go programs from existing binaries or VS Code launch configurations, set breakpoints, answer read-only debugger comments, and investigate user-requested debugging tasks shared with the browser or VS Code.
 ---
 
 Use the shared JSON CLI. In the Codex release plugin, resolve
@@ -53,24 +53,45 @@ Do not rebind someone else's conversation merely to inspect it. Both integration
 return the inspector URL; opening it never resumes the program. An offline agent
 can reconnect while the debugger remains alive.
 
-## Authorized execution tasks
+## Requested debugging tasks
 
-A debugger question or attachment never authorizes execution. The user grants an
-execution task through **Authorize debugging** in the inspector (or VS Code's
-confirmed execution tool). Agents must not self-authorize or use `--human`.
-If no current grant exists, explain the execution needed and where to authorize it.
+An explicit request such as “debug this test” or “investigate why this program
+retries” authorizes running and stepping within that investigation. Record the
+request as a task and proceed; do not ask the user to approve it again in the
+inspector. Starting a task leaves the program paused for breakpoint setup.
+
+Attaching, viewing state, questions about captured values, and debugger comment
+events never authorize execution. Do not create a task from those requests.
+If execution is needed to answer a read-only question, explain what a debugging
+investigation would check. Agents use `task-start`, never `--human` or the legacy
+human-only `task-authorize` command.
+
+Read fresh state first and confirm the target and binding belong to the requested
+investigation. To record a chat request in Codex:
+
+```sh
+brote task-start ID --binding BINDING --revision REVISION --instruction "Debug the selected test, inspect the retry, then leave it paused"
+```
+
+Use the returned task ID. This request is already acknowledged in the active
+conversation and does not send a duplicate follow-up. For a request initiated in
+the inspector, the user can choose **Start debugging**, which delivers the task
+to the connected conversation.
 
 On a task event, read fresh state. Match task ID, binding ID/revision and unexpired
 `authorized`/`active` status; ignore obsolete events. Follow only that instruction.
 
-**Pi:** call `debug_task` with `operation: claim`, session and task. This acknowledges
-receipt and renews the lease during the active turn. Use `debug_execute` with the
+**Pi:** for a chat request, call `debug_task` with `operation: start`, session and
+`instruction` containing the user's requested scope. For a delivered inspector
+task, use `operation: claim`, session and task. Both renew the lease during the
+active turn. Use `debug_execute` with the
 same session/task and operation `continue`, `next`, `step`, `stepout` or `pause`.
-Finish with `debug_task` `complete` at a settled pause; use `cancel` on failure.
+Finish with `debug_task` `complete` at a settled pause or exit; use `cancel` on failure.
 Pi also completes/cancels remaining claimed work when the turn settles and cancels
 on session shutdown. Do not substitute a bare shell continue for these tools.
 
-**Codex:** use the same CLI task contract:
+**Codex:** after starting a task, use the same CLI task contract. Heartbeat first
+when acknowledging a task delivered by the inspector:
 
 ```sh
 brote task-heartbeat ID --task TASK --binding BINDING
@@ -83,15 +104,16 @@ brote task-cancel ID --task TASK --binding BINDING
 `task-execute` renews while that bounded tool call runs and cancels/requests a pause
 on timeout or interruption. It returns a fresh compact snapshot when stopped.
 Between calls, heartbeat before the 60-second lease expires while actively working.
-The detached event bridge never renews a grant. If the lease expires or the human
-cancels, stop executing; do not silently authorize a replacement. Human stepping,
+The detached event bridge never renews a task. If the lease expires or the human
+pauses or cancels, stop executing; do not start a replacement without a new user
+request. Human stepping,
 rebind and listener disconnect can revoke the task too. Complete only after the
 requested investigation is done, not automatically after every step.
 
 Delivery state distinguishes queued, acknowledged and uncertain requests. A
 reconnect reconciles persisted state; it does not replay a queued/ambiguous task.
-For uncertain delivery, inspect the conversation before the user cancels and grants
-a replacement. A legacy handback event permits fresh inspection only; acknowledge
+For uncertain delivery, inspect the conversation before cancelling and starting
+a replacement at the user's request. A legacy handback event permits fresh inspection only; acknowledge
 with `event-status` after checking event and binding, and require a task for execution.
 
 ## Debugger comment questions
@@ -116,7 +138,7 @@ brote comment reply SESSION THREAD --question QUESTION --binding BINDING --revis
 
 Reuse the message ID on retry; replies are idempotent. Answer in the debugger
 thread, not only agent chat. If execution is needed, explain the next inspection
-and let the user drive or authorize a task. `comment list` works after the run ends.
+and let the user drive or request an investigation. `comment list` works after the run ends.
 
 ## Lifecycle and reporting
 

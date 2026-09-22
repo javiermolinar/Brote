@@ -17,7 +17,10 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	defer func() { b.historyAction(a, result, actionErr) }()
-	if _, ok := a["generation"]; (!ok || num(a["generation"]) != b.generation) && !(str(a["action"]) == "task-cancel" && human(str(a["actor"])) && b.s.Task != nil && str(a["task"]) == b.s.Task.ID) {
+	// A human pause is always current intent; it must win over an agent step
+	// which advanced the generation while the inspector request was in flight.
+	humanInterrupt := human(str(a["actor"])) && (str(a["action"]) == "pause" || (str(a["action"]) == "task-cancel" && b.s.Task != nil && str(a["task"]) == b.s.Task.ID))
+	if _, ok := a["generation"]; (!ok || num(a["generation"]) != b.generation) && !humanInterrupt {
 		return nil, fmt.Errorf("session changed; refresh state before acting")
 	}
 	verb := str(a["action"])
@@ -168,6 +171,7 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 	}
 	takeBrowser := str(a["actor"]) == "browser" && verb == "handover" && str(a["editor"]) == "browser"
 	if verb == "pause" {
+		b.generation++
 		return obj{"status": "pause requested"}, b.interruptExecution()
 	}
 	if status != "paused" {

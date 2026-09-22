@@ -160,7 +160,7 @@ func Serve(options Options) (err error) {
 	}
 	if s.Task != nil && (s.Task.Status == "active" || s.Task.Status == "authorized") {
 		s.Task.Status = "cancelled"
-		s.Task.Reason = "broker recovered; authorize a new task"
+		s.Task.Reason = "broker recovered; resume debugging only at the user's request"
 	}
 	s.Version = 2
 	s.Token = ""

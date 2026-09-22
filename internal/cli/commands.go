@@ -27,7 +27,7 @@ func usage() string {
   brote end-session ID --confirmed  (explicit human termination)
   brote comment list SESSION
   brote comment reply SESSION THREAD --question ID --binding ID --revision N --body-file PATH --message-id KEY
-  brote task-authorize ID --human --instruction "Investigate the retries"
+  brote task-start ID --binding BINDING --revision N --instruction "Investigate the retries"
   brote task-execute ID --task TASK_ID --binding BINDING --operation next [--wait 30s]
   brote task-heartbeat|task-complete ID --task TASK_ID --binding BINDING
   brote task-cancel ID --human
@@ -55,8 +55,9 @@ func usage() string {
 
 All commands print JSON. Source launch configurations require --build; --binary
 and exec configurations never compile the target. Closing Zed or the panel
-does not stop the program. Agent execution requires a human-authorized task;
---human is for direct human operations. end-session explicitly terminates a run.`
+does not stop the program. A user's debugging request authorizes that task;
+record its scope with task-start before execution. Attach and comment questions
+stay read-only. --human is for direct human operations. end-session explicitly terminates a run.`
 }
 
 func Run(args []string) (any, error) {
@@ -148,7 +149,7 @@ func Run(args []string) (any, error) {
 		return taskExecute(args[1:])
 	}
 	if verb == "version" {
-		return obj{"version": Version, "protocol": 2, "capabilities": []string{"executionTasks", "taskDelivery", "taskExecute", "embeddedWebUI"}}, nil
+		return obj{"version": Version, "protocol": 2, "capabilities": []string{"executionTasks", "taskStart", "taskDelivery", "taskExecute", "embeddedWebUI"}}, nil
 	}
 	if verb == "events" || verb == "await-control" {
 		return eventsCommand(args[1:], verb == "await-control")
@@ -186,9 +187,9 @@ func Run(args []string) (any, error) {
 		return nil, e
 	}
 	f := flag.NewFlagSet(verb, flag.ContinueOnError)
-	task := f.String("task", "", "explicitly authorized execution task ID")
+	task := f.String("task", "", "current debugging task ID")
 	humanAction := f.Bool("human", false, "direct human debugger action or authorization")
-	instruction := f.String("instruction", "", "authorized investigation scope")
+	instruction := f.String("instruction", "", "user-requested investigation scope")
 	file := f.String("file", "", "source path")
 	line := f.Int("line", 0, "line")
 	fn := f.String("function", "", "function name")
@@ -217,6 +218,9 @@ func Run(args []string) (any, error) {
 	}
 	if len(f.Args()) > 0 {
 		return nil, fmt.Errorf("unexpected arguments: %v", f.Args())
+	}
+	if verb == "task-start" && (*humanAction || *binding == "" || *revision == 0 || *task != "") {
+		return nil, fmt.Errorf("usage: task-start ID --binding BINDING --revision N --instruction REQUEST (record the user's debugging request as the agent)")
 	}
 	if verb == "state" {
 		v, err := api(s, "GET", fmt.Sprintf("/api/state?goroutine=%d&frame=%d", *gid, *frame), nil)

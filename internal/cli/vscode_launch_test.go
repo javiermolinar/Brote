@@ -274,7 +274,16 @@ func TestUnselected(t *testing.T) {
 			assertNotRun("selected.result")
 			assertNotRun("unselected.result")
 			run("break", id, "--file", file, "--line", strconv.Itoa(breakLine))
-			paused := run("continue", id, "--human", "--wait", "10s", "--summary")
+			binding := asObj(state["binding"])
+			request := run("task-start", id, "--binding", str(binding["id"]), "--revision", strconv.Itoa(num(binding["revision"])), "--instruction", "Debug the selected test to its breakpoint, inspect got, then let it finish")
+			task := asObj(request["task"])
+			if str(task["delivery"]) != "acknowledged" {
+				t.Fatal("the current conversation's request was queued for duplicate delivery")
+			}
+			execute := func() obj {
+				return run("task-execute", id, "--binding", str(binding["id"]), "--task", str(task["id"]), "--operation", "continue", "--wait", "10s")
+			}
+			paused := execute()
 			frames := asList(paused["frames"])
 			if str(paused["status"]) != "paused" || len(frames) == 0 || num(asObj(frames[0])["line"]) != breakLine {
 				t.Fatalf("test breakpoint was not hit: %v", paused)
@@ -283,7 +292,7 @@ func TestUnselected(t *testing.T) {
 			if str(asObj(evaluated["value"])["value"]) != "42" {
 				t.Fatalf("test local is unavailable: %v", evaluated)
 			}
-			exited := run("continue", id, "--human", "--wait", "10s", "--summary")
+			exited := execute()
 			if str(exited["status"]) != "exited" || num(asObj(exited["state"])["exitStatus"]) != 0 {
 				t.Fatalf("test binary failed: %v", exited)
 			}
@@ -292,6 +301,10 @@ func TestUnselected(t *testing.T) {
 				t.Fatalf("selected test result: %s, %v", data, err)
 			}
 			assertNotRun("unselected.result")
+			completed := run("task-complete", id, "--binding", str(binding["id"]), "--task", str(task["id"]))
+			if str(asObj(completed["task"])["status"]) != "completed" {
+				t.Fatal("finished test retained an execution task")
+			}
 			run("end-session", id, "--confirmed")
 			if err := os.Remove(filepath.Join(project, "selected.result")); err != nil {
 				t.Fatal(err)

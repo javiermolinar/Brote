@@ -81,7 +81,7 @@ func TestExecutionTaskCancellationFencesDelayedDispatch(t *testing.T) {
 	if _, err := call(obj{"action": "task-authorize", "binding": "pi", "instruction": "self authorize"}); err == nil {
 		t.Fatal("agent self-authorized")
 	}
-	result, err := call(obj{"action": "task-authorize", "actor": "human", "instruction": "Inspect the retry"})
+	result, err := call(obj{"action": "task-start", "binding": "pi", "revision": 1, "instruction": "Inspect the retry"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,6 +127,76 @@ func TestExecutionTaskCancellationFencesDelayedDispatch(t *testing.T) {
 	}
 	if _, err = call(obj{"action": "continue", "binding": "pi", "task": task.ID}); err == nil {
 		t.Fatal("old task accepted under a new grant")
+	}
+}
+
+func TestRequestedTaskRequiresCurrentScopeAndEndsAtCompletion(t *testing.T) {
+	b, _ := coordinationFixture(t)
+	start := func(binding string, revision int, instruction string) (obj, error) {
+		return b.action(obj{"action": "task-start", "generation": b.generation, "binding": binding, "revision": revision, "instruction": instruction})
+	}
+	for _, input := range []struct {
+		binding     string
+		revision    int
+		instruction string
+	}{{"other", 1, "Debug the retry"}, {"pi", 0, "Debug the retry"}, {"pi", 2, "Debug the retry"}, {"pi", 1, "  "}} {
+		if _, err := start(input.binding, input.revision, input.instruction); err == nil {
+			t.Fatalf("accepted invalid scope %+v", input)
+		}
+	}
+	result, err := start("pi", 1, "Debug the retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := result["task"].(session.ExecutionTask)
+	if task.Instruction != "Debug the retry" || task.Delivery != "acknowledged" || task.Binding.Revision != 1 {
+		t.Fatalf("requested task was not acknowledged with its scope: %+v", task)
+	}
+	if _, err = start("pi", 1, "Replace the investigation"); err == nil {
+		t.Fatal("replaced an active investigation")
+	}
+	if _, err = b.action(obj{"action": "task-delivery", "generation": b.generation, "binding": "pi", "revision": 1, "task": task.ID, "status": "sending"}); err == nil {
+		t.Fatal("chat-origin task was redelivered to the active conversation")
+	}
+	if _, err = b.action(obj{"action": "task-complete", "generation": b.generation, "binding": "pi", "task": task.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = b.action(obj{"action": "task-complete", "generation": b.generation, "binding": "pi", "task": task.ID}); err != nil {
+		t.Fatal("completion retry failed:", err)
+	}
+	if _, err = b.action(obj{"action": "task-complete", "generation": b.generation, "binding": "pi", "task": "other-task"}); err == nil {
+		t.Fatal("completion accepted a foreign task")
+	}
+	if _, err = b.action(obj{"action": "next", "generation": b.generation, "binding": "pi", "task": task.ID}); err == nil {
+		t.Fatal("completed investigation permitted another step")
+	}
+	if _, err = b.action(obj{"action": "bind", "generation": b.generation, "binding": "pi", "name": "Pi"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = start("pi", 1, "Debug another retry"); err == nil {
+		t.Fatal("old binding revision started new work")
+	}
+}
+
+func TestHumanPauseCancelsRequestedTaskDespiteStaleGeneration(t *testing.T) {
+	b, _ := coordinationFixture(t)
+	oldGeneration := b.generation
+	if _, err := b.action(obj{"action": "task-start", "generation": oldGeneration, "binding": "pi", "revision": 1, "instruction": "Debug the retry"}); err != nil {
+		t.Fatal(err)
+	}
+	task := b.s.Task.ID
+	beforePause := b.generation
+	if _, err := b.action(obj{"action": "pause", "actor": "browser", "generation": oldGeneration}); err != nil {
+		t.Fatal(err)
+	}
+	if b.s.Task.Status != "cancelled" {
+		t.Fatal("human pause retained execution scope")
+	}
+	if _, err := b.action(obj{"action": "task-start", "binding": "pi", "revision": 1, "generation": beforePause, "instruction": "Debug the retry"}); err == nil {
+		t.Fatal("an in-flight start request overrode the human pause")
+	}
+	if _, err := b.action(obj{"action": "continue", "binding": "pi", "task": task, "generation": b.generation}); err == nil {
+		t.Fatal("agent continued after human pause")
 	}
 }
 func TestTaskBindingExpiryCompletionAndDisconnect(t *testing.T) {

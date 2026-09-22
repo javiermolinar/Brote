@@ -508,11 +508,12 @@ function registerCollaboration(context, host) {
   async function snapshot(s, input = {}) {
     return request(s, `/api/state?goroutine=${input.goroutine || 0}&frame=${input.frame || 0}`);
   }
-  async function action(s, values, signal, expectedBinding) {
+  async function action(s, values, signal, expectedBinding, expectedRevision) {
     signal?.throwIfAborted();
     const fresh = await snapshot(s);
     signal?.throwIfAborted();
     if (expectedBinding !== void 0 && (fresh.binding?.id || "") !== expectedBinding) throw new Error("Agent binding changed; reconnect this conversation before executing.");
+    if (expectedRevision !== void 0 && fresh.binding?.revision !== expectedRevision) throw new Error("Agent binding revision changed; inspect the current conversation before executing.");
     return request(s, "/api/action", { generation: fresh.generation, binding: fresh.binding?.id, actor: "agent", ...values }, signal);
   }
   async function refresh() {
@@ -642,19 +643,25 @@ function registerCollaboration(context, host) {
     if (input.operation === "inspect") return snapshot(s, { ...host.scope(s.id), ...Object.fromEntries(Object.entries(input).filter(([, v]) => v !== void 0)) });
     if (input.operation === "evaluate") return action(s, { action: "eval", expression: input.expression, goroutine: input.goroutine ?? host.scope(s.id).goroutine, frame: input.frame ?? host.scope(s.id).frame });
     if (input.operation === "breakpoint") return action(s, { action: "break", file: input.file, line: input.line, condition: input.condition || "" });
-    if (!executing.has(input.operation)) throw new Error("Unsupported debugger operation");
-    const connection = await snapshot(s);
+    if (!executing.has(input.operation) && !["task-start", "task-complete", "task-cancel"].includes(input.operation)) throw new Error("Unsupported debugger operation");
+    if (input.operation === "task-start") {
+      if (!input.instruction?.trim() || input.task) throw new Error("task-start requires the user\u2019s debugging instruction and no existing task ID");
+    } else if (!input.task || input.instruction) throw new Error("Use task-start to record the user\u2019s debugging request, then supply that task ID");
+    let connection = await snapshot(s);
     if (connection.binding?.id && connection.binding.id !== binding) throw new Error("This run is attached to another agent conversation. Connect VS Code explicitly before executing.");
     if (!connection.binding?.id) {
+      if (input.operation !== "task-start") throw new Error("Connect this conversation and start a debugging task first");
       if (token.isCancellationRequested) throw new Error("Execution cancelled");
-      await action(s, { action: "bind", binding, name: "VS Code Chat", actor: "human" }, void 0, "");
+      await action(s, { action: "bind", binding, name: "VS Code Chat" }, void 0, "");
+      connection = await snapshot(s);
     }
-    const executeAction = (values, signal) => action(s, values, signal, binding);
+    const revision = connection.binding?.revision;
+    const executeAction = (values, signal) => action(s, values, signal, binding, revision);
     const abort = new AbortController();
-    let task, cancellation;
+    let task = input.task, cancellation, succeeded = false;
     const cancel = () => {
       abort.abort(new Error("Execution cancelled"));
-      if (task && !cancellation) cancellation = executeAction({ action: "task-cancel", actor: "human", task }).then(() => {
+      if (task && !cancellation) cancellation = executeAction({ action: "task-cancel", task }).then(() => {
       }, (error) => {
         host.log.appendLine(`Cancellation: ${errorText(error)}`);
       });
@@ -666,19 +673,35 @@ function registerCollaboration(context, host) {
     };
     try {
       check();
-      const grant = await executeAction({ action: "task-authorize", actor: "human", instruction: `VS Code Chat: ${input.operation} once` });
-      task = grant.task?.id;
-      if (!task) throw new Error("Broker did not return an execution task");
+      if (input.operation === "task-start") {
+        if (!connection.capabilities?.taskStart) throw new Error("Update the broker to start debugging from a chat request");
+        const result = await executeAction({ action: "task-start", instruction: input.instruction, revision });
+        task = result.task?.id;
+        if (!task) throw new Error("Broker did not return a debugging task");
+        check();
+        succeeded = true;
+        return result;
+      }
+      if (input.operation === "task-complete" || input.operation === "task-cancel") {
+        const result = await executeAction({ action: input.operation, task }, abort.signal);
+        succeeded = true;
+        return result;
+      }
+      await executeAction({ action: "task-heartbeat", task }, abort.signal);
       check();
       await executeAction({ action: input.operation, task }, abort.signal);
       for (let i = 0; i < 150; i++) {
         check();
         const state = await snapshot(s);
         check();
-        if (!state.task || state.task.id !== task || state.task.status === "cancelled") throw new Error("Execution was interrupted");
-        if (state.status === "exited") return state;
-        if (state.status === "paused") {
-          await executeAction({ action: "task-complete", task }, abort.signal);
+        if (state.binding?.id !== binding || state.binding.revision !== revision || !state.task || state.task.id !== task || state.task.status === "cancelled") throw new Error("Execution was interrupted");
+        if (state.status === "exited" && state.task.status === "completed") {
+          succeeded = true;
+          return state;
+        }
+        if (!["authorized", "active"].includes(state.task.status)) throw new Error("Execution task completed");
+        if (state.status === "exited" || state.status === "paused") {
+          succeeded = true;
           return state;
         }
         await new Promise((resolve) => setTimeout(resolve, 200));
@@ -687,20 +710,15 @@ function registerCollaboration(context, host) {
     } finally {
       subscription?.dispose();
       if (cancellation) await cancellation;
-      if (task) {
+      if (task && !succeeded) {
         const state = await snapshot(s).catch(() => void 0);
-        if (state?.binding?.id === binding && state?.task?.id === task && ["authorized", "active"].includes(state.task.status)) await executeAction({ action: "task-cancel", actor: "human", task });
+        if (state?.binding?.id === binding && state.binding.revision === revision && state?.task?.id === task && ["authorized", "active"].includes(state.task.status)) await executeAction({ action: "task-cancel", task });
       }
     }
   }
   context.subscriptions.push(vscode2.lm.registerTool(toolName, {
     async prepareInvocation(options) {
-      const mutating = ["launch", "breakpoint", ...executing].includes(options.input.operation);
-      return { invocationMessage: `Debugger: ${options.input.operation}`, ...mutating ? { confirmationMessages: { title: `Debugger: ${options.input.operation}`, message: new vscode2.MarkdownString(`Requested debugger operation:
-
-\`\`\`json
-${JSON.stringify(options.input, null, 2)}
-\`\`\``) } } : {} };
+      return { invocationMessage: `Debugger: ${options.input.operation}` };
     },
     async invoke(options, token) {
       return new vscode2.LanguageModelToolResult([new vscode2.LanguageModelTextPart(JSON.stringify(await invoke(options.input, token)))]);
@@ -759,7 +777,7 @@ ${JSON.stringify(options.input, null, 2)}
         await refresh();
         return;
       }
-      const messages = [vscode2.LanguageModelChatMessage.User("You are Brote inside VS Code. Use debugger tools for evidence. Launch only existing precompiled binaries; never compile implicitly. Execute only when the user asks to run or step. Questions about values are read-only. Never infer success from a failed tool. Tool execution stops after 30 seconds if no breakpoint is reached.")];
+      const messages = [vscode2.LanguageModelChatMessage.User("You are Brote inside VS Code. Use debugger tools for evidence. Launch only existing precompiled binaries; never compile implicitly. An explicit request to debug or investigate this program authorizes execution within that request; do not ask again. Record its scope once with task-start and instruction, then pass the returned task ID to execution operations. Keep the task across steps and complete it with task-complete when the investigation is done at a pause or exit; cancel on failure or abandonment. Never restart cancelled or expired work without a new user request. Attaching, questions about values, and inline debugger comments are read-only and do not authorize task-start. Never infer success from a failed tool. Each execution call stops after 30 seconds if no breakpoint is reached.")];
       for (const turn of chatContext.history) {
         if (turn instanceof vscode2.ChatRequestTurn) messages.push(vscode2.LanguageModelChatMessage.User(turn.prompt));
         else if (turn instanceof vscode2.ChatResponseTurn) messages.push(vscode2.LanguageModelChatMessage.Assistant(turn.response.filter((p) => p instanceof vscode2.ChatResponseMarkdownPart).map((p) => p.value.value).join("")));

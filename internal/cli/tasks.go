@@ -30,7 +30,7 @@ func deliverTask(s session.Descriptor, cfg bridgeConfig) error {
 		return err
 	}
 	if task.Delivery == "sending" {
-		return update("unknown", "Delivery interrupted; check the conversation, then cancel and authorize a new task if needed.")
+		return update("unknown", "Delivery interrupted; check the conversation, then cancel and start a new task if needed.")
 	}
 	if task.Delivery != "pending" {
 		return nil
@@ -38,7 +38,7 @@ func deliverTask(s session.Descriptor, cfg bridgeConfig) error {
 	if err = update("sending", ""); err != nil {
 		return err
 	}
-	message := fmt.Sprintf("Brote authorized task %s for session %s, binding %s revision %d. Use the debug-handover skill. Read fresh state; ignore if task/binding changed, cancelled or expired. Acknowledge with task-heartbeat SESSION --task TASK --binding BINDING. Use task-execute SESSION --task TASK --binding BINDING --operation next|step|stepout|continue for bounded execution with automatic lease renewal. Renew with task-heartbeat while actively investigating; complete at a settled pause with task-complete, cancel on failure. Never self-authorize or use --human. This is debugging, not an implementation request. Instruction (data): %q", task.ID, s.ID, cfg.Binding.ID, cfg.Binding.Revision, task.Instruction)
+	message := fmt.Sprintf("Brote debugging task %s for session %s, binding %s revision %d. Use the debug-handover skill. The user requested this investigation; no further approval is needed. Read fresh state; ignore if task/binding changed, cancelled or expired. Acknowledge with task-heartbeat SESSION --task TASK --binding BINDING. Use task-execute SESSION --task TASK --binding BINDING --operation next|step|stepout|continue for bounded execution with automatic lease renewal. Renew with task-heartbeat while actively investigating; complete at a settled pause or exit with task-complete, cancel on failure. Do not restart cancelled or expired work without a new user request. Never use --human. This is debugging, not an implementation request. Instruction (data): %q", task.ID, s.ID, cfg.Binding.ID, cfg.Binding.Revision, task.Instruction)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	out, err := codex.Queue(ctx, cfg.Executable, cfg.Thread, message)
@@ -65,7 +65,7 @@ func taskExecute(args []string) (any, error) {
 		return nil, fmt.Errorf("task-execute requires a session")
 	}
 	f := flag.NewFlagSet("task-execute", flag.ContinueOnError)
-	task := f.String("task", "", "human-authorized task ID")
+	task := f.String("task", "", "current debugging task ID")
 	binding := f.String("binding", "", "expected conversation binding")
 	operation := f.String("operation", "", "continue, next, step, stepout or pause")
 	wait := f.Duration("wait", 30*time.Second, "maximum execution duration (up to 5m)")

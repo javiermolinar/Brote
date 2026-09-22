@@ -122,14 +122,14 @@ test('Pi task delivery reconciles, claims, executes and settles only its bound g
  const original=process.env.DELVE_LLM_ADAPTER_BIN;process.env.DELVE_LLM_ADAPTER_BIN=cli;
  t.after(()=>{if(original===undefined)delete process.env.DELVE_LLM_ADAPTER_BIN;else process.env.DELVE_LLM_ADAPTER_BIN=original;});
  const binding={id:'pi:conversation',revision:1,name:'Pi'};
- await writeFile(store,JSON.stringify({id:'0123456789',status:'paused',binding,cursor:1,task:{id:'task',binding,status:'authorized',delivery:'pending',instruction:'Inspect retry'},calls:[]}));
+ await writeFile(store,JSON.stringify({id:'0123456789',status:'paused',binding,cursor:1,capabilities:{taskStart:true},task:{id:'task',binding,status:'authorized',delivery:'pending',instruction:'Inspect retry'},calls:[]}));
  await writeFile(cli,`#!${process.execPath}
 const fs=require('node:fs'),file=${JSON.stringify(store)};const [command,...args]=process.argv.slice(2);let state=JSON.parse(fs.readFileSync(file));
 if(command==='version')console.log(JSON.stringify({protocol:2,capabilities:['executionTasks','taskDelivery','taskExecute','embeddedWebUI']}));
 else if(command==='sessions')console.log(JSON.stringify([{id:state.id,status:'paused'}]));
 else if(command==='state')console.log(JSON.stringify(state));
 else if(command==='events'){console.log(JSON.stringify({id:2,kind:'task.authorized',binding:state.binding}));setInterval(()=>{},1000);}
-else if(command.startsWith('task-')){state.calls.push({command,args});if(command==='task-delivery')state.task.delivery=args[args.indexOf('--status')+1];if(command==='task-heartbeat')state.task.delivery='acknowledged';if(command==='task-complete')state.task.status='completed';if(command==='task-cancel')state.task.status='cancelled';fs.writeFileSync(file,JSON.stringify(state));console.log(JSON.stringify(state));}
+else if(command.startsWith('task-')){state.calls.push({command,args});if(command==='task-start')state.task={id:'chat-task',binding:state.binding,status:'authorized',delivery:'acknowledged',instruction:args[args.indexOf('--instruction')+1]};if(command==='task-delivery')state.task.delivery=args[args.indexOf('--status')+1];if(command==='task-heartbeat')state.task.delivery='acknowledged';if(command==='task-complete')state.task.status='completed';if(command==='task-cancel')state.task.status='cancelled';fs.writeFileSync(file,JSON.stringify(state));console.log(JSON.stringify(state));}
 else throw new Error(command);
 `,{mode:0o755});
  await build({entryPoints:['adapters/pi/index.ts'],bundle:true,platform:'node',format:'esm',outfile:module,logLevel:'silent'});
@@ -162,5 +162,21 @@ else throw new Error(command);
  } finally {globalThis.setInterval=originalInterval;}
  idle=true;await leaseTick();
  assert.equal(JSON.parse(await readFile(store)).task.status,'completed','an idle harness cannot renew a grant indefinitely even without a settled notification');
+
+ idle=false;
+ await assert.rejects(tools.get('debug_task').execute('start',{session:'0123456789',operation:'start'}),/instruction/);
+ await assert.rejects(tools.get('debug_task').execute('claim',{session:'0123456789',operation:'claim'}),/task ID/);
+ const started=await tools.get('debug_task').execute('start',{session:'0123456789',operation:'start',instruction:'Debug the retry, inspect total, then leave it paused'});
+ assert.equal(started.details.task.id,'chat-task');
+ state=JSON.parse(await readFile(store));
+ assert.equal(state.task.delivery,'acknowledged');
+ const created=state.calls.find(c=>c.command==='task-start');
+ assert.equal(created.args[created.args.indexOf('--revision')+1],'1');
+ assert.ok(!created.args.includes('--human'));
+ assert.equal(messages.length,1,'chat-origin request does not enqueue another turn');
+ await tools.get('debug_execute').execute('exec',{session:'0123456789',task:'chat-task',operation:'next'});
+ await tools.get('debug_task').execute('complete',{session:'0123456789',task:'chat-task',operation:'complete'});
+ assert.equal(JSON.parse(await readFile(store)).task.status,'completed');
+ await assert.rejects(tools.get('debug_execute').execute('exec',{session:'0123456789',task:'chat-task',operation:'next'}),/changed/);
 
 });

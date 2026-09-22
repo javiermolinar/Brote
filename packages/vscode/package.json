@@ -139,7 +139,7 @@
         "displayName": "Brote",
         "toolReferenceName": "brote",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "List workspace sessions, launch an existing precompiled Go binary, attach the native debugger, inspect stack/locals, evaluate read-only expressions, set conditional breakpoints, or execute one authorized step/continue. Never compile implicitly. Only execute when explicitly requested; questions about values are read-only. Execution waits up to 30 seconds then pauses.",
+        "modelDescription": "List workspace sessions, launch an existing precompiled Go binary, attach, inspect stack/locals, evaluate read-only expressions, set breakpoints, or debug a user-requested investigation. An explicit request to debug or investigate the program authorizes execution without a second approval. First use task-start with instruction containing the user’s request; pass its task ID to each continue/next/step/stepout, then task-complete when done or task-cancel on failure. Do not restart cancelled/expired work without a new user request. Attach, state questions and debugger comments stay read-only. Never compile implicitly. Execution waits up to 30 seconds then pauses.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -155,7 +155,10 @@
                 "next",
                 "step",
                 "stepout",
-                "evaluate"
+                "evaluate",
+                "task-start",
+                "task-complete",
+                "task-cancel"
               ]
             },
             "session": {
@@ -193,6 +196,16 @@
               "items": {
                 "type": "string"
               }
+            },
+            "task": {
+              "type": "string",
+              "description": "Current debugging task ID, required for execution, task-complete and task-cancel."
+            },
+            "instruction": {
+              "type": "string",
+              "description": "The user’s explicit debugging request and its scope. Required only for task-start; never infer it from attachment or read-only questions.",
+              "minLength": 1,
+              "maxLength": 4096
             }
           },
           "required": [

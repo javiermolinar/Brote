@@ -35,7 +35,7 @@ Normal development `npm ci` skips the download; `npm run setup:pi` opts in.
 For Codex, a newly started run binds to the current conversation. To connect an
 existing run, use **Attach to agent** in the inspector and paste its prompt into
 your Codex conversation. The integration starts an event bridge that delivers
-questions and authorized tasks back to that conversation.
+questions and inspector-initiated debugging tasks back to that conversation.
 
 The inspector and agent attach without changing whether the program is running
 or paused. If no source is selected yet, open a project file and set a breakpoint.
@@ -58,16 +58,39 @@ ownership between the browser and the agent.
 
 ## Let the agent execute
 
-A question does not authorize stepping or continuing. Open **Debug with agent**,
-describe the investigation, and choose **Authorize debugging**. For example:
+Ask your agent to debug or investigate the program or test. That request authorizes
+execution within its scope; you do not need to approve it again in the inspector.
+For example:
 
 > Run until `attempt == 3`, inspect `total`, and leave the program paused.
 
-The agent receives a task scoped to that instruction and conversation. It can
-step or continue while that task is active. **Stop agent** cancels the task and
+You can also open **Debug with agent** in the inspector, describe the investigation,
+and choose **Start debugging** to send it to the connected conversation. Attaching,
+viewing state, and asking a debugger comment question remain read-only.
+
+The agent records a task scoped to that instruction and conversation, then sets
+breakpoints before executing. It can step or continue while that task is active.
+Completing the investigation ends its execution scope. **Stop agent** cancels the task and
 requests a pause without ending the run. Human stepping, a changed agent binding,
-or a disconnected listener can also revoke the task. Execution leases expire if
-the agent stops renewing them.
+or a disconnected listener can also revoke the task. The debugger's **Pause**
+button takes precedence over agent execution. Execution leases expire if the
+agent stops renewing them; cancelled or expired work does not restart automatically.
+
+For CLI agents, the sequence is:
+
+```sh
+brote state SESSION_ID --summary
+brote task-start SESSION_ID --binding BINDING --revision REVISION --instruction "Debug the retry and leave it paused"
+brote task-execute SESSION_ID --task TASK --binding BINDING --operation continue --wait 30s
+brote task-complete SESSION_ID --task TASK --binding BINDING
+```
+
+Use the fresh state's binding and revision, and the task ID returned by `task-start`.
+Keep the same task across steps. The bounded execution command renews its lease;
+use `task-heartbeat` between calls while actively investigating. Pi provides the
+same flow through `debug_task` (`start`, `claim`, `complete`, `cancel`) and
+`debug_execute`. New sessions and Run again start paused. Attachment and recovery
+do not request execution.
 
 You can always use the debugger's own execution controls. The old handover and
 reclaim commands remain for compatibility; they are not required by this workflow.
@@ -85,8 +108,9 @@ Use VS Code's normal debugger controls to step and continue.
 
 To use a shared Brote run instead, launch it from `@brote` Chat or choose
 **Brote: Attach Session**. Shared discussions are available in both the editor
-and browser. Execution tools request confirmation through VS Code and use the
-same scoped task contract. A run's questions are routed to its attached agent;
+and browser. A chat request to debug records the investigation with `task-start`;
+the tools execute within that task without an additional confirmation dialog.
+They keep its scope across steps and use `task-complete` when done. A run's questions are routed to its attached agent;
 they are not broadcast to every open frontend.
 
 ## Use a VS Code launch configuration
@@ -205,7 +229,8 @@ brote continue SESSION_ID --human --wait 20s
 brote state SESSION_ID --summary
 ```
 
-`--human` identifies a command you run directly. Agents use the authorized task
+`--human` identifies a command you run directly. Agents record the user's debugging
+request with `task-start` and use the task
 tools instead. Check the fresh location and values before concluding that a
 condition fired. Program arguments, including test flags, go after `--` on start.
 

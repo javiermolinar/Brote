@@ -35,7 +35,7 @@ func (b *broker) snapshotLocked(gid, frame int, brief bool) (obj, error) {
 	v["agentConnected"] = b.agentStreams > 0
 	v["panel"] = b.s.HTTP + "/"
 	v["version"], v["binding"], v["cursor"] = 2, b.s.Binding, b.s.Cursor
-	v["capabilities"] = obj{"events": true, "browserOwner": true, "authentication": false, "comments": true, "replyContexts": true, "executionTasks": true}
+	v["capabilities"] = obj{"events": true, "browserOwner": true, "authentication": false, "comments": true, "replyContexts": true, "executionTasks": true, "taskStart": true}
 	v["editor"], v["handoverId"] = b.s.Editor, b.s.HandoverID
 	v["editorConnected"], v["editorReady"] = b.peer != nil, b.peer != nil && b.peer.ready
 	v["vscodeConnected"] = b.owner == "vscode" && b.peer != nil

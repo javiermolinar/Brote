@@ -113,7 +113,7 @@ test('stepping retains last pause, expansions and stable source; stale controls 
 
 });
 
-test('explicit investigation grants are separate from questions and can be stopped without handover', async t => {
+test('inspector and chat investigations share cancellation while comments stay read-only', async t => {
  const html=await readFile('packages/web/public/index.html','utf8');
  const js=await build({entryPoints:['packages/web/src/app.ts'],bundle:true,write:false,format:'iife',logLevel:'silent'});
  const dom=new JSDOM(html,{url:'http://127.0.0.1:1234',runScripts:'outside-only'});t.after(()=>dom.window.close());
@@ -146,6 +146,13 @@ test('explicit investigation grants are separate from questions and can be stopp
  d.querySelector('#stopAgent').click();await flush();
  assert.equal(calls[1].action,'task-cancel');assert.equal(calls[1].task,'task1');assert.equal(d.querySelector('#stopAgent').hidden,true);
  assert.equal(d.querySelector('#authorizeTask').disabled,false);assert.match(d.querySelector('#taskStatus').textContent,/cancelled/);
+ state={...state,task:{id:'chat-task',instruction:'Debug the selected test',status:'authorized',delivery:'acknowledged'}};tick();await flush();
+ assert.match(d.querySelector('#agentStatus').textContent,/Pi.*Debugging/);
+ assert.equal(d.querySelector('#stopAgent').hidden,false);
+ assert.equal(calls.length,2,'rendering a chat task never starts or authorizes another task');
+ state={...state,task:undefined,agentConnected:false};tick();await flush();
+ assert.equal(d.querySelector('#authorizeTask').disabled,true);
+ assert.match(d.querySelector('#taskStatus').textContent,/Attach your agent/);
  state={...state,beforeGoStart:true,frames:[]};tick();await flush();
  assert.match(d.querySelector('#filename').textContent,/Paused before Go starts/);
  assert.equal(d.querySelector('[data-action=step]').disabled,true);

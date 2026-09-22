@@ -62,7 +62,7 @@ export interface Snapshot {
   notification?: { id: string; kind: string; status: 'pending' | 'sending' | 'queued' | 'acknowledged' | 'failed' | 'unknown'; error?: string };
   sourceIdentity?: { match: string; changedSinceStart?: boolean; binaryChanged?: boolean };
   watches?: Evaluation[];
-  capabilities?: {comments?: boolean; replyContexts?:boolean; executionTasks?: boolean};
+  capabilities?: {comments?: boolean; replyContexts?:boolean; executionTasks?: boolean; taskStart?:boolean};
   agentConnected?: boolean;
   beforeGoStart?: boolean;
   task?: {delivery?:string;deliveryError?:string;id:string;instruction:string;status:'authorized'|'active'|'completed'|'cancelled';reason?:string;expires:string};
@@ -70,8 +70,10 @@ export interface Snapshot {
 
 export interface Evaluation { expression: string; value?: Variable; error?: string; generation?: number; goroutine?: number; frame?: number }
 
-export type Action = 'task-authorize' | 'task-cancel' | 'task-complete' | 'task-heartbeat' | 'continue' | 'next' | 'step' | 'stepout' | 'pause' | 'break' | 'clear' | 'handover' | 'reclaim' | 'stop' | 'eval' | 'watch' | 'unwatch' | 'retry-notification';
+export type Action = 'task-start' | 'task-authorize' | 'task-cancel' | 'task-complete' | 'task-heartbeat' | 'continue' | 'next' | 'step' | 'stepout' | 'pause' | 'break' | 'clear' | 'handover' | 'reclaim' | 'stop' | 'eval' | 'watch' | 'unwatch' | 'retry-notification';
 export interface ActionOptions {
+ binding?: string;
+ revision?: number;
  instruction?: string;
  task?: string;
 	 editor?: string;

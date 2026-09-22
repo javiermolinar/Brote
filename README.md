@@ -14,7 +14,8 @@ is **Go**, through **Delve**; other language backends are not included yet.
 
 Use the browser inspector with **Codex or Pi**, or stay in **VS Code** with native
 debugger comments and Chat. You can inspect and set breakpoints together. The
-agent only steps or continues when you authorize it.
+agent can step and continue when you ask it to debug. Attaching and asking
+questions about captured state remain read-only.
 
 ![Brote paused in a Go program, with the call stack, locals, and a threaded agent conversation](assets/debugger-conversation.png)
 

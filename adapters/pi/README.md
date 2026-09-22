@@ -35,9 +35,12 @@ After installing or updating the adapter, run `/reload` in Pi.
 
 The agent can use `debug_sessions`, `debug_connect`, and `debug_stop` for equivalent natural-language requests. Stopping requires an explicit user request for the named session.
 
-For human-authorized tasks, the agent uses `debug_task` to claim/complete/cancel
-and `debug_execute` to step or continue with bounded lease renewal. Questions
-remain read-only. A settled turn or session shutdown releases claimed execution;
+Ask the agent to debug a program or test; it records your request with `debug_task`
+(`start` plus the investigation instruction) and uses `debug_execute` to step or
+continue with bounded lease renewal. No separate inspector approval is needed.
+Inspector requests use `claim`; `complete` and `cancel` end the investigation's
+execution scope. Attachment and debugger questions remain read-only.
+A settled turn or session shutdown releases claimed execution;
 forking does not inherit another conversation's grant. Uncertain delivery is
 marked for review instead of being blindly replayed on reconnect.
 

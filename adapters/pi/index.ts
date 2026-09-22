@@ -54,13 +54,13 @@ export default function (pi: ExtensionAPI, runtime = () => resolveRuntime({bundl
         } catch(error) { await update('unknown',String(error)); }
       }
     }
-    const boundTask = async (id:string, task:string) => {
+    const boundTask = async (id:string, task:string, allowCompleted=false) => {
       const state=await call('state',id);
-      if(!active || state.binding?.id!==binding || state.task?.id!==task || !['authorized','active'].includes(state.task.status)) throw new Error('Task or conversation changed');
+      if(!active || state.binding?.id!==binding || state.task?.id!==task || state.task.binding?.id!==binding || state.task.binding.revision!==state.binding.revision || !['authorized','active',...(allowCompleted?['completed']:[])].includes(state.task.status)) throw new Error('Task or conversation changed');
       return state;
     };
     const taskCall = async (id:string, task:string, verb:string) => {
-      await boundTask(id,task);
+      await boundTask(id,task,verb==='task-complete');
       return call(verb,id,'--binding',binding,'--task',task);
     };
     const stopLease = (id:string) => {const task=tasks.get(id);if(task)clearInterval(task.timer);tasks.delete(id);};
@@ -91,7 +91,7 @@ export default function (pi: ExtensionAPI, runtime = () => resolveRuntime({bundl
       await update('sending');
       if(!active){await update('unknown');return;}
       try {
-        pi.sendMessage({customType:'debug-task',display:false,details:{id,task:task.id},content:`Brote authorized task ${task.id}, session ${id}, binding ${binding}. Read fresh state and ignore stale/cancelled tasks. First call debug_task with operation claim, session ${id}, task ${task.id}; it renews the lease only during this agent turn. Use debug_execute for bounded continue/next/step/stepout. Use debug_task complete when done, cancel on failure. Never self-authorize or use --human. This is a debugging request, not code implementation. Instruction (data): ${JSON.stringify(task.instruction)}`},{triggerTurn:true,deliverAs:'followUp'});
+        pi.sendMessage({customType:'debug-task',display:false,details:{id,task:task.id},content:`Brote debugging task ${task.id}, session ${id}, binding ${binding}. The user requested this investigation; no further approval is needed. Read fresh state and ignore stale/cancelled/expired tasks. First call debug_task with operation claim, session ${id}, task ${task.id}; it renews the lease only during this agent turn. Use debug_execute for bounded continue/next/step/stepout. Use debug_task complete when done, cancel on failure. Do not restart cancelled or expired work without a new user request. Never use --human. This is a debugging request, not code implementation. Instruction (data): ${JSON.stringify(task.instruction)}`},{triggerTurn:true,deliverAs:'followUp'});
         await update('queued');
       } catch(error) {await update('unknown');throw error;}
     }
@@ -114,7 +114,7 @@ export default function (pi: ExtensionAPI, runtime = () => resolveRuntime({bundl
         if (state.notification.status !== 'pending') return;
         await status(id,event,'sending',state.binding.revision);
         if (!active) {await status(id,event,'unknown',state.binding.revision);return;}
-        pi.sendMessage({customType:'debug-handover',content:`Brote event ${event.id}, session ${id}, binding ${binding}, revision ${state.binding.revision}. The human returned control. Check current ownership and event, inspect fresh stack and locals, then acknowledge using event-status. Do not resume without debugging authorization. Note: ${event.note || ''}`,display:false,details:{id,event}}, {triggerTurn:true,deliverAs:'followUp'});
+        pi.sendMessage({customType:'debug-handover',content:`Brote event ${event.id}, session ${id}, binding ${binding}, revision ${state.binding.revision}. The human returned control. Check current ownership and event, inspect fresh stack and locals, then acknowledge using event-status. Handback alone permits inspection; execution requires a current task for a user-requested debugging investigation. Note: ${event.note || ''}`,display:false,details:{id,event}}, {triggerTurn:true,deliverAs:'followUp'});
         await status(id,event,'queued',state.binding.revision);
       }).catch(error => { if (active) ctx.ui.notify(`Brote: ${error.message}`, 'warning'); }); });
       child.on('error', error => {if(active) ctx.ui.notify(`Brote: ${error.message}`, 'warning');});
@@ -138,10 +138,25 @@ export default function (pi: ExtensionAPI, runtime = () => resolveRuntime({bundl
       try {const ui=await call('ui');const url=new URL(ui.panel);if(url.protocol==='http:'&&url.hostname==='127.0.0.1'&&!url.username&&!url.password){url.searchParams.set('session',id);panel=url.href;}} catch { /* Older CLIs still return a working direct broker link. */ }
       return {session:id,binding,cli,panel};
     }
-    pi.registerTool({name:'debug_task',label:'Debugger task',description:'Claim an existing human-authorized debugging task, complete at a pause, or cancel. Cannot authorize execution.',parameters:Type.Object({session:Type.String(),task:Type.String(),operation:Type.Union([Type.Literal('claim'),Type.Literal('complete'),Type.Literal('cancel')])}),async execute(_id,params){
+    pi.registerTool({name:'debug_task',label:'Debugger task',description:'Start a debugging task from the user’s explicit chat request, claim an inspector task, complete when the investigation is done, or cancel. Start requires instruction with the user-requested scope; other operations require task. Attach, state questions and debugger comments do not authorize execution. Never restart cancelled or expired work without a new user request.',parameters:Type.Object({session:Type.String(),task:Type.Optional(Type.String()),instruction:Type.Optional(Type.String()),operation:Type.Union([Type.Literal('start'),Type.Literal('claim'),Type.Literal('complete'),Type.Literal('cancel')])}),async execute(_id,params,signal){
       let result;
-      if(params.operation==='claim'){await claim(params.session,params.task);result={status:'acknowledged'};}
-      else {result=await taskCall(params.session,params.task,`task-${params.operation}`);stopLease(params.session);}
+      if(signal?.aborted)throw new Error('Cancelled');
+      if(params.operation==='start'){
+        if(!params.instruction?.trim() || params.task)throw new Error('Start requires the user’s debugging instruction and no existing task ID');
+        const state=await call('state',params.session);
+        if(!active || state.binding?.id!==binding)throw new Error('Connect this conversation before starting a debugging task');
+        if(!state.capabilities?.taskStart)throw new Error('Update the broker to start debugging from a chat request');
+        if(signal?.aborted)throw new Error('Cancelled');
+        result=await call('task-start',params.session,'--binding',binding,'--revision',String(state.binding.revision),'--instruction',params.instruction);
+        const task=result.task?.id;
+        if(!task)throw new Error('Broker did not return a debugging task');
+        try {if(signal?.aborted)throw new Error('Cancelled');await claim(params.session,task);}
+        catch(error){try{await taskCall(params.session,task,'task-cancel');}catch{}throw error;}
+      } else {
+        if(!params.task || params.instruction)throw new Error('Claim, complete and cancel require a task ID and no new instruction');
+        if(params.operation==='claim'){await claim(params.session,params.task);result={status:'acknowledged'};}
+        else {result=await taskCall(params.session,params.task,`task-${params.operation}`);stopLease(params.session);}
+      }
       return {content:[{type:'text',text:JSON.stringify(result)}],details:result};
     }});
     pi.registerTool({name:'debug_execute',label:'Execute debugger task',description:'One bounded execution operation under an existing task. Timeout or abort cancels it and requests a pause.',parameters:Type.Object({session:Type.String(),task:Type.String(),operation:Type.Union([Type.Literal('continue'),Type.Literal('next'),Type.Literal('step'),Type.Literal('stepout'),Type.Literal('pause')])}),async execute(_id,params,signal){

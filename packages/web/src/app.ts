@@ -255,11 +255,12 @@ message('historicalNotice',state.historical?(state.snapshotUnavailable||!state.s
     : comments.answering() ? `${agentName} · Answering` : `${agentName} · ${state.agentConnected === true ? 'Connected' : state.agentConnected === false ? 'Offline' : 'Not reported'}`;
   $<HTMLButtonElement>('stopAgent').hidden = !activeTask;
   $<HTMLButtonElement>('stopAgent').disabled = busy;
-  $('connection').textContent = state.editorConnected ? 'Editor connected to this process. Debugger controls are shared.' : 'Debugger controls are shared. Agent execution requires an authorized task.';
-  $<HTMLButtonElement>('authorizeTask').disabled = busy || !paused || readOnly || activeTask || !state.capabilities?.executionTasks;
+  $('connection').textContent = state.editorConnected ? 'Editor connected to this process. Debugger controls are shared.' : 'Ask your agent to debug, or start an investigation here. Pause or Stop agent ends agent execution.';
+  $<HTMLButtonElement>('authorizeTask').disabled = busy || !paused || readOnly || activeTask || !state.binding || state.agentConnected===false || !state.capabilities?.executionTasks;
   $<HTMLTextAreaElement>('taskInstruction').disabled = busy || activeTask;
-  message('taskStatus', state.historical?'':task ? `${task.instruction} · ${task.status}${task.reason ? ': ' + task.reason : ''}${task.deliveryError ? ' · '+task.deliveryError : ''}`
-    : state.capabilities?.executionTasks ? '' : 'Execution tasks require an updated broker.');
+  const taskStatus=activeTask ? task.delivery==='acknowledged' ? 'Debugging' : 'Waiting for agent' : task?.status;
+  message('taskStatus', state.historical?'':task ? `${task.instruction} · ${taskStatus}${task.reason ? ': ' + task.reason : ''}${task.deliveryError ? ' · '+task.deliveryError : ''}`
+    : !state.capabilities?.executionTasks ? 'Execution tasks require an updated broker.' : !state.binding || state.agentConnected===false ? 'Attach your agent conversation before starting an investigation here.' : '');
   document.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(button => {
     button.disabled = readOnly || busy || (button.dataset.action === 'pause' ? state.status !== 'running' : !paused) || (!!state.beforeGoStart && ['next','step','stepout'].includes(button.dataset.action || ''));
   });
