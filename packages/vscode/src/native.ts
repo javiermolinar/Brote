@@ -1,14 +1,15 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { Frame } from './telemetry';
 
-interface Evidence {session:string;name:string;type:string;capturedAt:string;thread:number;frame:unknown;stack:unknown[];scopes:unknown[]}
+interface Evidence {session:string;name:string;type:string;capturedAt:string;thread:number;frame:Frame;stack:Frame[];scopes:unknown[]}
 interface Turn {question:string;answer?:string;evidence:Evidence;contextNote?:string}
 interface Discussion {turns?:Turn[];contextNote?:string;id:string;file:string;line:number;question:string;source?:string;answer?:string;status:string;evidence:Evidence;resolved?:boolean}
 
 /** Read-only conversations for sessions whose lifecycle belongs to VS Code. */
-export function nativeDiscussions(context:vscode.ExtensionContext) {
-  const controller=vscode.comments.createCommentController('agentdebugger.native','Brote');
+export function nativeDiscussions(context:vscode.ExtensionContext,onCapture?:(evidence:Evidence)=>void) {
+  const controller=vscode.comments.createCommentController('brote.native','Brote');
   const records=context.workspaceState.get<Discussion[]>('nativeDiscussions',[]);
   const answering=new Set<string>();
   const partial=new Map<string,string>();
@@ -19,8 +20,10 @@ export function nativeDiscussions(context:vscode.ExtensionContext) {
   const views=new Map<string,vscode.CommentThread>();
   const epochs=new Map<string,number>();
   const stopped=new Map<string,number>();
+  const running=new Map<string,{all:boolean;threads:Map<number,boolean>}>();
+  const resumes=new Set(['continue','next','stepIn','stepOut','stepBack','reverseContinue','restart','restartFrame','goto','terminate','disconnect']);
   const frames=new Map<string,Map<number,{thread:number;index:number}>>();
-  const active=()=>{const s=vscode.debug.activeDebugSession;return s && s.type!=='debug-handover'?s:undefined;};
+  const active=()=>vscode.debug.activeDebugSession;
   const persist=()=>context.workspaceState.update('nativeDiscussions',records);
   function render(d:Discussion) {
     let view=views.get(d.id);
@@ -33,7 +36,7 @@ export function nativeDiscussions(context:vscode.ExtensionContext) {
     const streaming=partial.get(d.id);
     if(streaming)view.comments=[...view.comments,{body:new vscode.MarkdownString(streaming),mode:vscode.CommentMode.Preview,author:{name:'Brote',iconPath:vscode.Uri.file(path.join(context.extensionPath,'assets','brote-plant.png'))}}];
     view.label=`${d.evidence.name} · ${d.resolved?'Resolved':d.status}`;
-    view.contextValue=d.resolved?'agentdebugger.nativeResolved':answering.has(d.id)?'agentdebugger.nativeBusy':'agentdebugger.native';
+    view.contextValue=d.resolved?'brote.nativeResolved':answering.has(d.id)?'brote.nativeBusy':'brote.native';
     // Keep VS Code's reply editor alive while its submit command clears the input.
     // Busy context removes the send action without destroying the editor or draft.
     view.canReply=!d.resolved;
@@ -42,14 +45,56 @@ export function nativeDiscussions(context:vscode.ExtensionContext) {
   for(const record of records)render(record);
   context.subscriptions.push(controller,vscode.debug.registerDebugAdapterTrackerFactory('*',{
     createDebugAdapterTracker(session) {
-      if(session.type==='debug-handover')return undefined;
       const requests=new Map<number,{thread:number;start:number}>();
       const ids=new Map<number,{thread:number;index:number}>();frames.set(session.id,ids);
+      const runState={all:false,threads:new Map<number,boolean>()};running.set(session.id,runState);
+      type Movement={value:boolean;thread?:number;seq?:number;epoch?:number;stoppedThread?:number};
+      const settledState={all:false,threads:new Map<number,boolean>()};
+      const movements:Movement[]=[];
+      function applyMovement(state:typeof runState,change:Movement){
+        if(change.thread===undefined){state.all=change.value;state.threads.clear();}
+        else state.threads.set(change.thread,change.value);
+      }
+      // Retain event order while requests are pending, so a rejected resume can
+      // be removed without undoing later stops or another thread's movement.
+      function reconcile(){
+        while(movements.length && movements[0].seq===undefined)applyMovement(settledState,movements.shift()!);
+        runState.all=settledState.all;runState.threads=new Map(settledState.threads);
+        for(const movement of movements)applyMovement(runState,movement);
+      }
+      function setRunning(value:boolean,thread?:number){movements.push({value,thread});reconcile();}
+      function invalidate(){epochs.set(session.id,(epochs.get(session.id)||0)+1);ids.clear();stopped.delete(session.id);}
+      function end(){invalidate();movements.length=0;setRunning(true);frames.delete(session.id);requests.clear();}
       return {
-        onWillReceiveMessage(m){if(m.type==='request' && m.command==='stackTrace')requests.set(m.seq,{thread:m.arguments.threadId,start:m.arguments.startFrame||0});},
+        onWillReceiveMessage(m){
+          if(m.type!=='request')return;
+          if(resumes.has(m.command)){
+            const stoppedThread=stopped.get(session.id);
+            invalidate();
+            movements.push({value:true,thread:m.arguments?.singleThread===true?m.arguments.threadId:undefined,seq:m.seq,epoch:epochs.get(session.id),stoppedThread});
+            reconcile();
+          }
+          if(m.command==='stackTrace')requests.set(m.seq,{thread:m.arguments.threadId,start:m.arguments.startFrame||0});
+        },
         onDidSendMessage(m){
+          if(m.type==='response'){
+            const index=movements.findIndex(change=>change.seq!==undefined && change.seq===m.request_seq);
+            if(index>=0){
+              const change=movements[index];
+              if(!m.success){
+                movements.splice(index,1);
+                if(change.epoch===epochs.get(session.id) && change.stoppedThread)stopped.set(session.id,change.stoppedThread);
+              }else delete change.seq;
+              reconcile();
+            }
+          }
           if(m.type==='event' && ['stopped','continued','terminated'].includes(m.event)) {
-            epochs.set(session.id,(epochs.get(session.id)||0)+1);ids.clear();
+            invalidate();
+            if(m.event==='stopped'){
+              if(m.body?.allThreadsStopped===true)setRunning(false);
+              else if(m.body?.threadId)setRunning(false,m.body.threadId);
+            }else if(m.event==='continued')setRunning(true,m.body?.allThreadsContinued===false?m.body.threadId:undefined);
+            else setRunning(true);
             if(m.event==='stopped' && m.body?.threadId)stopped.set(session.id,m.body.threadId);else stopped.delete(session.id);
           }
           if(m.type==='response' && m.command==='stackTrace'){
@@ -57,36 +102,47 @@ export function nativeDiscussions(context:vscode.ExtensionContext) {
             if(pending && m.success)(m.body?.stackFrames||[]).forEach((frame:{id:number},index:number)=>ids.set(frame.id,{thread:pending.thread,index:pending.start+index}));
           }
         },
-        onExit(){epochs.set(session.id,(epochs.get(session.id)||0)+1);stopped.delete(session.id);frames.delete(session.id);},
+        onWillStopSession:end,
+        onExit:end,
       };
     }
   }));
-  async function capture():Promise<Evidence> {
+  async function capture(target?:vscode.DebugSession,stoppedThread?:number):Promise<Evidence> {
     if(!vscode.workspace.isTrusted)throw new Error('Trust this workspace before inspecting the debugger.');
-    const session=active();if(!session)throw new Error('Start a VS Code debugger and pause at a breakpoint first.');
+    const session=target || active();if(!session)throw new Error('Start a VS Code debugger and pause at a breakpoint first.');
     const epoch=epochs.get(session.id)||0;
-    const selected=vscode.debug.activeStackItem;
+    const selected=target?undefined:vscode.debug.activeStackItem;
     const item=selected?.session.id===session.id?selected:undefined;
-    const thread=item?.threadId || stopped.get(session.id);
+    const thread=stoppedThread || item?.threadId || stopped.get(session.id);
     if(!thread)throw new Error('Pause the debugger and select a stack frame first.');
+    const runState=running.get(session.id);
+    if(runState && (runState.threads.get(thread) ?? runState.all))throw new Error('Pause the debugger before capturing context.');
     const saved=item instanceof vscode.DebugStackFrame?frames.get(session.id)?.get(item.frameId):undefined;
-    const trace=await session.customRequest('stackTrace',{threadId:thread,startFrame:saved?.index||0,levels:30});
-    const stack=trace.stackFrames||[];
+    const deadline=Date.now()+2000;
+    const request=async(command:string,args:unknown)=>{
+      let timer:ReturnType<typeof setTimeout>|undefined;
+      try{return await Promise.race([session.customRequest(command,args),new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Debugger capture timed out.')),Math.max(1,deadline-Date.now()));})]);}
+      finally{if(timer)clearTimeout(timer);}
+    };
+    const trace=await request('stackTrace',{threadId:thread,startFrame:saved?.index||0,levels:30});
+    const stack=(trace.stackFrames||[]).slice(0,30);
     let frame=stack[0];
     if(item instanceof vscode.DebugStackFrame && !saved) {
       frame=stack.find((f:{id:number})=>f.id===item.frameId);
       if(!frame)throw new Error('Select the stack frame again so its current context can be captured.');
     }
     if(!frame)throw new Error('No stack frame is available at this pause.');
-    const scopes=await session.customRequest('scopes',{frameId:frame.id});
+    const scopes=await request('scopes',{frameId:frame.id});
     const values=[];
     for(const scope of (scopes.scopes||[]).slice(0,8)) {
       if(scope.expensive){values.push({name:scope.name,omitted:'Expensive scope'});continue;}
-      const result=await session.customRequest('variables',{variablesReference:scope.variablesReference,start:0,count:50});
-      values.push({name:scope.name,variables:(result.variables||[]).slice(0,50).map((v:{name:string;type?:string;value:string})=>({name:v.name,type:v.type,value:v.value?.slice(0,2000)}))});
+      const result=await request('variables',{variablesReference:scope.variablesReference,start:0,count:50});
+      values.push({name:scope.name,truncated:(result.variables||[]).length>50,variables:(result.variables||[]).slice(0,50).map((v:{name:string;type?:string;value:string;variablesReference?:number})=>({name:v.name?.slice(0,256),type:v.type?.slice(0,256),value:v.value?.slice(0,2000),truncated:v.value?.length>2000,variablesReference:v.variablesReference}))});
     }
-    if((epochs.get(session.id)||0)!==epoch || active()?.id!==session.id)throw new Error('Debugger moved while capturing context. Ask again at the new pause.');
-    return {session:session.id,name:session.name,type:session.type,capturedAt:new Date().toISOString(),thread,frame,stack,scopes:values};
+    if((epochs.get(session.id)||0)!==epoch || (!target && active()?.id!==session.id))throw new Error('Debugger moved while capturing context. Ask again at the new pause.');
+    const evidence={session:session.id,name:session.name,type:session.type,capturedAt:new Date().toISOString(),thread,frame,stack,scopes:values};
+    onCapture?.(evidence);
+    return evidence;
   }
   const questionPrompt=(record:Discussion)=>`${record.question}\n\nSource: ${record.file}:${record.line}\nCaptured: ${record.evidence.capturedAt}`;
   const questionID=(prompt:string)=>records.find(record=>questionPrompt(record)===prompt.trim())?.id;
@@ -102,7 +158,7 @@ export function nativeDiscussions(context:vscode.ExtensionContext) {
     if(Buffer.byteLength(JSON.stringify(d))>256000)throw new Error('Captured context is too large. Choose a smaller frame.');
     const view=controller.createCommentThread(vscode.Uri.file(file),new vscode.Range(line-1,0,line-1,0),[]);
     view.label='Ask about this code · captured pause';
-    view.contextValue='agentdebugger.nativeDraft';
+    view.contextValue='brote.nativeDraft';
     view.canReply=true;
     view.collapsibleState=vscode.CommentThreadCollapsibleState.Expanded;
     drafts.set(view,d);
@@ -176,15 +232,15 @@ export function nativeDiscussions(context:vscode.ExtensionContext) {
     finally{answering.delete(id);partial.delete(id);await persist();render(record);}
   }
   context.subscriptions.push({dispose(){for(const token of cancellations.values())token.cancel();for(const view of drafts.keys())view.dispose();}},
-    vscode.commands.registerCommand('debugHandover.nativeSend',async(reply:vscode.CommentReply)=>{if(submitting.has(reply.thread))return;submitting.add(reply.thread);try{await submit(reply);}catch(error){void vscode.window.showErrorMessage(String(error));}finally{submitting.delete(reply.thread);}}),
-    vscode.commands.registerCommand('debugHandover.nativeChat',async(view:vscode.CommentThread)=>{
+    vscode.commands.registerCommand('brote.nativeSend',async(reply:vscode.CommentReply)=>{if(submitting.has(reply.thread))return;submitting.add(reply.thread);try{await submit(reply);}catch(error){void vscode.window.showErrorMessage(String(error));}finally{submitting.delete(reply.thread);}}),
+    vscode.commands.registerCommand('brote.nativeChat',async(view:vscode.CommentThread)=>{
       const record=records.find(record=>views.get(record.id)===view);
       if(!record)return;
       const query=`@brote /discuss ${record.id}`;
       await vscode.commands.executeCommand('workbench.action.chat.open',{query,isPartialQuery:false});
     }),
-    vscode.commands.registerCommand('debugHandover.nativeCancel',(view:vscode.CommentThread)=>{const id=[...views].find(([,v])=>v===view)?.[0];if(id)cancellations.get(id)?.cancel();}),
-    vscode.commands.registerCommand('debugHandover.nativeDiscard', (view:vscode.CommentThread)=>{if(drafts.delete(view))view.dispose();}),
-    vscode.commands.registerCommand('debugHandover.nativeAnswer',async(view:vscode.CommentThread)=>{const id=[...views].find(([,v])=>v===view)?.[0];if(id){const model=await selectModel();const record=records.find(record=>record.id===id);if(model&&record)try{await inlineAnswer(record,model);}catch(error){void vscode.window.showErrorMessage(String(error));}}}),vscode.commands.registerCommand('debugHandover.nativeResolve',async(view:vscode.CommentThread)=>{const d=records.find(d=>views.get(d.id)===view);if(d){d.resolved=true;await persist();render(d);}}));
+    vscode.commands.registerCommand('brote.nativeCancel',(view:vscode.CommentThread)=>{const id=[...views].find(([,v])=>v===view)?.[0];if(id)cancellations.get(id)?.cancel();}),
+    vscode.commands.registerCommand('brote.nativeDiscard', (view:vscode.CommentThread)=>{if(drafts.delete(view))view.dispose();}),
+    vscode.commands.registerCommand('brote.nativeAnswer',async(view:vscode.CommentThread)=>{const id=[...views].find(([,v])=>v===view)?.[0];if(id){const model=await selectModel();const record=records.find(record=>record.id===id);if(model&&record)try{await inlineAnswer(record,model);}catch(error){void vscode.window.showErrorMessage(String(error));}}}),vscode.commands.registerCommand('brote.nativeResolve',async(view:vscode.CommentThread)=>{const d=records.find(d=>views.get(d.id)===view);if(d){d.resolved=true;await persist();render(d);}}));
   return {active,capture,ask,answer,questionID,discussion:(id:string)=>records.find(record=>record.id===id)};
 }

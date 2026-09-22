@@ -11,8 +11,7 @@
     "Debuggers"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onDebug:debug-handover"
+    "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "capabilities": {
@@ -24,250 +23,91 @@
   "contributes": {
     "commands": [
       {
-        "command": "debugHandover.attach",
-        "title": "Brote: Attach Session"
-      },
-      {
-        "command": "debugHandover.inspector",
-        "title": "Brote: Open Live Inspector"
-      },
-      {
-        "command": "debugHandover.ask",
+        "command": "brote.ask",
         "title": "Ask Brote About Selection"
       },
       {
-        "command": "debugHandover.answer",
-        "title": "Answer in VS Code Chat"
-      },
-      {
-        "command": "debugHandover.reply",
-        "title": "Ask Follow-up"
-      },
-      {
-        "command": "debugHandover.resolve",
-        "title": "Resolve Discussion"
-      },
-      {
-        "command": "debugHandover.nativeAnswer",
+        "command": "brote.nativeAnswer",
         "title": "Retry inline answer"
       },
       {
-        "command": "debugHandover.nativeResolve",
+        "command": "brote.nativeResolve",
         "title": "Resolve Discussion"
       },
       {
-        "command": "debugHandover.nativeSend",
+        "command": "brote.nativeSend",
         "title": "Ask"
       },
       {
-        "command": "debugHandover.nativeDiscard",
+        "command": "brote.nativeDiscard",
         "title": "Discard question",
         "icon": "$(close)"
       },
       {
-        "command": "debugHandover.nativeCancel",
+        "command": "brote.nativeCancel",
         "title": "Stop generating",
         "icon": "$(debug-stop)"
       },
       {
-        "command": "debugHandover.nativeChat",
+        "command": "brote.nativeChat",
         "title": "Continue in Chat",
         "icon": "$(comment-discussion)"
       }
     ],
-    "debuggers": [
-      {
-        "type": "debug-handover",
-        "label": "Brote (Go / Delve)",
-        "languages": [
-          "go"
-        ],
-        "configurationAttributes": {
-          "attach": {
-            "required": [
-              "handoverSession"
-            ],
-            "properties": {
-              "handoverSession": {
-                "type": "string",
-                "description": "Existing Brote session ID"
-              }
-            }
-          }
-        }
-      }
-    ],
-    "configuration": {
-      "title": "Brote",
-      "properties": {
-        "debugHandover.sessionDirectory": {
-          "type": "string",
-          "default": "",
-          "scope": "application",
-          "description": "Override the local session directory (for DEBUG_HANDOVER_HOME). Empty uses the OS cache directory."
-        },
-        "debugHandover.executable": {
-          "type": "string",
-          "default": "",
-          "scope": "machine",
-          "description": "Optional absolute path to a compatible Brote CLI. Defaults to the bundled runtime."
-        }
-      }
-    },
     "chatParticipants": [
       {
-        "id": "agentdebugger.chat",
+        "id": "brote.chat",
         "name": "brote",
         "fullName": "Brote",
-        "description": "Debug precompiled programs and discuss captured debugger evidence.",
+        "description": "Discuss captured native debugger state.",
         "isSticky": true,
         "commands": [
           {
-            "name": "answer",
-            "description": "Answer a persisted debugger question: SESSION_ID THREAD_ID"
-          },
-          {
             "name": "discuss",
-            "description": "Continue a saved inline debugger discussion in Chat"
+            "description": "Continue a saved inline debugger discussion"
           }
         ]
-      }
-    ],
-    "languageModelTools": [
-      {
-        "name": "agentdebugger_debug",
-        "displayName": "Brote",
-        "toolReferenceName": "brote",
-        "canBeReferencedInPrompt": true,
-        "modelDescription": "List workspace sessions, launch an existing precompiled Go binary, attach, inspect stack/locals, evaluate read-only expressions, set breakpoints, or debug a user-requested investigation. An explicit request to debug or investigate the program authorizes execution without a second approval. First use task-start with instruction containing the user’s request; pass its task ID to each continue/next/step/stepout, then task-complete when done or task-cancel on failure. Do not restart cancelled/expired work without a new user request. Attach, state questions and debugger comments stay read-only. Never compile implicitly. Execution waits up to 30 seconds then pauses.",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "operation": {
-              "type": "string",
-              "enum": [
-                "sessions",
-                "launch",
-                "attach",
-                "inspect",
-                "breakpoint",
-                "continue",
-                "next",
-                "step",
-                "stepout",
-                "evaluate",
-                "task-start",
-                "task-complete",
-                "task-cancel"
-              ]
-            },
-            "session": {
-              "type": "string"
-            },
-            "binary": {
-              "type": "string"
-            },
-            "project": {
-              "type": "string"
-            },
-            "file": {
-              "type": "string"
-            },
-            "condition": {
-              "type": "string"
-            },
-            "expression": {
-              "type": "string"
-            },
-            "line": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "goroutine": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "frame": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "args": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            },
-            "task": {
-              "type": "string",
-              "description": "Current debugging task ID, required for execution, task-complete and task-cancel."
-            },
-            "instruction": {
-              "type": "string",
-              "description": "The user’s explicit debugging request and its scope. Required only for task-start; never infer it from attachment or read-only questions.",
-              "minLength": 1,
-              "maxLength": 4096
-            }
-          },
-          "required": [
-            "operation"
-          ]
-        }
       }
     ],
     "menus": {
       "editor/context": [
         {
-          "command": "debugHandover.ask",
+          "command": "brote.ask",
           "when": "isWorkspaceTrusted && resourceScheme == file",
           "group": "navigation"
         }
       ],
       "comments/commentThread/context": [
         {
-          "command": "debugHandover.reply",
-          "when": "commentController == agentdebugger",
-          "group": "inline"
-        },
-        {
-          "command": "debugHandover.nativeSend",
-          "when": "commentController == agentdebugger.native && (commentThread == agentdebugger.nativeDraft || commentThread == agentdebugger.native)",
+          "command": "brote.nativeSend",
+          "when": "commentController == brote.native && (commentThread == brote.nativeDraft || commentThread == brote.native)",
           "group": "inline"
         }
       ],
       "comments/commentThread/title": [
         {
-          "command": "debugHandover.resolve",
-          "when": "commentController == agentdebugger && commentThread == agentdebugger.thread",
+          "command": "brote.nativeAnswer",
+          "when": "commentController == brote.native && commentThread == brote.native",
           "group": "navigation"
         },
         {
-          "command": "debugHandover.answer",
-          "when": "commentController == agentdebugger",
+          "command": "brote.nativeResolve",
+          "when": "commentController == brote.native && commentThread == brote.native",
           "group": "navigation"
         },
         {
-          "command": "debugHandover.nativeAnswer",
-          "when": "commentController == agentdebugger.native && commentThread == agentdebugger.native",
+          "command": "brote.nativeDiscard",
+          "when": "commentController == brote.native && commentThread == brote.nativeDraft",
           "group": "navigation"
         },
         {
-          "command": "debugHandover.nativeResolve",
-          "when": "commentController == agentdebugger.native && commentThread == agentdebugger.native",
+          "command": "brote.nativeCancel",
+          "when": "commentController == brote.native && commentThread == brote.nativeBusy",
           "group": "navigation"
         },
         {
-          "command": "debugHandover.nativeDiscard",
-          "when": "commentController == agentdebugger.native && commentThread == agentdebugger.nativeDraft",
-          "group": "navigation"
-        },
-        {
-          "command": "debugHandover.nativeCancel",
-          "when": "commentController == agentdebugger.native && commentThread == agentdebugger.nativeBusy",
-          "group": "navigation"
-        },
-        {
-          "command": "debugHandover.nativeChat",
-          "when": "commentController == agentdebugger.native && commentThread != agentdebugger.nativeDraft",
+          "command": "brote.nativeChat",
+          "when": "commentController == brote.native && commentThread != brote.nativeDraft",
           "group": "navigation"
         }
       ]
@@ -276,9 +116,49 @@
       {
         "command": "editor.action.submitComment",
         "key": "enter",
-        "when": "commentEditorFocused && commentController == agentdebugger.native && (commentThread == agentdebugger.nativeDraft || commentThread == agentdebugger.native) && !commentIsEmpty && !suggestWidgetVisible"
+        "when": "commentEditorFocused && commentController == brote.native && (commentThread == brote.nativeDraft || commentThread == brote.native) && !commentIsEmpty && !suggestWidgetVisible"
       }
-    ]
+    ],
+    "languageModelTools": [
+      {
+        "name": "brote_inspect",
+        "displayName": "Brote: Inspect paused program",
+        "toolReferenceName": "brote",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "Read the selected paused native debug session stack and bounded local variables. Does not execute the program.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      }
+    ],
+    "configuration": {
+      "title": "Brote",
+      "properties": {
+        "brote.capturePoints": {
+          "type": "object",
+          "default": {},
+          "description": "Map exact DAP function names to stable capture names and named local selections for trace comparison. Does not add breakpoints or evaluate expressions.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "values": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    }
   },
   "license": "MIT",
   "extensionKind": [
@@ -290,5 +170,11 @@
     "Go",
     "Delve"
   ],
-  "icon": "assets/brote-plant.png"
+  "icon": "assets/brote-plant.png",
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.222.0",
+    "@opentelemetry/resources": "^2.11.0",
+    "@opentelemetry/sdk-trace-base": "^2.11.0"
+  }
 }

@@ -1,5 +1,5 @@
 src/**
 test/**
+node_modules/**
 tsconfig.json
-dist/protocol.cjs
 **/*.vsix

@@ -62,15 +62,15 @@ class ReleaseTest(unittest.TestCase):
             for item in manifest['platforms']:
                 folder = item.replace('/amd64', '-x64').replace('/', '-')
                 with zipfile.ZipFile(release / f'brote-{version}-{folder}.vsix') as archive:
-                    self.assertIn('extension/bin/brote', archive.namelist())
+                    self.assertFalse(any(name.startswith('extension/bin/') for name in archive.namelist()))
+                    self.assertIn('extension/dist/extension.js', archive.namelist())
+                    self.assertNotIn('extension/dist/protocol.cjs', archive.namelist())
                     self.assertIn('extension/assets/brote-plant.png', archive.namelist())
                     self.assertIn(f'TargetPlatform="{folder}"', archive.read('extension.vsixmanifest').decode())
                     ext_manifest = json.loads(archive.read('extension/package.json'))
                     self.assertEqual(ext_manifest['publisher'] + '.' + ext_manifest['name'], manifest['vscode'])
                     if folder == target:
                         archive.extractall(root / 'vscode')
-                        info = archive.getinfo('extension/bin/brote')
-                        (root / 'vscode/extension/bin/brote').chmod(info.external_attr >> 16 & 0o777)
             with tarfile.open(release / f'brote-v{version}-{system}-{arch}.tar.gz') as archive:
                 archive.extractall(root, filter='data')
             bundle = root / 'delve-llm-adapter'
@@ -81,7 +81,7 @@ class ReleaseTest(unittest.TestCase):
                 result = subprocess.run([str(binary), *args], env=env, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
                 return json.loads(result.stdout)
-            for binary in [core, bundle / 'bin/agentdebugger', bundle / 'bin/delve-llm-adapter', bundle / 'bin/debug-handover', pi / 'runtime' / target / 'brote', plugin / 'scripts/debug-handover', root / 'vscode/extension/bin/brote']:
+            for binary in [core, bundle / 'bin/agentdebugger', bundle / 'bin/delve-llm-adapter', bundle / 'bin/debug-handover', pi / 'runtime' / target / 'brote', plugin / 'scripts/debug-handover']:
                 info = run(binary, 'version')
                 self.assertEqual(info['version'], version)
                 self.assertIn('taskExecute', info['capabilities'])
