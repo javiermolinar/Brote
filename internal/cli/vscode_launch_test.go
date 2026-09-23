@@ -87,6 +87,7 @@ func main() {
 		}
 		return result
 	}
+	startIntegrationTracing(t, helper)
 	var sessions []string
 	t.Cleanup(func() {
 		for _, id := range sessions {
@@ -241,6 +242,7 @@ func TestUnselected(t *testing.T) {
 	if out, err := exec.Command("go", "build", "-race", "-o", helper, "../../cmd/brote").CombinedOutput(); err != nil {
 		t.Fatalf("build helper: %s: %v", out, err)
 	}
+	startIntegrationTracing(t, helper)
 	for _, name := range []string{"Package tests", "Test file", "Auto tests"} {
 		t.Run(name, func(t *testing.T) {
 			run := func(args ...string) obj {

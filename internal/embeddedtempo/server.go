@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"sync"
 
 	"github.com/go-kit/log"
 	"github.com/gorilla/mux"
@@ -16,10 +17,13 @@ import (
 
 // loopbackServer keeps HTTP queries in-process and binds internal RPC to loopback.
 type loopbackServer struct {
-	router   *mux.Router
-	listener net.Listener
-	rpc      *grpc.Server
-	running  chan struct{}
+	router    *mux.Router
+	listener  net.Listener
+	rpc       *grpc.Server
+	running   chan struct{}
+	admission sync.Mutex
+	stopping  bool
+	consumers sync.WaitGroup
 }
 
 var _ app.TempoServer = (*loopbackServer)(nil)
@@ -37,7 +41,27 @@ func (s *loopbackServer) HTTPHandler() http.Handler { return s.router }
 func (s *loopbackServer) GRPC() *grpc.Server        { return s.rpc }
 func (s *loopbackServer) Log() log.Logger           { return util_log.Logger }
 func (*loopbackServer) EnableHTTP2()                {}
-func (*loopbackServer) SetKeepAlivesEnabled(bool)   {}
+
+// Tempo calls this before stopping modules, including on SIGTERM. Drain
+// Brote's direct consumers before the distributor tears down its state.
+func (s *loopbackServer) SetKeepAlivesEnabled(enabled bool) {
+	if enabled {
+		return
+	}
+	s.admission.Lock()
+	s.stopping = true
+	s.admission.Unlock()
+	s.consumers.Wait()
+}
+func (s *loopbackServer) beginServing() bool {
+	s.admission.Lock()
+	defer s.admission.Unlock()
+	if s.stopping {
+		return false
+	}
+	s.consumers.Add(1)
+	return true
+}
 func (s *loopbackServer) StartAndReturnService(cfg server.Config, _ bool, waitFor func() []services.Service) (services.Service, error) {
 	opts := append([]grpc.ServerOption{}, cfg.GRPCOptions...)
 	opts = append(opts, grpc.MaxRecvMsgSize(cfg.GRPCServerMaxRecvMsgSize), grpc.MaxSendMsgSize(cfg.GRPCServerMaxSendMsgSize), grpc.ChainUnaryInterceptor(cfg.GRPCMiddleware...), grpc.ChainStreamInterceptor(cfg.GRPCStreamMiddleware...))

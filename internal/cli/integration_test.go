@@ -18,7 +18,75 @@ import (
 	"agentdebugger/internal/delve"
 	"agentdebugger/internal/editors/zed"
 	"agentdebugger/internal/session"
+	"agentdebugger/internal/tracing"
 )
+
+// Own the tracing process so it has fully exited before TempDir cleanup. A
+// service started lazily by a broker otherwise outlives the individual session.
+func startIntegrationTracing(t *testing.T, helper string) {
+	t.Helper()
+	log, err := os.Create(filepath.Join(t.TempDir(), "tracing.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(helper, "trace-serve")
+	cmd.Stdout, cmd.Stderr = log, log
+	if err := cmd.Start(); err != nil {
+		log.Close()
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	t.Cleanup(func() {
+		// Broker cleanup callbacks run first. Wait for their final trace flush
+		// and lock release before stopping the service they write to.
+		paths, _ := filepath.Glob(filepath.Join(session.Root(), "*", "session.json"))
+		for _, path := range paths {
+			deadline := time.Now().Add(15 * time.Second)
+			for {
+				lock, err := session.Lock(filepath.Dir(path))
+				if err == nil {
+					session.Unlock(lock)
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Errorf("broker did not release %s", path)
+					break
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		select {
+		case err := <-done:
+			if err != nil {
+				data, _ := os.ReadFile(log.Name())
+				t.Errorf("tracing shutdown: %v\n%s", err, data)
+			}
+		case <-time.After(20 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+			t.Error("tracing shutdown timed out")
+		}
+		log.Close()
+	})
+	endpointPath := filepath.Join(os.Getenv("AGENTDEBUGGER_DATA_DIR"), "tracing", "endpoint.json")
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		data, _ := os.ReadFile(endpointPath)
+		var endpoint string
+		if json.Unmarshal(data, &endpoint) == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			err := tracing.Request(ctx, endpoint, "trace-sessions", nil, nil)
+			cancel()
+			if err == nil {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("tracing startup timed out")
+}
 
 type testDAP struct {
 	t      *testing.T
@@ -112,6 +180,7 @@ func testRoundTrip(t *testing.T, worker bool) {
 	if out, e := cmd.CombinedOutput(); e != nil {
 		t.Fatalf("build helper: %s: %v", out, e)
 	}
+	startIntegrationTracing(t, helper)
 	project := filepath.Join(dir, "demo")
 	if e := os.Mkdir(project, 0755); e != nil {
 		t.Fatal(e)
@@ -621,6 +690,7 @@ func TestIntegrationRunningRecovery(t *testing.T) {
 		}
 		return v
 	}
+	startIntegrationTracing(t, helper)
 	id := str(run("start", "--legacy", "--no-ui", "--binary", binary, "--project", dir)["id"])
 	t.Cleanup(func() {
 		s, e := session.Read(id)

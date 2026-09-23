@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -334,6 +335,11 @@ func Serve(options Options) (err error) {
 	case <-b.done:
 	case <-sig:
 	}
+	// Let in-flight actions finish writing their responses before closing the
+	// broker. A stop action may still be persisting history after signaling done.
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	_ = server.Shutdown(shutdownCtx)
+	cancelShutdown()
 	_ = server.Close()
 	b.mu.Lock()
 	b.closing = true

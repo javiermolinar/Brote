@@ -29,17 +29,22 @@ import (
 // Run holds an exclusive data lock until exit. Only the owner's inherited pipes
 // accept Brote pushes and queries; Tempo internal listeners bind only to loopback.
 func Run(dataDir string, input io.Reader, output io.Writer) error {
-	return RunService(dataDir, func(push consumer.Traces, queries http.Handler) {
+	return runService(dataDir, func(push consumer.Traces, queries http.Handler) {
 		encoder := json.NewEncoder(output)
 		if encoder.Encode(map[string]interface{}{"ready": true, "dataDir": dataDir}) == nil {
 			serveRequests(input, encoder, push, queries)
 		}
-	})
+	}, false)
 }
 
 // RunService gives the Go core direct access to ingestion and the stock querier.
+// The caller handles shutdown signals and returns after draining its work.
 // Returning from serve initiates Tempo shutdown. Run once per process.
 func RunService(dataDir string, serve func(consumer.Traces, http.Handler)) error {
+	return runService(dataDir, serve, true)
+}
+
+func runService(dataDir string, serve func(consumer.Traces, http.Handler), drain bool) error {
 	if dataDir == "" {
 		return errors.New("trace data directory is required")
 	}
@@ -112,7 +117,13 @@ func RunService(dataDir string, serve func(consumer.Traces, http.Handler)) error
 				if response.Code != http.StatusOK {
 					continue
 				}
+				if drain && !server.beginServing() {
+					return
+				}
 				serve(push, server.HTTPHandler())
+				if drain {
+					server.consumers.Done()
+				}
 				t.Stop()
 				return
 			}
