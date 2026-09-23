@@ -103,13 +103,12 @@ go test -race ./...
 npm run build && npm test
 go build -o bin/brote ./cmd/brote
 BROTE_CORE_INTEGRATION=1 node --test packages/client/test/core-tracing.test.cjs
-BROTE_EMBEDDED_INTEGRATION=1 node --test packages/vscode/test/embedded-tempo.test.cjs
 ```
 
-These opt-in suites start Brote's own embedded backend in isolated data directories.
-The core suite covers concurrent clients, native observations, real Delve broker
-capture, remote failure and restart. The lower-level suite verifies compaction,
-large traces, lifecycle and listeners with a test-only workload generator.
+The opt-in core suite starts Brote's embedded backend in isolated data directories
+and covers concurrent clients, native observations, real Delve broker capture,
+remote failure and service restart. CI checks Brote's integration boundary;
+Tempo's compaction and storage durability belong to Tempo's upstream test suite.
 
 ### Real VS Code host
 

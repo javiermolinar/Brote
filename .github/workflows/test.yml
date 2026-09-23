@@ -1,5 +1,12 @@
 name: Verify Brote
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -13,8 +20,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
-          cache: false
+          go-version-file: go.mod
+          cache: true
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -24,10 +31,9 @@ jobs:
       - run: npm run build && npm test
       - run: git diff --exit-code -- packages/web/public/app.js packages/vscode/dist/extension.js packages/vscode/dist/protocol.cjs
       - run: npm run test:packaging
-      - name: Verify embedded Tempo durability
+      - name: Verify shared Brote tracing integration
         run: |
           go build -o bin/brote ./cmd/brote
-          BROTE_EMBEDDED_INTEGRATION=1 node --test packages/vscode/test/embedded-tempo.test.cjs
           BROTE_CORE_INTEGRATION=1 node --test packages/client/test/core-tracing.test.cjs
       - run: go vet ./...
       - run: go test -race -v ./...
