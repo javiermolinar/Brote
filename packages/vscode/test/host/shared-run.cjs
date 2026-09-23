@@ -8,7 +8,7 @@ async function main(){
  await fs.writeFile(path.join(project,'main_test.go'),'package main\nimport "testing"\nfunc TestChosen(t *testing.T){value:=7; if work(value)!=8 {t.Fatal("wrong")}}\nfunc TestExcluded(t *testing.T){t.Fatal("must not run")}\n');
  await fs.writeFile(path.join(project,'main.go'),'package main\nimport "fmt"\nfunc work(value int) int {\n total:=value+1\n return total\n}\nfunc main(){for _,value:=range []int{7,8,9}{fmt.Println(work(value))}}\n');
  execFileSync('go',['build','-gcflags=all=-N -l','-o',path.join(project,'demo'),'.'],{cwd:project,stdio:'inherit'});
- const vsix=process.env.BROTE_VSIX||path.join(root,`dist/releases/brote-0.5.0-${process.platform}-${process.arch}.vsix`);
+ const vsix=process.env.BROTE_VSIX||path.join(root,`dist/releases/brote-${require(path.join(root,'package.json')).version}-${process.platform}-${process.arch}.vsix`);
  execFileSync('unzip',['-q',vsix,'-d',path.join(work,'vsix')]);
  const extension=path.join(work,'vsix/extension'),core=path.join(extension,'runtime/brote');
  await fs.copyFile(path.join(__dirname,process.env.BROTE_HOST_SCENARIO==='f5'?'shared-f5.cjs':process.env.BROTE_HOST_SCENARIO==='otlp'?'shared-otlp.cjs':process.env.BROTE_HOST_SCENARIO==='chat'?'shared-chat.cjs':'shared.cjs'),path.join(extension,'host-test.cjs'));
