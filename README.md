@@ -105,13 +105,4 @@ VS Code debugger ─── DAP ─── language adapter ─── program
                     └── optional OTLP ─── Tempo / Grafana Cloud
 ```
 
-## Development
-
-```sh
-npm ci
-make build
-make test
-make vsix
-```
-
 MIT licensed. Third-party notices are retained.
