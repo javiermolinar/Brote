@@ -25,6 +25,26 @@ SOURCE = 'git:github.com/javiermolinar/Brote'
 @unittest.skipUnless(os.environ.get('AGENTDEBUGGER_RELEASE_DIR') and os.environ.get('AGENTDEBUGGER_TEST_PI'),
                      'set release directory and AGENTDEBUGGER_TEST_PI')
 class PiGitInstallTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        release = Path(os.environ['AGENTDEBUGGER_RELEASE_DIR']).resolve()
+        version = json.loads((release / 'release-manifest.json').read_text())['version']
+        directory = tempfile.TemporaryDirectory(prefix='brote pi upgrade build ')
+        cls.addClassCleanup(directory.cleanup)
+        cls.upgrade_binary = Path(directory.name) / 'brote'
+        # Build tooling uses the runner's Go caches. Only the installation under
+        # test uses a fresh HOME; building there redownloads and recompiles Tempo.
+        # Both installation modes exercise the same upgraded native binary.
+        result = subprocess.run(
+            ['go', 'build', '-trimpath', '-ldflags',
+             f'-s -w -X agentdebugger/internal/cli.Version={version}-pi-update-test',
+             '-o', str(cls.upgrade_binary), './cmd/brote'],
+            cwd=ROOT, env={**os.environ, 'CGO_ENABLED': '0'},
+            capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode:
+            raise RuntimeError('Upgrade fixture build failed:\n' + result.stdout + result.stderr)
+
     def test_install_update_and_remove_preserve_running_core(self):
         self.check_git_flow(ignore_scripts=False)
 
@@ -80,8 +100,7 @@ class PiGitInstallTest(unittest.TestCase):
                 if tag == version:
                     shutil.copy2(release / binary.name, binary)
                 else:
-                    run('go', 'build', '-trimpath', '-ldflags', f'-s -w -X agentdebugger/internal/cli.Version={tag}',
-                        '-o', binary, './cmd/brote', cwd=ROOT)
+                    shutil.copy2(self.upgrade_binary, binary)
                 (folder / 'SHA256SUMS').write_text(f'{hashlib.sha256(binary.read_bytes()).hexdigest()}  {binary.name}\n')
 
             requests = []
