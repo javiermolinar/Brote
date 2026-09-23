@@ -1,3 +1,32 @@
+# Shared service quick start
+
+Use `brote start --binary /absolute/path/program` for a service-owned Go
+session. `brote sessions`, `brote state SESSION --brief`, and `brote capabilities SESSION`
+show identity and supported operations without attaching another debugger.
+Use `brote pause SESSION --human` to interrupt running execution, then inspect
+with `brote state SESSION`, `brote goroutines SESSION`, or `brote stack SESSION`.
+
+`brote tracepoint add|update|remove|list` and `brote breakpoint add|update|remove|list`
+manage durable definitions. Updates/removals require the current `--id` and
+`--revision`; use `--scope run` for a definition that expires on restart.
+`brote captures SESSION` reports bounded capture and separate export outcomes.
+Attach VS Code with **Brote: Attach to Session**. Service DAP transport is
+`brote dap SESSION`; direct Zed TCP handover is unsupported for this mode.
+
+New starts use the shared service. Use `--legacy` (or `--service=false`) only for
+old direct Zed/TCP handover; RPC additionally requires `--backend rpc`. These
+sessions do not support shared definitions/captures or managed Pi coordination.
+Existing sessions are not relabelled; `run-again` retains their stored launch mode.
+See [the service contract](shared-service.md) and [agent contract](agent-contract.md).
+
+Discussion history lives in Go storage. CLI, browser, inline comments and Chat
+share question IDs, immutable evidence and recipient attempts. Choose an attached
+agent or a VS Code model explicitly; retry preserves that destination. Original
+context can be used after exit with `brote comment ... --offline`; current context
+requires a live paused session. Neither history viewing nor answering starts a
+debugger. Native VS Code history is backed up and imported idempotently; if another
+window owns the import lock, retain the backup and reload after it finishes.
+
 # Debugging guide
 
 Brote uses the Debug Adapter Protocol (DAP). Go through Delve is the supported

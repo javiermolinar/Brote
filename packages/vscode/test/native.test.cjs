@@ -1,144 +1,61 @@
-const {test}=require('node:test');
-const assert=require('node:assert/strict');
-const vm=require('node:vm');
-const settled=async(h)=>{for(let i=0;i<100 && !['Answered'].includes(h.saved[0]?.status) && !h.saved[0]?.status?.startsWith('Failed:');i++)await new Promise(r=>setTimeout(r,5));};
-const {build}=require('esbuild');
-async function harness(onCapture){
- let factory,participantPrompt,saved=[];const requests=[],views=[],commands=new Map();
+const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm');
+const {buildSync}=require('esbuild');
+const code=buildSync({entryPoints:['packages/vscode/src/native.ts'],bundle:true,platform:'node',format:'cjs',external:['vscode'],write:false}).outputFiles[0].text;
+async function harness(t){
+ const calls=[],views=[],commands=new Map(),subscriptions=[],writes=[],prompts=[];let factory,document={threads:[]},serial=0;
  class Frame{constructor(session){this.session=session;this.threadId=7;this.frameId=42;}}
- const session={id:'native-session',name:'F5 Go',type:'go',customRequest:async(command)=>{requests.push(command);if(command==='stackTrace')return {stackFrames:[{id:42,name:'process',line:17}]};if(command==='scopes')return {scopes:[{name:'Locals',variablesReference:8}]};if(command==='variables')return {variables:[{name:'total',value:'21',type:'int'}]};throw Error(command);}};
- const prompts=[];const model={id:'test-model',name:'Test model',vendor:'test',sendRequest:async(messages)=>{prompts.push(messages[0].content);return {text:(async function*(){yield 'Captured total is 21.';})()};}};
- const api={lm:{selectChatModels:async()=>[model]},CancellationTokenSource:class{token={isCancellationRequested:false};dispose(){}},LanguageModelChatMessage:{User:content=>({content})},DebugStackFrame:Frame,debug:{activeDebugSession:session,activeStackItem:new Frame(session),registerDebugAdapterTrackerFactory:(_,f)=>{factory=f;return {dispose(){}};}},comments:{createCommentController:()=>({dispose(){},createCommentThread:()=>{const view={dispose(){this.disposed=true;}};views.push(view);return view;}})},Uri:{file:p=>p},Range:class{},MarkdownString:class{constructor(value){this.value=value;}},CommentMode:{Preview:0},CommentThreadCollapsibleState:{Expanded:1,Collapsed:0},workspace:{isTrusted:true},window:{activeTextEditor:{document:{uri:{scheme:'file',fsPath:'/tmp/main.go'}},selection:{active:{line:16}}},showQuickPick:async(items)=>items[0],showErrorMessage:()=>{},showInputBox:async()=>{throw Error('Must not show a second question box');}},commands:{registerCommand:(name,fn)=>{commands.set(name,fn);return {dispose(){}};},executeCommand:async(_,{query,isPartialQuery})=>{assert.equal(isPartialQuery,false);participantPrompt=query;}}};
- const code=await build({entryPoints:['packages/vscode/src/native.ts'],bundle:true,platform:'node',format:'cjs',external:['vscode'],write:false});
- const module={exports:{}};vm.runInNewContext(code.outputFiles[0].text,{module,exports:module.exports,require:n=>n==='vscode'?api:require(n),Buffer,setTimeout,clearTimeout});
- const native=module.exports.nativeDiscussions({extensionPath:'/extension',subscriptions:[],workspaceState:{get:(key)=>key==='nativeDiscussions'?[]:undefined,update:async(key,records)=>{if(key==='nativeDiscussions')saved=JSON.parse(JSON.stringify(records));}}},onCapture);
- const tracker=factory.createDebugAdapterTracker(session);tracker.onDidSendMessage({type:'event',event:'stopped',body:{threadId:7}});
- return {native,api,tracker,requests,views,commands,model,prompts,get saved(){return saved;},get prompt(){return participantPrompt;}};
+ const session={id:'editor',type:'brote',name:'Go',configuration:{sessionId:'0123456789'}};
+ const model={id:'model',name:'Model',vendor:'test',sendRequest:async messages=>{prompts.push(messages[0].content);return{text:(async function*(){yield 'Answer';})()};}};
+ const api={workspace:{isTrusted:true,workspaceFolders:[{uri:{toString:()=>'/workspace'}}]},debug:{activeDebugSession:session,activeStackItem:new Frame(session),registerDebugAdapterTrackerFactory:(_,f)=>{factory=f;return{dispose(){}};}},DebugStackFrame:Frame,lm:{selectChatModels:async()=>[model]},CancellationTokenSource:class{listeners=new Set();token={isCancellationRequested:false,onCancellationRequested:fn=>{this.listeners.add(fn);return{dispose:()=>this.listeners.delete(fn)};}};cancel(){this.token.isCancellationRequested=true;for(const fn of this.listeners)fn();}dispose(){this.listeners.clear();}},LanguageModelChatMessage:{User:content=>({content})},comments:{createCommentController:()=>({dispose(){},createCommentThread:()=>{const v={dispose(){this.disposed=true;}};views.push(v);return v;}})},Uri:{file:p=>p},Range:class{},MarkdownString:class{constructor(value){this.value=value;}},CommentMode:{Preview:0},CommentThreadCollapsibleState:{Expanded:1},window:{activeTextEditor:{document:{uri:{scheme:'file',fsPath:'/main.go'}},selection:{active:{line:2}}},showQuickPick:async items=>items.find(x=>x.model)||items[0],showErrorMessage:e=>calls.push({error:e})},commands:{registerCommand:(id,fn)=>{commands.set(id,fn);return{dispose(){}};},executeCommand:async()=>{}}};
+ const client={async run(args){return operation(args);},async withBody(args,body){return operation(args,body);}};
+ function operation(args,body){
+  calls.push({args:[...args],body});const flag=k=>{const i=args.indexOf('--'+k);return i<0?undefined:args[i+1];};
+  if(args[0]==='state')return {binding:{id:'pi',name:'Pi',revision:1}};
+  const action=args[1];if(action==='index')return{discussions:document.threads.map(x=>({session:session.configuration.sessionId,thread:x.id}))};if(action==='list')return structuredClone(document);
+  const r={kind:flag('recipient-kind'),id:flag('recipient-id'),revision:Number(flag('recipient-revision')),name:flag('recipient-name')};let record=document.threads.find(x=>x.id===args[3]);
+  if(action==='create'){record={id:'t'+(++serial),file:flag('file'),line:Number(flag('line')),resolved:false,context:{run:'run',capturedAt:'saved',goroutine:7,frames:[{file:'/main.go',line:3}],frame:0},messages:[],delivery:{}};document.threads.push(record);}
+  if(['create','ask'].includes(action)){record.messages.push({id:'q'+(++serial),author:'human',body,context:record.context});record.delivery={question:record.messages.at(-1).id,status:'pending',recipient:r};}
+  if(action==='claim'){assert.equal(record.delivery.status,'pending');record.delivery.status='sending';record.delivery.attempt={id:'attempt'+(++serial)};}
+  if(action==='delivery')record.delivery.status=flag('status');
+  if(action==='reply'){assert.equal(flag('attempt'),record.delivery.attempt.id);record.messages.push({id:flag('message-id'),author:'Model',body,question:flag('question')});record.delivery.status='answered';}
+  if(action==='answer-failed'){record.delivery.status='failed';record.delivery.error=flag('error');}
+  if(action==='retry'){record.delivery.status='pending';record.delivery.recipient=r;delete record.delivery.attempt;}
+  if(action==='resolve')record.resolved=true;
+  return{thread:structuredClone(record)};
+ }
+ const module={exports:{}};vm.runInNewContext(code,{module,exports:module.exports,require:n=>n==='vscode'?api:require(n),Buffer,setInterval,clearInterval});
+ const capture=async(s,thread,index)=>{calls.push({capture:{thread,index}});return{session:s.id,serviceSession:s.configuration.sessionId,name:s.name,type:'brote',run:'run',generation:3,frameIndex:index,capturedAt:'preview',thread,frame:{source:{path:'/main.go'},line:3},stack:[],scopes:[]};};
+ const native=module.exports.nativeDiscussions({extensionPath:'/extension',subscriptions,workspaceState:{get:()=>undefined,update:async(k)=>writes.push(k)}},capture,client,Promise.resolve({discussions:[]}));
+ t.after(()=>subscriptions.forEach(s=>s.dispose?.()));await native.ready;
+ const tracker=factory.createDebugAdapterTracker(session);tracker.onDidSendMessage({type:'event',event:'stopped',body:{threadId:7}});tracker.onWillReceiveMessage({type:'request',command:'stackTrace',seq:1,arguments:{threadId:7}});tracker.onDidSendMessage({type:'response',command:'stackTrace',request_seq:1,success:true,body:{stackFrames:[{id:42}]}});
+ const settle=async()=>{for(let i=0;i<100&&!['answered','failed'].includes(document.threads[0]?.delivery.status);i++)await new Promise(r=>setTimeout(r,5));};
+ return{native,api,model,calls,views,commands,prompts,writes,tracker,settle,get document(){return document;}};
 }
-test('inline question and follow-up persist both turns without opening chat',async()=>{
- const h=await harness();await h.native.ask();assert.equal(h.prompt,undefined);assert.equal(h.saved.length,0);
- await h.commands.get('brote.nativeSend')({thread:h.views[0],text:'Why is total 21?'});await settled(h);
- assert.equal(h.saved[0].answer,'Captured total is 21.');assert.equal(h.views[0].canReply,true);assert.equal(h.views[0].collapsibleState,1);
- await h.commands.get('brote.nativeSend')({thread:h.views[0],text:'And why did it change?'});await settled(h);
- assert.equal(h.saved[0].turns.length,1);assert.equal(h.views[0].comments.length,4);
- assert.match(h.prompts[1],/Why is total 21/);assert.match(h.prompts[1],/And why did it change/);
- assert.equal(h.prompt,undefined,'inline conversation must not open chat');
+test('inline provider persists question before call and canonical answer after stream',async t=>{
+ const h=await harness(t);await h.native.ask();const view=h.views[0];await h.commands.get('brote.nativeSend')({thread:view,text:'Why?'});await h.settle();
+ assert.equal(h.document.threads[0].delivery.status,'answered');assert.equal(h.document.threads[0].messages[1].body,'Answer');assert.match(h.prompts[0],/saved/);assert.ok(!h.writes.includes('nativeDiscussions'));
+ const actions=h.calls.filter(x=>x.args?.[0]==='comment').map(x=>x.args[1]);assert.ok(actions.indexOf('create')<actions.indexOf('claim'));assert.ok(actions.indexOf('claim')<actions.indexOf('reply'));assert.equal(view.canReply,true);
 });
-test('F5 capture rejects mixed evidence when the debugger resumes',async()=>{
- const h=await harness();const original=h.api.debug.activeDebugSession.customRequest;
- h.api.debug.activeDebugSession.customRequest=async command=>{const r=await original(command);if(command==='variables')h.tracker.onDidSendMessage({type:'event',event:'continued'});return r;};
- await assert.rejects(h.native.capture(),/moved/);assert.equal(h.saved.length,0);
+test('provider failure is persisted and retry uses a new attempt',async t=>{
+ const h=await harness(t);h.model.sendRequest=async()=>{throw Error('unavailable');};await h.native.ask();await h.commands.get('brote.nativeSend')({thread:h.views[0],text:'Why?'});await h.settle();assert.equal(h.document.threads[0].delivery.status,'failed');assert.match(h.document.threads[0].delivery.error,/unavailable/);
 });
-test('model failure is persisted as failed rather than left thinking',async()=>{
- const h=await harness();await h.native.ask();h.model.sendRequest=async()=>{throw Error('unavailable');};
- await h.commands.get('brote.nativeSend')({thread:h.views[0],text:'Why?'});await settled(h);
- assert.match(h.saved[0].status,/Failed:.*unavailable.*retry available/);
+test('attached-agent route saves without invoking a provider',async t=>{
+ const h=await harness(t);h.api.window.showQuickPick=async items=>items.find(x=>x.recipient?.kind==='agent')||items[0];await h.native.ask();await h.commands.get('brote.nativeSend')({thread:h.views[0],text:'Explain'});assert.equal(h.document.threads[0].delivery.recipient.kind,'agent');assert.equal(h.prompts.length,0);
 });
-test('discarding an inline draft sends no chat request and saves no question',async()=>{
- const h=await harness();await h.native.ask();await h.commands.get('brote.nativeDiscard')(h.views[0]);assert.equal(h.saved.length,0);assert.equal(h.prompt,undefined);assert.equal(h.views[0].disposed,true);
+test('Chat saves ordinary turns by exact metadata ID and historical follow-ups',async t=>{
+ const h=await harness(t);const stream={markdown(){}};const id=await h.native.chat('same text',h.model,stream,{isCancellationRequested:false});h.api.debug.activeDebugSession=undefined;await h.native.chat('same text',h.model,stream,{isCancellationRequested:false},id);assert.equal(h.document.threads.length,1);assert.equal(h.document.threads[0].messages.length,4);assert.equal(h.document.threads[0].messages[0].context.run,'run');
+});
+test('draft discard writes no question and stale frame cannot capture',async t=>{
+ const h=await harness(t);await h.native.ask();await h.commands.get('brote.nativeDiscard')(h.views[0]);assert.equal(h.document.threads.length,0);h.tracker.onDidSendMessage({type:'event',event:'continued'});await assert.rejects(h.native.capture(),/Select the stack frame/);
+});
+test('paginated selected frame goes through service inspection',async t=>{
+ const h=await harness(t);h.tracker.onWillReceiveMessage({type:'request',command:'stackTrace',seq:2,arguments:{threadId:7,startFrame:30}});h.tracker.onDidSendMessage({type:'response',command:'stackTrace',request_seq:2,success:true,body:{stackFrames:[{id:42}]}});await h.native.capture();assert.equal(h.calls.find(x=>x.capture).capture.index,30);
 });
 
-test('follow-up after debugger exit labels saved evidence as historical',async()=>{
- const h=await harness();await h.native.ask();await h.commands.get('brote.nativeSend')({thread:h.views[0],text:'First question'});await settled(h);
- const before=h.requests.length;h.api.debug.activeDebugSession=undefined;
- await h.commands.get('brote.nativeSend')({thread:h.views[0],text:'Explain the earlier result'});await settled(h);
- assert.equal(h.requests.length,before);assert.match(h.saved[0].contextNote,/historical.*debugger has ended/);
- assert.match(h.prompts[1],/First question/);
+test('failed Chat response keeps the saved discussion metadata association',async t=>{
+ const h=await harness(t);h.model.sendRequest=async()=>{throw Error('provider lost');};let message='';const id=await h.native.chat('Why?',h.model,{markdown:text=>{message+=text;}},{isCancellationRequested:false});assert.ok(id);assert.equal(h.document.threads[0].delivery.status,'failed');assert.match(message,/Answer failed/);assert.equal(h.native.discussion(id).question,'Why?');
 });
 
-test('reply submission returns while model is pending and preserves its editor',async()=>{
- const h=await harness();let release;const pending=new Promise(resolve=>{release=resolve;});
- h.model.sendRequest=async()=>{await pending;return {text:(async function*(){yield 'Done';})()};};
- await h.native.ask();await h.commands.get('brote.nativeSend')({thread:h.views[0],text:'Question'});
- assert.equal(h.views[0].canReply,true);assert.equal(h.views[0].contextValue,'brote.nativeBusy');
- release();await settled(h);assert.equal(h.saved[0].answer,'Done');assert.equal(h.views[0].contextValue,'brote.native');
-});
+test('inline history retains limitations and provenance of each saved question',async t=>{const h=await harness(t);const id=await h.native.chat('first',h.model,{markdown(){}},{isCancellationRequested:false});const first=h.document.threads[0].messages[0];first.context={...first.context,partial:true,truncated:true,inspectionError:'scope unavailable',run:'old-run',pauseEpoch:7,frames:[{Locals:[{name:'x',value:'1'}],localsTruncated:true}]};h.api.debug.activeDebugSession=undefined;await h.native.chat('second',h.model,{markdown(){}},{isCancellationRequested:false},id);const saved=h.native.discussion(id);assert.match(saved.turns[0].contextNote,/old-run/);assert.match(saved.turns[0].contextNote,/pause 7/);assert.match(saved.turns[0].contextNote,/localsTruncated/);assert.match(saved.turns[0].contextNote,/scope unavailable/);assert.equal(saved.turns[0].evidence.scopes[0].variables[0].value,'1');assert.match(h.views[0].comments[0].body.value,/scope unavailable/);});
 
-test('capture fetches selected paginated frame even when frame IDs change',async()=>{
- const h=await harness();
- h.tracker.onWillReceiveMessage({type:'request',command:'stackTrace',seq:10,arguments:{threadId:7,startFrame:30}});
- h.tracker.onDidSendMessage({type:'response',command:'stackTrace',request_seq:10,success:true,body:{stackFrames:[{id:42}]}});
- const original=h.api.debug.activeDebugSession.customRequest;
- h.api.debug.activeDebugSession.customRequest=async(command,args)=>{
-  if(command==='stackTrace'){assert.equal(args.startFrame,30);return {stackFrames:[{id:99,name:'deep',line:35}]};}
-  if(command==='scopes')assert.equal(args.frameId,99);
-  return original(command,args);
- };
- const evidence=await h.native.capture();assert.equal(evidence.frame.id,99);
-});
-
-test('automatic capture uses the stopped thread rather than the selected frame',async()=>{
- const captured=[];const h=await harness(e=>captured.push(e));const session=h.api.debug.activeDebugSession;
- const original=session.customRequest;session.customRequest=async(command,args)=>{if(command==='stackTrace')assert.equal(args.threadId,99);return original(command,args);};
- await h.native.capture(session,99);assert.equal(captured.length,1);assert.equal(captured[0].thread,99);
-});
-test('stale captures never reach the exporter',async()=>{
- const captured=[];const h=await harness(e=>captured.push(e));const session=h.api.debug.activeDebugSession;const original=session.customRequest;
- session.customRequest=async(command,args)=>{const result=await original(command,args);if(command==='variables')h.tracker.onDidSendMessage({type:'event',event:'continued'});return result;};
- await assert.rejects(h.native.capture(session,7),/moved/);assert.equal(captured.length,0);
-});
-
-for(const command of ['continue','next','stepIn','stepOut','reverseContinue','restart','disconnect'])test(`${command} invalidates captures without a continued event`,async()=>{
- const captured=[];const h=await harness(e=>captured.push(e));const session=h.api.debug.activeDebugSession;const original=session.customRequest;
- session.customRequest=async(c,args)=>{const result=await original(c,args);if(c==='variables'){
-  h.tracker.onWillReceiveMessage({type:'request',seq:99,command,arguments:{threadId:7}});
-  h.tracker.onDidSendMessage({type:'response',request_seq:99,command,success:true});
- }return result;};
- await assert.rejects(h.native.capture(),/moved/);assert.equal(captured.length,0);
- await assert.rejects(h.native.capture(),/Pause the debugger/);
- session.customRequest=original;h.tracker.onDidSendMessage({type:'event',event:'stopped',body:{threadId:7}});
- await h.native.capture();assert.equal(captured.length,1);
-});
-test('a rejected resume permits a fresh capture, but invalidates the in-flight one',async()=>{
- const h=await harness();const session=h.api.debug.activeDebugSession,original=session.customRequest;
- session.customRequest=async(c,a)=>{const result=await original(c,a);if(c==='variables'){
-  h.tracker.onWillReceiveMessage({type:'request',seq:1,command:'continue'});
-  h.tracker.onDidSendMessage({type:'response',request_seq:1,command:'continue',success:false});
- }return result;};
- await assert.rejects(h.native.capture(),/moved/);session.customRequest=original;await h.native.capture();
-});
-
-test('single-thread resume preserves inspection of other paused threads',async()=>{
- const h=await harness(),s=h.api.debug.activeDebugSession;
- h.tracker.onDidSendMessage({type:'event',event:'stopped',body:{threadId:7,allThreadsStopped:true}});
- h.tracker.onWillReceiveMessage({type:'request',seq:90,command:'continue',arguments:{threadId:7,singleThread:true}});
- h.tracker.onDidSendMessage({type:'response',request_seq:90,command:'continue',success:true});
- h.tracker.onDidSendMessage({type:'event',event:'continued',body:{threadId:7,allThreadsContinued:false}});
- await assert.rejects(h.native.capture(s,7),/Pause the debugger/);
- assert.equal((await h.native.capture(s,8)).thread,8);
-});
-test('one thread stopping does not make other running threads inspectable',async()=>{
- const h=await harness(),s=h.api.debug.activeDebugSession;
- h.tracker.onWillReceiveMessage({type:'request',seq:90,command:'continue',arguments:{threadId:7}});
- h.tracker.onDidSendMessage({type:'event',event:'stopped',body:{threadId:8}});
- // A delayed response must not overwrite the newer stopped state.
- h.tracker.onDidSendMessage({type:'response',request_seq:90,command:'continue',success:true});
- assert.equal((await h.native.capture(s,8)).thread,8);
- await assert.rejects(h.native.capture(s,7),/Pause the debugger/);
-});
-
-test('rejected resume preserves a later stop on another thread',async()=>{
- const h=await harness(),s=h.api.debug.activeDebugSession;
- h.tracker.onDidSendMessage({type:'event',event:'continued',body:{threadId:8,allThreadsContinued:false}});
- h.tracker.onWillReceiveMessage({type:'request',seq:90,command:'continue',arguments:{threadId:7,singleThread:true}});
- h.tracker.onDidSendMessage({type:'event',event:'stopped',body:{threadId:8}});
- h.tracker.onDidSendMessage({type:'response',request_seq:90,command:'continue',success:false});
- assert.equal((await h.native.capture(s,7)).thread,7);
- assert.equal((await h.native.capture(s,8)).thread,8);
-});
-for(const order of [[90,91],[91,90]])test(`overlapping rejected resumes restore both threads in response order ${order}`,async()=>{
- const h=await harness(),s=h.api.debug.activeDebugSession;
- for(const [seq,threadId] of [[90,7],[91,8]])h.tracker.onWillReceiveMessage({type:'request',seq,command:'continue',arguments:{threadId,singleThread:true}});
- for(const seq of order)h.tracker.onDidSendMessage({type:'response',request_seq:seq,command:'continue',success:false});
- assert.equal((await h.native.capture(s,7)).thread,7);
- assert.equal((await h.native.capture(s,8)).thread,8);
-});
-test('rejected resume does not undo a later successful resume',async()=>{
- const h=await harness(),s=h.api.debug.activeDebugSession;
- for(const seq of [90,91])h.tracker.onWillReceiveMessage({type:'request',seq,command:'continue',arguments:{threadId:7,singleThread:true}});
- h.tracker.onDidSendMessage({type:'response',request_seq:91,command:'continue',success:true});
- h.tracker.onDidSendMessage({type:'response',request_seq:90,command:'continue',success:false});
- await assert.rejects(h.native.capture(s,7),/Pause the debugger/);
- h.tracker.onDidSendMessage({type:'event',event:'stopped',body:{threadId:7}});
- await h.native.capture(s,7);
-});
+test('shutdown persists interrupted outcome even when a provider ignores cancellation',async t=>{const h=await harness(t);let release;h.model.sendRequest=async()=>({text:(async function*(){yield 'partial';await new Promise(r=>release=r);yield 'late';})()});await h.native.ask();await h.commands.get('brote.nativeSend')({thread:h.views[0],text:'Why?'});for(let i=0;i<100&&!release;i++)await new Promise(r=>setTimeout(r,5));assert.ok(release);await h.native.shutdown();const thread=h.document.threads[0];assert.equal(thread.delivery.status,'failed');assert.match(thread.delivery.error,/editor is closing/);assert.equal(thread.messages.length,1);release();await new Promise(r=>setTimeout(r,5));assert.equal(thread.messages.length,1,'late provider output cannot become a final answer');assert.ok(!h.views[0].comments.some(c=>c.body.value==='partial'));});

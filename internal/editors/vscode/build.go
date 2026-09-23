@@ -1,11 +1,14 @@
 package vscode
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 )
 
 func validateBuildFlags(flags []string) error {
@@ -27,7 +30,9 @@ func validateBuildFlags(flags []string) error {
 
 // Build creates a session-owned executable. The CLI requires --build before
 // invoking this; handovers, recovery and run-again never rebuild a target.
-func (l *Launch) Build(output string) error {
+func (l *Launch) Build(output string) error { return l.BuildContext(context.Background(), output) }
+
+func (l *Launch) BuildContext(ctx context.Context, output string) error {
 	st, err := os.Stat(l.Program)
 	if err != nil {
 		return err
@@ -42,7 +47,10 @@ func (l *Launch) Build(output string) error {
 	}
 	args = append(args, l.BuildFlags...)
 	args = append(args, "-o", output, "-gcflags=all=-N -l", target)
-	cmd := exec.Command("go", args...)
+	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd.WaitDelay = 2 * time.Second
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.Dir = dir
 	cmd.Env = l.Settings.Environment(cmd.Environ())
 	if data, err := cmd.CombinedOutput(); err != nil {

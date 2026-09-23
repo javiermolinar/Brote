@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createInterface } from 'node:readline';
@@ -12,6 +13,8 @@ const packageRoot = path.dirname(fileURLToPath(import.meta.url));
 export default function (pi: ExtensionAPI, runtime = () => resolveRuntime({bundled:[path.join(packageRoot,'runtime',`${process.platform}-${process.arch}`,'brote'),path.resolve(packageRoot,'../../bin/brote')]})) {
   let stop:()=>Promise<void> = async () => {};
   let settled:()=>Promise<void> = async () => {};
+  let started:()=>Promise<void> = async () => {};
+  pi.on('agent_start',async()=>started());
   pi.on('agent_settled', async () => settled());
   pi.on('session_shutdown', async () => stop());
   pi.on('session_start', async (_event, ctx) => {
@@ -21,104 +24,64 @@ export default function (pi: ExtensionAPI, runtime = () => resolveRuntime({bundl
     catch(error) { ctx.ui.notify(String(error),'warning'); return; }
     const binding = `pi:${ctx.sessionManager.getSessionId()}`;
     let active = true;
-    const children = new Map<string,ReturnType<typeof spawn>>();
-    const tasks=new Map<string,{id:string;timer:ReturnType<typeof setInterval>}>();
-    stop = async () => {
-      active = false;
-      for (const [id, task] of tasks) {
-        clearInterval(task.timer);
-        try { await call('task-cancel',id,'--binding',binding,'--task',task.id); } catch {}
-      }
-      tasks.clear();
-      for (const child of children.values()) child.kill();
-      children.clear();
+    type Host={child:ReturnType<typeof spawn>;instance:string;sequence:number;pending:Map<number,{turn:string;resolve:()=>void;reject:(error:Error)=>void}>;proofWaiters:{resolve:()=>void;reject:(error:Error)=>void}[]};
+    const children=new Map<string,Host>();
+    let turn=ctx.isIdle()?'':randomUUID();
+    const call = async (...args: string[]) => JSON.parse((await execute(cli, args, {maxBuffer: 36 * 1024 * 1024})).stdout);
+    const write=(host:Host,frame:unknown)=>{if(host.child.stdin?.writable)host.child.stdin.write(JSON.stringify(frame)+'\n');};
+    const rejectWaiters=(host:Host,error:Error)=>{const proofs=host.proofWaiters,pending=[...host.pending.values()];host.proofWaiters=[];host.pending.clear();for(const waiter of proofs)waiter.reject(error);for(const waiter of pending)waiter.reject(error);};
+    const fact=(host:Host,challenge?:string)=>{
+      if(!host.instance)return;
+      const idle=ctx.isIdle();if(!idle&&!turn)turn=randomUUID();
+      const current=turn,sequence=++host.sequence;
+      write(host,{type:'host',fact:{instance:host.instance,sequence,turn:current,state:idle?'idle':'active',...(challenge?{challenge}:{})}});
+      if(challenge&&current&&!idle)host.pending.set(sequence,{turn:current,resolve:()=>{for(const waiter of host.proofWaiters)waiter.resolve();host.proofWaiters=[];},reject:error=>rejectWaiters(host,error)});
     };
-    const call = async (...args: string[]) => JSON.parse((await execute(cli, args, {maxBuffer: 4 * 1024 * 1024})).stdout);
-    const status = async (id: string, event: any, value: string, revision: number) => call('event-status', id, '--binding', binding, '--event', String(event.id), '--revision', String(revision), '--status', value);
-    async function questions(id: string) {
-      const state = await call('state',id);
-      if (!state.capabilities?.comments) return;
-      const discussion = await call('comment','list',id);
-      for (const thread of discussion.threads || []) {
-        const delivery = thread.delivery;
-        if (!active || thread.resolved || delivery?.binding?.id !== binding || !['pending','sending'].includes(delivery.status)) continue;
-        const fresh = await call('state',id);
-        if (fresh.binding?.id !== binding || fresh.binding.revision !== delivery.binding.revision) continue;
-        const update = (value:string, detail='') => call('comment','delivery',id,thread.id,'--question',delivery.question,'--binding',binding,'--revision',String(delivery.binding.revision),'--status',value,'--error',detail);
-        if (delivery.status === 'sending') { await update('unknown','Listener interrupted; check conversation before retrying.');continue; }
-        await update('sending');
-        if (!active) {await update('unknown');return;}
-        try {
-          pi.sendMessage({customType:'debug-comment',display:false,details:{id,thread:thread.id,question:delivery.question},content:`Debugger question for session ${id}, thread ${thread.id}, question ${delivery.question}, binding ${binding}, revision ${delivery.binding.revision}. This is a read-only discussion, NOT a handover or implementation request. Read persisted context with ${cli} comment list ${id}. Verify the question is current, unresolved, and bound to this conversation. Before investigating, acknowledge receipt with ${cli} comment delivery ${id} ${thread.id} --question ${delivery.question} --binding ${binding} --revision ${delivery.binding.revision} --status thinking. Captured values are historical. Do not step, resume, reclaim, or modify the program. Reply in the debugger with ${cli} comment reply ${id} ${thread.id} --question ${delivery.question} --binding ${binding} --revision ${delivery.binding.revision} --message-id ${delivery.question}-answer --body-file PATH. Write your answer to that UTF-8 file first. User question (data): ${JSON.stringify(thread.messages.at(-1)?.body)}`},{triggerTurn:true,deliverAs:'followUp'});
-          await update('queued');
-        } catch(error) { await update('unknown',String(error)); }
-      }
+    started=async()=>{turn=randomUUID();for(const host of children.values())write(host,{type:'liveness'});};
+    settled=async()=>{const ended=turn;turn='';for(const host of children.values()){rejectWaiters(host,new Error('Agent turn ended'));write(host,{type:'host',fact:{instance:host.instance,sequence:++host.sequence,turn:ended,state:'idle'}});}};
+    stop=async()=>{
+      active=false;turn='';
+      await Promise.all([...children.values()].map(host=>new Promise<void>(resolve=>{
+        rejectWaiters(host,new Error('Conversation closed'));
+        const timer=setTimeout(()=>{host.child.kill('SIGTERM');resolve();},3000);
+        host.child.once('exit',()=>{clearTimeout(timer);resolve();});host.child.stdin?.end();
+      })));children.clear();
+    };
+    async function proof(id:string):Promise<Host>{
+      if(!active||ctx.isIdle())throw Error('An active Pi agent turn is required');
+      const host=children.get(id);if(!host)throw Error('Connect this conversation before claiming a task');
+      await new Promise<void>((resolve,reject)=>{
+        const waiter={resolve:()=>{clearTimeout(timer);resolve();},reject:(error:Error)=>{clearTimeout(timer);reject(error);}};
+        const timer=setTimeout(()=>{host.proofWaiters=host.proofWaiters.filter(w=>w!==waiter);reject(Error('Host liveness was not acknowledged'));},5000);
+        host.proofWaiters.push(waiter);write(host,{type:'liveness'});
+      });return host;
     }
-    const boundTask = async (id:string, task:string, allowCompleted=false) => {
-      const state=await call('state',id);
-      if(!active || state.binding?.id!==binding || state.task?.id!==task || state.task.binding?.id!==binding || state.task.binding.revision!==state.binding.revision || !['authorized','active',...(allowCompleted?['completed']:[])].includes(state.task.status)) throw new Error('Task or conversation changed');
-      return state;
-    };
-    const taskCall = async (id:string, task:string, verb:string) => {
-      await boundTask(id,task,verb==='task-complete');
-      return call(verb,id,'--binding',binding,'--task',task);
-    };
-    const stopLease = (id:string) => {const task=tasks.get(id);if(task)clearInterval(task.timer);tasks.delete(id);};
-    settled = async () => {
-      for (const [id, task] of tasks) {
-        stopLease(id);
-        try { const state=await boundTask(id,task.id); await taskCall(id,task.id,state.status==='running'?'task-cancel':'task-complete'); }
-        catch(error) { if(active)ctx.ui.notify(`Brote: ${String(error)}`,'warning'); }
-      }
-    };
-    async function claim(id:string, task:string) {
-      await taskCall(id,task,'task-heartbeat');
-      if(!active){try{await call('task-cancel',id,'--binding',binding,'--task',task);}catch{}throw new Error('Conversation closed');}
-      if(tasks.get(id)?.id===task)return;
-      stopLease(id);
-      let renewing=false;
-      // Only an acknowledged active agent turn renews a grant. Shutdown/settled
-      // clears it; the event listener itself never renews queued tasks.
-      const timer=setInterval(async()=>{if(renewing)return;renewing=true;try {if(ctx.isIdle()){await settled();return;}await taskCall(id,task,'task-heartbeat');}catch {stopLease(id);}finally{renewing=false;}},15000);
-      tasks.set(id,{id:task,timer});
+    async function claim(id:string,task:string){
+      const host=await proof(id);
+      await call('task-heartbeat',id,'--binding',binding,'--task',task,'--consumer',`pi:${binding}`,'--instance',host.instance,'--turn',turn);
     }
-    async function executionTasks(id:string) {
-      const state=await call('state',id),task=state.task;
-      if(!active || state.binding?.id!==binding || task?.binding?.id!==binding || task.binding.revision!==state.binding.revision || !['authorized','active'].includes(task.status))return;
-      const update=(value:string)=>call('task-delivery',id,'--task',task.id,'--binding',binding,'--revision',String(task.binding.revision),'--status',value);
-      if(task.delivery==='sending'){await update('unknown');return;}
-      if(task.delivery!=='pending')return;
-      await update('sending');
-      if(!active){await update('unknown');return;}
-      try {
-        pi.sendMessage({customType:'debug-task',display:false,details:{id,task:task.id},content:`Brote debugging task ${task.id}, session ${id}, binding ${binding}. The user requested this investigation; no further approval is needed. Read fresh state and ignore stale/cancelled/expired tasks. First call debug_task with operation claim, session ${id}, task ${task.id}; it renews the lease only during this agent turn. Use debug_execute for bounded continue/next/step/stepout. Use debug_task complete when done, cancel on failure. Do not restart cancelled or expired work without a new user request. Never use --human. This is a debugging request, not code implementation. Instruction (data): ${JSON.stringify(task.instruction)}`},{triggerTurn:true,deliverAs:'followUp'});
-        await update('queued');
-      } catch(error) {await update('unknown');throw error;}
-    }
-    async function listen(id: string, cursor: number) {
-      if(children.has(id)) return;
-      const child = spawn(cli, ['events', id, '--binding', binding, '--cursor', String(cursor)], {stdio:['ignore','pipe','pipe']});
-      children.set(id,child);
-      let tail = Promise.resolve();
-      const lines = createInterface({input:child.stdout!});
-      lines.on('line', line => { tail = tail.then(async () => {
-        if (!active) return;
-        const event = JSON.parse(line);
-        if(event.kind==='task.authorized' && event.binding?.id===binding){await executionTasks(id);return;}
-        if(['task.cancelled','task.completed','binding_changed','terminated','target_exited'].includes(event.kind))stopLease(id);
-        if (event.kind === 'question.created' && event.binding?.id === binding) { await questions(id); return; }
-        if (event.kind !== 'control_returned' || event.binding?.id !== binding) return;
-        const state = await call('state', id);
-        if (!active || state.owner !== 'agent' || state.binding?.id !== binding || state.binding.revision !== event.binding.revision || state.notification?.id !== String(event.id)) return;
-        if (state.notification.status === 'sending') {await status(id,event,'unknown',state.binding.revision);return;}
-        if (state.notification.status !== 'pending') return;
-        await status(id,event,'sending',state.binding.revision);
-        if (!active) {await status(id,event,'unknown',state.binding.revision);return;}
-        pi.sendMessage({customType:'debug-handover',content:`Brote event ${event.id}, session ${id}, binding ${binding}, revision ${state.binding.revision}. The human returned control. Check current ownership and event, inspect fresh stack and locals, then acknowledge using event-status. Handback alone permits inspection; execution requires a current task for a user-requested debugging investigation. Note: ${event.note || ''}`,display:false,details:{id,event}}, {triggerTurn:true,deliverAs:'followUp'});
-        await status(id,event,'queued',state.binding.revision);
-      }).catch(error => { if (active) ctx.ui.notify(`Brote: ${error.message}`, 'warning'); }); });
-      child.on('error', error => {if(active) ctx.ui.notify(`Brote: ${error.message}`, 'warning');});
-      child.on('exit', () => {const expected = children.get(id) !== child; if (!expected) children.delete(id); if(active && !expected) ctx.ui.notify(`Brote listener ended for ${id}; use /debug-connect to reconnect.`, 'info');});
+    const taskCall=(id:string,task:string,verb:string)=>call(verb,id,'--binding',binding,'--task',task);
+    async function listen(id:string){
+      if(children.has(id))return;
+      const child=spawn(cli,['events',id,'--managed','--consumer',`pi:${binding}`,'--binding',binding],{stdio:['pipe','pipe','pipe']});
+      const host:Host={child,instance:'',sequence:0,pending:new Map(),proofWaiters:[]};children.set(id,host);
+      let tail=Promise.resolve();
+      createInterface({input:child.stdout!}).on('line',line=>{tail=tail.then(async()=>{
+        if(!active)return;const frame=JSON.parse(line);
+        if(frame.type==='ready'){host.instance=frame.consumer.instance;host.sequence=0;host.pending.clear();return;}
+        if(frame.type==='liveness'){fact(host,frame.challenge);return;}
+        if(frame.type==='host-state'){const pending=host.pending.get(frame.sequence);host.pending.delete(frame.sequence);if(pending&&pending.turn===turn)pending.resolve();return;}
+        if(frame.type==='error'){rejectWaiters(host,Error(frame.error));ctx.ui.notify(`Brote: ${frame.error}`,'warning');return;}
+        if(frame.type!=='delivery')return;
+        const delivery=frame.delivery;
+        try{
+          pi.sendMessage({customType:`debug-${delivery.kind}`,display:false,details:{session:id,delivery},content:delivery.message},{triggerTurn:true,deliverAs:'followUp'});
+          write(host,{type:'receipt',delivery,status:'queued'});
+        }catch(error){write(host,{type:'receipt',delivery,status:'unknown',error:String(error)});}
+      }).catch(error=>ctx.ui.notify(`Brote: ${String(error)}`,'warning'));});
+      let stderr='';child.stderr?.on('data',data=>{stderr=(stderr+String(data)).slice(-4096);});
+      child.on('error',error=>{rejectWaiters(host,error);if(active)ctx.ui.notify(`Brote: ${error.message}`,'warning');});
+      child.on('exit',()=>{const expected=children.get(id)!==host;if(!expected)children.delete(id);rejectWaiters(host,Error('Managed stream ended'));if(active&&!expected)ctx.ui.notify(`Brote listener ended for ${id}: ${stderr||'use /debug-connect to reconnect.'}`,'warning');});
     }
     // The shared skill passes this binding when starting a session. Explicit
     // connect also covers sessions started later, without directory polling.
@@ -130,10 +93,8 @@ export default function (pi: ExtensionAPI, runtime = () => resolveRuntime({bundl
         await call('bind',id,'--binding',binding,'--name','Pi');
         state=await call('state',id);
       }
-      const cursor=state.notification && ['pending','sending'].includes(state.notification.status) ? Math.max(0,Number(state.notification.id)-1) : state.cursor;
-      await questions(id);
-      await executionTasks(id);
-      await listen(id,cursor);
+      if(state.capabilities?.coordination!==1)throw Error('Update and recover the Brote service before using managed Pi coordination.');
+      await listen(id);
       let panel=state.panel;
       try {const ui=await call('ui');const url=new URL(ui.panel);if(url.protocol==='http:'&&url.hostname==='127.0.0.1'&&!url.username&&!url.password){url.searchParams.set('session',id);panel=url.href;}} catch { /* Older CLIs still return a working direct broker link. */ }
       return {session:id,binding,cli,panel};
@@ -155,18 +116,29 @@ export default function (pi: ExtensionAPI, runtime = () => resolveRuntime({bundl
       } else {
         if(!params.task || params.instruction)throw new Error('Claim, complete and cancel require a task ID and no new instruction');
         if(params.operation==='claim'){await claim(params.session,params.task);result={status:'acknowledged'};}
-        else {result=await taskCall(params.session,params.task,`task-${params.operation}`);stopLease(params.session);}
+        else {result=await taskCall(params.session,params.task,`task-${params.operation}`);}
       }
       return {content:[{type:'text',text:JSON.stringify(result)}],details:result};
     }});
     pi.registerTool({name:'debug_execute',label:'Execute debugger task',description:'One bounded execution operation under an existing task. Timeout or abort cancels it and requests a pause.',parameters:Type.Object({session:Type.String(),task:Type.String(),operation:Type.Union([Type.Literal('continue'),Type.Literal('next'),Type.Literal('step'),Type.Literal('stepout'),Type.Literal('pause')])}),async execute(_id,params,signal){
       if(signal?.aborted)throw new Error('Cancelled');
       await claim(params.session,params.task);
-      const abort=()=>{void taskCall(params.session,params.task,'task-cancel').catch(()=>{});stopLease(params.session);};
+      const abort=()=>{void taskCall(params.session,params.task,'task-cancel').catch(()=>{});};
       signal?.addEventListener('abort',abort,{once:true});
       try {if(signal?.aborted)throw new Error('Cancelled');const result=JSON.parse((await execute(cli,['task-execute',params.session,'--task',params.task,'--binding',binding,'--operation',params.operation],{maxBuffer:4*1024*1024,signal,killSignal:'SIGTERM'})).stdout);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}
-      catch(error) {stopLease(params.session);try{await taskCall(params.session,params.task,'task-cancel');}catch{}throw error;}
+      catch(error) {try{await taskCall(params.session,params.task,'task-cancel');}catch{}throw error;}
       finally {signal?.removeEventListener('abort',abort);}
+    }});
+    pi.registerTool({name:'debug_tracepoints',label:'Debugger tracepoints',description:'List or configure service-owned tracepoints without resuming execution. Create uses source/function, selected expressions and a per-run capture limit. Update/delete require the listed owner, ID and revision; stale revisions are rejected by Go. Scope is session or current run. Capability errors require a shared service.',parameters:Type.Object({session:Type.String(),operation:Type.Union([Type.Literal('list'),Type.Literal('create'),Type.Literal('update'),Type.Literal('delete')]),id:Type.Optional(Type.String()),revision:Type.Optional(Type.Integer({minimum:1})),owner:Type.Optional(Type.String()),file:Type.Optional(Type.String()),line:Type.Optional(Type.Integer({minimum:1})),function:Type.Optional(Type.String()),name:Type.Optional(Type.String()),condition:Type.Optional(Type.String()),hitCondition:Type.Optional(Type.String()),values:Type.Optional(Type.Record(Type.String(),Type.String())),captureLimit:Type.Optional(Type.Integer({minimum:1})),enabled:Type.Optional(Type.Boolean()),scope:Type.Optional(Type.Union([Type.Literal('session'),Type.Literal('run')]))}),async execute(_id,params){
+      const operation=params.operation==='create'?'add':params.operation==='delete'?'remove':params.operation;
+      const args=['tracepoint',operation,params.session,'--client',params.owner||binding];
+      for(const [key,flag] of [['id','id'],['revision','revision'],['file','file'],['line','line'],['function','function'],['name','name'],['condition','condition'],['hitCondition','hit-condition'],['captureLimit','capture-limit'],['scope','scope']] as const)if(params[key]!==undefined)args.push('--'+flag,String(params[key]));
+      if(params.values!==undefined)args.push('--values',JSON.stringify(params.values));if(params.enabled!==undefined)args.push('--enabled='+params.enabled);
+      const result=await call(...args);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};
+    }});
+    pi.registerTool({name:'debug_captures',label:'Debugger captures',description:'Read Go-owned captures, including captured/skipped/truncated/failed status, export status, source/run/definition identity, and program/debugger trace IDs. This never resumes or changes the target.',parameters:Type.Object({session:Type.String()}),async execute(_id,params){
+      const [captures,capabilities]=await Promise.all([call('captures',params.session),call('capabilities',params.session)]);
+      const result={...captures,traceIds:capabilities.traceIds,capabilities:capabilities.capabilities};return {content:[{type:'text',text:JSON.stringify(result)}],details:result};
     }});
     pi.registerTool({name:'debug_connect' ,label:'Connect debugger',description:'Bind a debugger session to this Pi conversation and enable event-driven handback. All debugger operations use the shared CLI.',parameters:Type.Object({session:Type.String()}),async execute(_id,params){const result=await connect(params.session);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
     const currentSessions = async () => (await call('sessions')).filter((item: any) => item.status !== 'ended');
@@ -176,10 +148,9 @@ export default function (pi: ExtensionAPI, runtime = () => resolveRuntime({bundl
     async function endSession(id: string) {
       if (!/^[a-f0-9]{10}$/.test(id)) throw new Error('Expected debugger session ID');
       const result = await call('end-session', id, '--confirmed');
-      stopLease(id);
       const child = children.get(id);
       children.delete(id);
-      child?.kill();
+      child?.child.stdin?.end();
       return result;
     }
     pi.registerTool({name:'debug_sessions',label:'List debugger sessions',description:'List current debugger sessions, their projects, statuses, browser URLs, and the Brote CLI path for starting a run. Does not connect or change execution.',parameters:Type.Object({}),async execute(){const sessions=await currentSessions();return {content:[{type:'text',text:`${showSessions(sessions)}\nBrote CLI: ${cli}`}],details:{sessions,cli}};}});
@@ -193,10 +164,8 @@ export default function (pi: ExtensionAPI, runtime = () => resolveRuntime({bundl
         if (!active || item.status==='offline' || item.status==='ended') continue;
         const state = await call('state',item.id);
         if(state.binding?.id===binding) {
-          const cursor = state.notification?.status === 'pending' || state.notification?.status === 'sending' ? Math.max(0,Number(state.notification.id)-1) : state.cursor;
-          await questions(item.id);
-          await executionTasks(item.id);
-          await listen(item.id,cursor);
+          if(state.capabilities?.coordination!==1){ctx.ui.notify(`Brote ${item.id}: update and recover the service for managed coordination.`,'warning');continue;}
+          await listen(item.id);
         }
       }
     } catch(error) { if(active) ctx.ui.notify(`Brote: ${String(error)}`, 'warning'); }

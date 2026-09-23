@@ -8,10 +8,8 @@ test:
 	go test ./...
 
 vsix: build
-	mkdir -p dist
-	cp LICENSE packages/vscode/LICENSE
-	cp THIRD_PARTY_NOTICES.md packages/vscode/THIRD_PARTY_NOTICES.md
-	cd packages/vscode && npm exec --yes --package=@vscode/vsce@4.0.0 -- vsce package --no-dependencies --allow-missing-repository --no-rewrite-relative-links --out ../../dist/brote.vsix
+	python3 scripts/release.py --host-only --output dist/releases
+	python3 -c 'import pathlib, shutil; p = list(pathlib.Path("dist/releases").glob("brote-*-*.vsix")); assert len(p) == 1, p; shutil.copy2(p[0], "dist/brote.vsix")'
 
 .PHONY: test-vscode
 test-vscode: vsix

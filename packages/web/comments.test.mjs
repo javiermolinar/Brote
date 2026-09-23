@@ -81,3 +81,15 @@ test('merged continuations retain sibling messages and select immutable message 
  d.querySelectorAll('.commentMessage button')[1].click();assert.match(d.querySelector('.commentCaptured').textContent,/total = 99/);assert.match(d.querySelector('.commentContext').textContent,/two/);
  d.querySelectorAll('.commentMessage button')[0].click();assert.match(d.querySelector('.commentCaptured').textContent,/total = 21/);
 });
+
+test('archived views retain evidence limitations and saved answer outcomes',async t=>{
+ const js=await build({entryPoints:['packages/web/src/comments.ts'],bundle:true,write:false,format:'iife',globalName:'Comments',logLevel:'silent'});
+ const dom=new JSDOM('<div id="source"></div><section id="commentsPanel"><div id="commentList"></div><div id="threadHost"></div></section>',{url:'http://127.0.0.1',runScripts:'outside-only'});t.after(()=>dom.window.close());const w=dom.window,d=w.document;w.HTMLElement.prototype.scrollIntoView=function(){};w.eval(js.outputFiles[0].text+';window.C=Comments;');
+ const context={partial:true,truncated:true,inspectionError:'scope unavailable',exportError:'export failed',frame:0,frames:[{Locals:[{name:'items',value:'[1,2]'}],localsTruncated:true}]};
+ const ui=w.C.createComments(async()=>{throw Error('offline');},async()=>{});ui.update({id:'one',historical:true,status:'exited',generation:0,frame:0});
+ for(const [status,error,expected] of [['failed','Answer cancelled.','Answer cancelled.'],['failed','Provider unavailable','Provider unavailable'],['unknown','Send interrupted','Send interrupted'],['answered','', 'replied']]){
+ ui.history([{id:'t',file:'main.go',line:1,created:'2026-09-21T10:00:00Z',context,messages:[{id:'q',author:'human',body:'Why?',context,evidence:{executionRun:'old-run',pauseEpoch:7}}],delivery:{status,error}}]);d.querySelector('.commentListItem').click();await new Promise(r=>setTimeout(r,0));
+ assert.match(d.querySelector('.commentDelivery').textContent,new RegExp(expected,'i'));assert.match(d.querySelector('.commentDelivery').textContent,/Saved discussion/);
+ const captured=d.querySelector('.commentCaptured').textContent;for(const note of ['partial: true','truncated: true','scope unavailable','export failed','localsTruncated: true'])assert.ok(captured.includes(note),note);assert.match(d.querySelector('.commentContext').textContent,/old-run/);
+ }
+});

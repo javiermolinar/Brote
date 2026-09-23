@@ -5,6 +5,7 @@ package backend
 import (
 	"agentdebugger/internal/dap"
 	"agentdebugger/internal/delve"
+	"agentdebugger/internal/protocol"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ type Delve struct {
 	address     string
 	mu          sync.Mutex
 	bpMu        sync.Mutex
+	epoch       uint64
 	state       obj
 	caps        obj
 	stopped     chan struct{}
@@ -29,6 +31,9 @@ type Delve struct {
 var ErrRunning = errors.New("DAP remote attach would halt the running target")
 
 func Open(address string, owners map[string]string, functions map[string]string) (*Delve, error) {
+	return OpenWithMapping(address, owners, functions, nil)
+}
+func OpenWithMapping(address string, owners map[string]string, functions map[string]string, mapping []protocol.PathMapping) (*Delve, error) {
 	// DAP remote attach does not report PID or running state. Read identity once,
 	// before opening the DAP session; all subsequent execution uses DAP.
 	raw, err := delve.Call(address, "State", obj{"NonBlocking": true}, 5*time.Second)
@@ -72,7 +77,7 @@ func Open(address string, owners map[string]string, functions map[string]string)
 	go d.events()
 	d.caps, err = d.Request("initialize", obj{"adapterID": "go", "clientID": "agentdebugger", "pathFormat": "path", "linesStartAt1": true, "columnsStartAt1": true, "supportsVariableType": true, "supportsVariablePaging": true})
 	if err == nil {
-		_, err = d.Request("attach", obj{"mode": "remote", "stopOnEntry": true})
+		_, err = d.Request("attach", obj{"mode": "remote", "stopOnEntry": true, "substitutePath": mapping})
 	}
 	if err == nil {
 		_, err = d.Request("configurationDone", obj{})
@@ -85,6 +90,15 @@ func Open(address string, owners map[string]string, functions map[string]string)
 }
 func (d *Delve) Close()            { d.client.Close() }
 func (d *Delve) Capabilities() obj { return d.caps }
+func (d *Delve) Begin(command string, args obj) (func() (obj, error), error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	wait, err := d.client.Begin(ctx, command, args)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	return func() (obj, error) { defer cancel(); return wait() }, nil
+}
 func (d *Delve) Request(command string, args obj) (obj, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
@@ -98,13 +112,17 @@ func (d *Delve) events() {
 		d.mu.Lock()
 		switch str(e["event"]) {
 		case "continued":
+			d.epoch++
 			d.state["Running"] = true
 		case "stopped":
 			if str(body["reason"]) == "entry" && truth(d.state["Running"]) {
 				d.mu.Unlock()
 				continue
 			}
+			d.epoch++
 			d.state["Running"] = false
+			d.state["stopDescription"] = body["description"]
+			d.state["stopText"] = body["text"]
 			d.state["stopReason"] = body["reason"]
 			if str(body["reason"]) != "entry" {
 				d.state["currentGoroutine"] = obj{"id": body["threadId"]}
@@ -112,6 +130,7 @@ func (d *Delve) events() {
 			close(d.stopped)
 			d.stopped = make(chan struct{})
 		case "exited", "terminated":
+			d.epoch++
 			d.state["Running"] = false
 			d.state["exited"] = true
 			if code, ok := body["exitCode"]; ok {
@@ -133,11 +152,11 @@ func (d *Delve) State() obj {
 	}
 	return out
 }
-func (d *Delve) frame(gid, index int) (int, error) {
+func (d *Delve) frame(ctx context.Context, gid, index int) (int, error) {
 	if gid <= 0 {
 		gid = num(asObj(d.State()["currentGoroutine"])["id"])
 	}
-	v, e := d.Request("stackTrace", obj{"threadId": gid, "startFrame": index, "levels": 1})
+	v, e := d.request(ctx, "stackTrace", obj{"threadId": gid, "startFrame": index, "levels": 1})
 	if e != nil {
 		return 0, e
 	}
@@ -147,45 +166,24 @@ func (d *Delve) frame(gid, index int) (int, error) {
 	}
 	return num(asObj(f[0])["id"]), nil
 }
-func (d *Delve) variable(v obj, depth, count int) (obj, error) {
-	out := obj{"name": v["name"], "type": v["type"], "value": v["value"]}
-	if out["value"] == nil {
-		out["value"] = v["result"]
-	}
-	ref := num(v["variablesReference"])
-	if ref > 0 {
-		out["kind"] = 23
-		out["len"] = max(1, num(v["namedVariables"])+num(v["indexedVariables"]))
-	}
-	if ref > 0 && depth > 0 {
-		children, e := d.Request("variables", obj{"variablesReference": ref, "start": 0, "count": count})
-		if e != nil {
-			return nil, e
-		}
-		items := []any{}
-		for i, raw := range asList(children["variables"]) {
-			if i >= count {
-				break
-			}
-			child, e := d.variable(asObj(raw), depth-1, count)
-			if e != nil {
-				return nil, e
-			}
-			items = append(items, child)
-		}
-		out["children"] = items
-	}
-	return out, nil
-}
 
 // Call preserves the existing public snapshot shape while migrating transport.
 func (d *Delve) Call(method string, a obj) (obj, error) {
+	timeout := 2 * time.Second
+	if method == "Detach" {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return d.CallContext(ctx, method, a)
+}
+func (d *Delve) CallContext(ctx context.Context, method string, a obj) (obj, error) {
 	switch method {
 	case "State":
 		s := d.State()
 		if !truth(s["Running"]) && !truth(s["exited"]) {
 			gid := num(asObj(s["currentGoroutine"])["id"])
-			v, e := d.Call("Stacktrace", obj{"Id": gid, "Depth": 1})
+			v, e := d.CallContext(ctx, "Stacktrace", obj{"Id": gid, "Depth": 1})
 			if e == nil && len(asList(v["Locations"])) > 0 {
 				f := asObj(asList(v["Locations"])[0])
 				s["currentThread"] = obj{"file": f["file"], "line": f["line"], "function": f["function"], "goroutineID": gid}
@@ -202,21 +200,30 @@ func (d *Delve) Call(method string, a obj) (obj, error) {
 		if gid <= 0 {
 			return obj{"Locations": []any{}}, nil
 		}
-		v, e := d.Request("stackTrace", obj{"threadId": gid, "levels": a["Depth"]})
+		v, e := d.request(ctx, "stackTrace", obj{"threadId": gid, "startFrame": max(0, num(a["Start"])), "levels": min(128, max(1, num(a["Depth"])))})
 		out := []any{}
-		for _, raw := range asList(v["stackFrames"]) {
+		for _, raw := range asList(v["stackFrames"])[:min(len(asList(v["stackFrames"])), 128)] {
 			f := asObj(raw)
 			out = append(out, obj{"file": asObj(f["source"])["path"], "line": f["line"], "function": obj{"name": f["name"]}, "id": f["id"]})
 		}
-		return obj{"Locations": out}, e
+		return obj{"Locations": out, "totalFrames": v["totalFrames"]}, e
 	case "ListGoroutines":
-		v, e := d.Request("threads", obj{})
+		v, e := d.request(ctx, "threads", obj{})
 		out := []any{}
-		for _, raw := range asList(v["threads"]) {
+		threads := asList(v["threads"])
+		start := min(len(threads), max(0, num(a["Start"])))
+		end := min(len(threads), start+min(256, max(1, num(a["Count"]))))
+		for _, raw := range threads[start:end] {
 			t := asObj(raw)
 			out = append(out, obj{"id": t["id"], "name": t["name"]})
 		}
-		return obj{"Goroutines": out}, e
+		next := 0
+		if end < len(threads) {
+			next = end
+		}
+		return obj{"Goroutines": out, "Nextg": next}, e
+	case "ExceptionInfo":
+		return d.request(ctx, "exceptionInfo", a)
 	case "ListSources":
 		return delve.Call(d.address, method, a, 5*time.Second) // Delve has no loadedSources implementation yet.
 	case "ListLocalVars", "ListFunctionArgs":
@@ -224,46 +231,51 @@ func (d *Delve) Call(method string, a obj) (obj, error) {
 			return obj{"Args": []any{}}, nil
 		} // DAP exposes a single locals scope, including arguments.
 		scope := asObj(a["Scope"])
-		id, e := d.frame(num(scope["GoroutineID"]), num(scope["Frame"]))
+		id, e := d.frame(ctx, num(scope["GoroutineID"]), num(scope["Frame"]))
 		if e != nil {
 			return nil, e
 		}
-		scopes, e := d.Request("scopes", obj{"frameId": id})
+		scopes, e := d.request(ctx, "scopes", obj{"frameId": id})
 		if e != nil {
 			return nil, e
 		}
 		out := []any{}
+		budget := newValueBudget()
 		for _, raw := range asList(scopes["scopes"]) {
 			s := asObj(raw)
 			if !strings.Contains(strings.ToLower(str(s["name"])), "local") {
 				continue
 			}
-			vars, e := d.Request("variables", obj{"variablesReference": s["variablesReference"]})
+			vars, e := d.request(ctx, "variables", obj{"variablesReference": s["variablesReference"], "start": 0, "count": 128})
 			if e != nil {
 				return nil, e
 			}
 			for _, v := range asList(vars["variables"]) {
-				item, e := d.variable(asObj(v), 1, 32)
+				if budget.nodes <= 0 || budget.bytes <= 0 {
+					budget.truncated = true
+					break
+				}
+				item, e := d.variable(ctx, asObj(v), 1, 32, budget)
 				if e != nil {
 					return nil, e
 				}
 				out = append(out, item)
 			}
 		}
-		return obj{"Variables": out}, nil
+		return obj{"Variables": out, "truncated": budget.truncated}, nil
 	case "Eval":
 		s := asObj(a["Scope"])
-		id, e := d.frame(num(s["GoroutineID"]), num(s["Frame"]))
+		id, e := d.frame(ctx, num(s["GoroutineID"]), num(s["Frame"]))
 		if e != nil {
 			return nil, e
 		}
-		v, e := d.Request("evaluate", obj{"frameId": id, "expression": a["Expr"], "context": "watch"})
+		v, e := d.request(ctx, "evaluate", obj{"frameId": id, "expression": a["Expr"], "context": "watch"})
 		if e != nil {
 			return nil, e
 		}
 		v["name"] = a["Expr"]
 		cfg := asObj(a["Cfg"])
-		item, e := d.variable(v, num(cfg["MaxVariableRecurse"]), max(1, num(cfg["MaxArrayValues"])))
+		item, e := d.variable(ctx, v, num(cfg["MaxVariableRecurse"]), max(1, num(cfg["MaxArrayValues"])), newValueBudget())
 		return obj{"Variable": item}, e
 	case "Command":
 		names := map[string]string{"continue": "continue", "next": "next", "step": "stepIn", "stepOut": "stepOut", "halt": "pause"}
@@ -275,7 +287,7 @@ func (d *Delve) Call(method string, a obj) (obj, error) {
 		wait := d.stopped
 		gid := num(asObj(d.state["currentGoroutine"])["id"])
 		d.mu.Unlock()
-		_, e := d.Request(name, obj{"threadId": gid})
+		_, e := d.request(ctx, name, obj{"threadId": gid})
 		if e != nil {
 			return nil, e
 		}
@@ -288,7 +300,28 @@ func (d *Delve) Call(method string, a obj) (obj, error) {
 		}
 		return obj{"State": d.State()}, nil
 	case "Detach":
-		return d.Request("disconnect", obj{"terminateDebuggee": truth(a["Kill"])})
+		if !truth(a["Kill"]) {
+			// In Delve --accept-multiclient mode, DAP disconnect(false) only
+			// closes that client and leaves the target traced and paused.
+			// Actual process detach is a backend lifecycle operation, owned
+			// here by the service, and must finish before Delve is shut down.
+			// Pause is safe at an existing stop and also settles an in-flight
+			// continue whose continued event has not reached our state yet.
+			if !truth(d.State()["exited"]) {
+				if _, err := d.request(ctx, "pause", obj{"threadId": num(asObj(d.State()["currentGoroutine"])["id"])}); err != nil {
+					return nil, err
+				}
+			}
+			timeout := 8 * time.Second
+			if deadline, ok := ctx.Deadline(); ok {
+				timeout = min(timeout, time.Until(deadline))
+			}
+			if timeout <= 0 {
+				return nil, ctx.Err()
+			}
+			return delve.Call(d.address, "Detach", obj{"Kill": false}, timeout)
+		}
+		return d.request(ctx, "disconnect", obj{"terminateDebuggee": true})
 	case "CreateBreakpoint":
 		return d.createBreakpoint(a)
 	case "ClearBreakpoint":

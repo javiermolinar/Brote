@@ -1,97 +1,30 @@
-const {test}=require('node:test');
-const assert=require('node:assert/strict');
-const path=require('node:path');
-const fs=require('node:fs');
-const vm=require('node:vm');
-const {createRequire,builtinModules}=require('node:module');
-const root=process.cwd();
-const req=createRequire(path.join(root,'package.json'));
-const {buildSync}=req('esbuild');
-const compile=file=>buildSync({entryPoints:[path.join(root,'packages/vscode/src',file)],bundle:false,platform:'node',format:'cjs',write:false}).outputFiles[0].text;
-const source={native:compile('native.ts'),telemetry:compile('telemetry.ts'),extension:compile('extension.ts')};
-function load(code,loader,extra={}){const module={exports:{}};vm.runInNewContext(code,{module,exports:module.exports,require:loader,Buffer,setTimeout,clearTimeout,setInterval,clearInterval,URL,process,console,performance,TextEncoder,TextDecoder,...extra},{importModuleDynamically:vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER});return module.exports;}
-const telemetry=load(source.telemetry,req);
-const tick=()=>new Promise(resolve=>setImmediate(resolve));
-async function harness({enabled=false,bundle,exportEnv}={}){
- const factories=[],views=[],commands=new Map(),tools=new Map(),traces=[],spans=[],logs=[],requests=[],saved=new Map(),prompts=[];
- const model={id:'test',name:'Test',vendor:'test',sendRequest:async(messages)=>{prompts.push(messages);return {text:(async function*(){yield 'Evidence answer';})()};}};
- const session={id:'s1',name:'Test program',type:'go',customRequest:async(command,args)=>{requests.push({command,args});if(command==='stackTrace')return {stackFrames:[{id:42,name:'main.work',line:3}]};if(command==='scopes')return {scopes:[{name:'Locals',variablesReference:8}]};if(command==='variables')return {variables:[{name:'value',value:'21',variablesReference:0}]};throw Error(command);}};
- class Frame {constructor(s,threadId=7,frameId=42){this.session=s;this.threadId=threadId;this.frameId=frameId;}}
- class ResponseTurn {constructor(result,response=[]){this.result=result;this.response=response;}}
- class RequestTurn {constructor(prompt){this.prompt=prompt;}}
- class MarkdownPart {constructor(value){this.value={value};}}
- const disposable=()=>({dispose(){}});
- let participant;
- const api={DebugStackFrame:Frame,ChatResponseTurn:ResponseTurn,ChatRequestTurn:RequestTurn,ChatResponseMarkdownPart:MarkdownPart,
-  LanguageModelChatMessage:{User:content=>({role:'user',content}),Assistant:content=>({role:'assistant',content})},LanguageModelToolResult:class{constructor(content){this.content=content;}},LanguageModelTextPart:class{constructor(value){this.value=value;}},
-  CancellationTokenSource:class{token={isCancellationRequested:false};cancel(){this.token.isCancellationRequested=true;}dispose(){}},
-  Uri:{file:p=>p},Range:class{},MarkdownString:class{constructor(value){this.value=value;}},CommentMode:{Preview:0},CommentThreadCollapsibleState:{Expanded:1},
-  debug:{activeDebugSession:session,activeStackItem:new Frame(session),registerDebugAdapterTrackerFactory:(_,f)=>{factories.push(f);return disposable();}},
-  workspace:{isTrusted:true,getConfiguration:()=>({get:(_,d)=>d})},
-  comments:{createCommentController:()=>({dispose(){},createCommentThread:()=>{const view={dispose(){this.disposed=true;}};views.push(view);return view;}})},
-  window:{createOutputChannel:()=>({appendLine:m=>logs.push(m),dispose(){}}),activeTextEditor:{document:{uri:{scheme:'file',fsPath:'/tmp/main.go'}},selection:{active:{line:2}}},showErrorMessage:m=>logs.push(m),showQuickPick:async items=>items[0]},
-  commands:{registerCommand:(name,fn)=>{commands.set(name,fn);return disposable();},executeCommand:async(name,args)=>logs.push({name,args})},
-  lm:{selectChatModels:async()=>[model],registerTool:(name,t)=>{tools.set(name,t);return disposable();}},
-  chat:{createChatParticipant:(name,handler)=>{participant=handler;return disposable();}}
- };
- const context={extensionPath:'/extension',subscriptions:[],workspaceState:{get:(key,d)=>saved.get(key)??d,update:async(key,data)=>saved.set(key,JSON.parse(JSON.stringify(data)))}};
- const nativeModule=load(source.native,n=>n==='vscode'?api:req(n));
- const modifiedTelemetry={...telemetry,createSessionTrace:(id,name,type)=>{const t=new telemetry.SessionTrace(id,name,type,()=>({export(batch,done){spans.push(...batch);done({code:0});},shutdown:async()=>{}}));traces.push(t);return t;}};
- const runtimeRequires=[];
- const loader=n=>{runtimeRequires.push(n);if(n==='vscode')return api;if(n==='./native')return nativeModule;if(n==='./telemetry')return modifiedTelemetry;if(bundle && !builtinModules.includes(n)&&!n.startsWith('node:'))throw new Error('Unbundled dependency: '+n);return req(n);};
- const env=exportEnv||(enabled?{OTEL_EXPORTER_OTLP_ENDPOINT:'http://127.0.0.1:4318'}:{});
- const extension=load(bundle?fs.readFileSync(bundle,'utf8'):source.extension,loader,{process:{...process,env}});
- extension.activate(context);
- const trackers=factories.map(f=>f.createDebugAdapterTracker(session)).filter(Boolean);
- const event=m=>trackers.forEach(t=>t.onDidSendMessage?.(m));
- const request=m=>trackers.forEach(t=>t.onWillReceiveMessage?.(m));
- return {api,model,context,session,trackers,factories,event,request,extension,traces,spans,logs,requests,commands,tools,views,saved,prompts,runtimeRequires,get participant(){return participant;}};
+const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+const {buildSync}=require('esbuild');
+const source=buildSync({entryPoints:['packages/vscode/src/extension.ts'],bundle:false,platform:'node',format:'cjs',write:false}).outputFiles[0].text;
+function harness(){
+ let captureProvider,participant;const tools=new Map(),commands=new Map(),calls=[];
+ const native={shutdown:async()=>calls.push('shutdown'),ready:Promise.resolve(),chat:async()=>{calls.push('chat-saved');return 'saved-id';},capture:async()=>({session:'editor',name:'Shared',type:'brote',capturedAt:'now',thread:7,frame:{name:'main.work'},stack:[],scopes:[]}),ask:async()=>calls.push('ask'),discussion:()=>undefined};
+ const api={window:{showErrorMessage(){}},commands:{registerCommand:(id,fn)=>{commands.set(id,fn);return{};}},chat:{createChatParticipant:(_,handler)=>{participant=handler;return{};}},lm:{registerTool:(id,tool)=>{tools.set(id,tool);return{};}},Uri:{file:p=>p},LanguageModelToolResult:class{constructor(content){this.content=content;}},LanguageModelTextPart:class{constructor(value){this.value=value;}},LanguageModelChatMessage:{User:content=>({content})},ChatResponseTurn:class{},ChatRequestTurn:class{},ChatResponseMarkdownPart:class{}};
+ const module={exports:{}};vm.runInNewContext(source,{module,exports:module.exports,require:id=>id==='vscode'?api:id==='./native'?{nativeDiscussions:(_,provider)=>{captureProvider=provider;return native;}}:id==='./service'?{registerService:()=>({state:async(id,thread,frame)=>{calls.push({id,thread,frame});return {id,run:'run',status:'paused',pauseEpoch:3,truncated:true,inspectionError:'deadline',exception:{description:'panic'},goroutine:thread,frame,frames:[{function:{name:'first'},file:'/main.go',line:1},{function:{name:'selected'},file:'/main.go',line:2,Locals:[{name:'value',value:'7'}],localsTruncated:true,argumentsError:'timeout'}]};}})}:id==='./discussionMigration'?{migrateDiscussions:async()=>({discussions:[]})}:id==='./serviceTracepoints'?{serviceTracepoints:()=>{}}:require(id)});
+ module.exports.activate({extensionPath:'/extension',subscriptions:[]});return{native,deactivate:module.exports.deactivate,calls,commands,tools,get captureProvider(){return captureProvider;},get participant(){return participant;}};
 }
+test('extension evidence uses selected service session/goroutine/frame',async()=>{
+ const h=harness();const evidence=await h.captureProvider({id:'editor',name:'Shared',configuration:{sessionId:'service'}},7,1);
+ assert.equal(evidence.frame.name,'selected');assert.equal(evidence.scopes[0].variables[0].value,'7');assert.equal(evidence.run,'run');assert.equal(evidence.pauseEpoch,3);assert.equal(evidence.truncated,true);assert.equal(evidence.inspectionError,'deadline');assert.equal(evidence.scopes[0].truncated,true);assert.equal(evidence.scopes[1].error,'timeout');assert.equal(evidence.exception.description,'panic');assert.equal(h.calls[0].id,'service');
+});
+test('inspection tool and inline command retain presentation hooks',async()=>{
+ const h=harness();const result=await h.tools.get('brote_inspect').invoke();assert.equal(JSON.parse(result.content[0].value).frame.name,'main.work');await h.commands.get('brote.ask')();assert.ok(h.calls.includes('ask'));
+});
+test('extension ships no native tracepoint controller or JS OTLP dependencies',()=>{
+ const manifest=JSON.parse(fs.readFileSync('packages/vscode/package.json','utf8'));
+ assert.ok(!Object.keys(manifest.dependencies||{}).some(k=>k.startsWith('@opentelemetry/')));
+ for(const name of ['telemetry.ts','tracepoints.ts'])assert.equal(fs.existsSync(path.join('packages/vscode/src',name)),false);
+ const native=fs.readFileSync('packages/vscode/src/native.ts','utf8');assert.ok(!native.includes('customRequest('));
+ const panel=fs.readFileSync('packages/vscode/src/serviceTracepoints.ts','utf8');assert.ok(!panel.includes('customRequest('));assert.ok(!panel.includes('addBreakpoints('));
+});
 
-for(const ordering of ['response-first','event-first'])test(`omitted allThreadsStopped keeps other threads pending (${ordering})`,async()=>{
- const h=await harness({enabled:true});
- try{
-  h.request({type:'request',seq:1,command:'next',arguments:{threadId:7}});
-  if(ordering==='response-first')h.event({type:'response',request_seq:1,success:true});
-  h.event({type:'event',event:'stopped',body:{threadId:8,reason:'step'}});
-  if(ordering==='event-first')h.event({type:'response',request_seq:1,success:true});
-  await h.traces[0].flush();assert.equal(h.spans.filter(s=>s.name==='next').length,0);
-  h.event({type:'event',event:'stopped',body:{threadId:7,reason:'step'}});
-  await h.traces[0].flush();assert.equal(h.spans.filter(s=>s.name==='next').length,1);
- }finally{await h.extension.deactivate();}
-});
-test('explicit allThreadsStopped still completes execution on another thread',async()=>{
- const h=await harness({enabled:true});
- try{
-  h.request({type:'request',seq:1,command:'next',arguments:{threadId:7}});
-  h.event({type:'event',event:'stopped',body:{threadId:8,reason:'step',allThreadsStopped:true}});
-  h.event({type:'response',request_seq:1,success:true});await h.traces[0].flush();
-  assert.equal(h.spans.find(s=>s.name==='next').attributes['debugger.outcome'],'stopped');
- }finally{await h.extension.deactivate();}
-});
-test('host stop finalizes roots once and releases slots without terminated or process exit',async()=>{
- const h=await harness({enabled:true});
- try{
-  const factory=h.factories[1];
-  for(let i=0;i<20;i++){
-   const tracker=i===0?h.trackers[1]:factory.createDebugAdapterTracker({...h.session,id:`session-${i}`});assert.ok(tracker);
-   tracker.onWillStopSession();tracker.onWillStopSession();tracker.onExit();
-  }
-  await h.extension.deactivate();
-  assert.equal(h.spans.filter(s=>s.name==='debugger.session').length,20);
-  assert.equal(h.spans.filter(s=>s.attributes['program.span.type']==='run').length,20);
- }finally{await h.extension.deactivate();}
-});
-for(const reason of ['breakpoint','function breakpoint','data breakpoint','instruction breakpoint'])test(`captures ${reason} on the reported thread`,async()=>{
- const h=await harness({enabled:true});
- try{
-  h.event({type:'event',event:'stopped',body:{threadId:99,reason}});await tick();
-  assert.equal(h.requests[0].args.threadId,99);
-  await h.traces[0].flush();assert.equal(h.spans.filter(s=>s.attributes['program.span.type']==='snapshot').length,1);
- }finally{await h.extension.deactivate();}
-});
-for(const reason of ['step','pause','exception','entry'])test(`does not automatically capture ${reason}`,async()=>{
- const h=await harness({enabled:true});
- try{h.event({type:'event',event:'stopped',body:{threadId:7,reason}});await tick();assert.equal(h.requests.length,0);}
- finally{await h.extension.deactivate();}
-});
+test('ordinary Chat answers are delegated to Go-backed discussion flow',async()=>{const h=harness();const result=await h.participant({prompt:'Why?',model:{}},{history:[]},{markdown(){}},{});assert.equal(result.metadata.nativeDiscussion,'saved-id');assert.ok(h.calls.includes('chat-saved'));});
+
+test('Chat saved history shows per-turn evidence limitations and final outcome',async()=>{const h=harness();h.native.discussion=()=>({id:'saved',question:'Why?',contextNote:'Saved evidence · execution run1 · pause 7\nlocalsTruncated: true\ninspectionError: scope unavailable',status:'failed: Answer cancelled.'});let text='';await h.participant({command:'discuss',prompt:'saved'},{history:[]},{markdown:s=>text+=s},{});assert.match(text,/localsTruncated: true/);assert.match(text,/scope unavailable/);assert.match(text,/execution run1/);assert.match(text,/Answer cancelled/);});
+
+test('extension deactivation awaits discussion shutdown',async()=>{const h=harness();await h.deactivate();assert.ok(h.calls.includes('shutdown'));});

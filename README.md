@@ -5,39 +5,57 @@
 <p align="center"><strong>Your LLM debugger companion.</strong></p>
 <p align="center">Pause the program. Ask beside the code. Figure it out together.</p>
 
-Start your normal VS Code debugger with **F5**, pause, and choose **Ask Brote About
-Selection**. Brote captures the stack and variables, then keeps your conversation
-beside the code in native comments. Use **Continue in Chat** for a longer discussion.
-Your existing debug adapter and VS Code controls handle execution—no handover needed.
+Brote is a shared Go debugger for humans and agents. The CLI owns sessions,
+breakpoints, tracepoints, bounded inspection, and OTLP export. VS Code connects to
+the same paused process for stepping, inline questions, and Chat.
 
 ![Brote showing debugger state and a threaded conversation](assets/debugger-conversation.png)
 
-*The earlier browser inspector illustrates the workflow; the VS Code extension uses native comments and Chat.*
+*The earlier browser inspector illustrates the workflow; VS Code uses native comments and Chat.*
 
-## Install
+## Install and start
 
 ```sh
 curl -fsSL https://github.com/javiermolinar/Brote/releases/latest/download/install.sh | sh -s -- --editor vscode
 ```
 
-Choose an available model when you ask your first question. Brote requires VS Code
-1.138 or later. Go through Delve is the tested adapter; capture support for other
-languages depends on their DAP implementation.
+The shared-service changes described here are in development. Build this checkout
+with `make vsix` to try them before a release. The platform VSIX includes the Brote
+CLI; Go and Delve must also be installed. VS Code 1.138 or later is required.
 
-## OpenTelemetry traces
+```sh
+go build -gcflags='all=-N -l' -o /tmp/demo .
+brote start --binary /tmp/demo
+# Use the returned session ID:
+brote tracepoint add SESSION --file /absolute/path/main.go --line 12 \
+  --name work.result --values '{"total":"total"}'
+```
 
-Set `OTEL_EXPORTER_OTLP_ENDPOINT` in VS Code's environment to export debugger
-actions and captured program state to Tempo, Grafana Cloud, or another OTLP/HTTP
-backend. Stable capture names and selected values help compare runs with trace diff.
+Run **Brote: Attach to Session** in VS Code, or choose **Brote: Go program** and
+press F5 to build and launch through the same service. Ordinary breakpoints and tracepoints
+share one service. Add tracepoints from the editor context menu or the CLI; both
+show the same definitions. Successful exclusive tracepoint hits capture and
+continue. Ordinary breakpoints, manual pauses, uncertain hits, and capture failures
+remain paused. Select a source line and choose **Ask Brote About Selection** for a
+conversation using bounded service evidence. A model provider is needed for answers.
 
-[Tracing setup](docs/tracing.md) · [VS Code guide](packages/vscode/README.md)
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` in the launching CLI environment for automatic
+OTLP/HTTP export, including sessions with no editor attached. Capture status and
+export status are separate. [Tracing setup](docs/tracing.md) explains the limits.
 
 ```text
-VS Code debugger ─── DAP ─── language adapter ─── program
-        │
-      Brote ─── native comments + Chat
-        └── optional OTLP exporter ─── Tempo / Grafana Cloud
+Humans / agents ── Brote CLI ──────────────┐
+VS Code ────────── Brote CLI (DAP / JSON) ─┤
+                                         ▼
+                                 Brote session service
+                                   │              │
+                                  Delve          OTLP
+                                   │              │
+                               Go program    Tempo / Grafana
 ```
+
+[VS Code guide](packages/vscode/README.md) · [Shared service contract](docs/shared-service.md)
+· [CLI debugging guide](docs/debugging.md)
 
 ## Development
 

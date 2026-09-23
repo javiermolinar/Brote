@@ -37,13 +37,22 @@ The agent can use `debug_sessions`, `debug_connect`, and `debug_stop` for equiva
 
 Ask the agent to debug a program or test; it records your request with `debug_task`
 (`start` plus the investigation instruction) and uses `debug_execute` to step or
-continue with bounded lease renewal. No separate inspector approval is needed.
+continue under the Go-owned execution lease. No separate inspector approval is needed.
 Inspector requests use `claim`; `complete` and `cancel` end the investigation's
 execution scope. Attachment and debugger questions remain read-only.
-A settled turn or session shutdown releases claimed execution;
+Pi reports challenged active-turn, settled and shutdown facts; Go renews or
+cancels the associated scope. An idle listener cannot renew execution;
 forking does not inherit another conversation's grant. Uncertain delivery is
 marked for review instead of being blindly replayed on reconnect.
 
 Set `BROTE_BIN` to an absolute executable path only when overriding the
 bundled core. Incompatible overrides fail visibly; the adapter does not silently
 fall back to another binary. Supported native targets: macOS/Linux arm64/x64.
+
+`debug_tracepoints` lists, creates, updates and deletes Go-owned definitions;
+updates/deletes require their current owner/ID/revision. `debug_captures` returns
+bounded capture outcomes, export failures and program/debugger trace IDs.
+Configuration and capture reads do not resume the target. New CLI starts use the
+shared service; old services without managed coordination must be updated and
+recovered. The adapter relays canonical Go delivery messages and send receipts;
+it owns no durable delivery cursor, retry reducer or lease timer.

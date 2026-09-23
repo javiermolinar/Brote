@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"agentdebugger/internal/protocol"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -16,26 +17,58 @@ import (
 func (b *broker) action(a obj) (result obj, actionErr error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	defer func() { b.historyAction(a, result, actionErr) }()
+	if b.closing || b.s.Stopped {
+		return nil, fmt.Errorf("session has ended; start a new session")
+	}
+	defer func() {
+		if !strings.HasPrefix(str(a["action"]), "consumer-") {
+			b.historyAction(a, result, actionErr)
+		}
+		if result != nil && b.s.ServiceVersion > 0 {
+			result["id"], result["run"], result["generation"], result["pauseEpoch"], result["serviceVersion"] = b.s.ID, b.s.RunID, b.generation, b.handleEpoch, b.s.ServiceVersion
+		}
+	}()
+	if b.s.ServiceVersion > 0 && str(a["run"]) != b.s.RunID {
+		return nil, &protocol.Error{Code: "identity_mismatch", Message: "run identity changed; refresh session before acting"}
+	}
+	if strings.HasPrefix(str(a["action"]), "consumer-") || (str(a["action"]) == "event-status" && str(a["kind"]) != "") {
+		return b.deliveryAction(a)
+	}
 	// A human pause is always current intent; it must win over an agent step
 	// which advanced the generation while the inspector request was in flight.
 	humanInterrupt := human(str(a["actor"])) && (str(a["action"]) == "pause" || (str(a["action"]) == "task-cancel" && b.s.Task != nil && str(a["task"]) == b.s.Task.ID))
 	if _, ok := a["generation"]; (!ok || num(a["generation"]) != b.generation) && !humanInterrupt {
-		return nil, fmt.Errorf("session changed; refresh state before acting")
+		if human(str(a["actor"])) && movementCommand(str(a["action"])) && b.activeTask() {
+			if err := b.humanIntent(str(a["action"])); err != nil {
+				return nil, err
+			}
+		}
+		return nil, &protocol.Error{Code: "stale_revision", Message: "session changed; refresh state before acting"}
 	}
 	verb := str(a["action"])
 	if str(a["actor"]) == "" {
 		a["actor"] = "agent"
 	}
 	if str(a["actor"]) == "agent" && b.s.Binding != nil && str(a["binding"]) != b.s.Binding.ID && verb != "bind" && verb != "event-status" && verb != "eval" {
-		return nil, fmt.Errorf("binding mismatch; refresh session binding")
+		return nil, &protocol.Error{Code: "binding_mismatch", Message: "binding mismatch; refresh session binding"}
 	}
 	if strings.HasPrefix(verb, "task-") {
 		return b.coordinate(a)
 	}
+	if verb == "detach" && b.s.ServiceVersion > 0 && !b.s.Attached {
+		return nil, &protocol.Error{Code: "unsupported_operation", Message: "detach is supported only for externally attached targets; disconnect the editor to keep this launched session, or terminate explicitly"}
+	}
+	if verb == "restart" && b.s.Attached {
+		return nil, fmt.Errorf("cannot restart an externally attached process")
+	}
+	if (verb == "restart" || verb == "detach") && b.s.ServiceVersion == 0 {
+		return nil, &protocol.Error{Code: "unsupported_operation", Message: "operation requires a shared-service session"}
+	}
 	if executionAction(verb) {
 		if human(str(a["actor"])) {
-			b.cancelTask("human debugger action")
+			if err := b.humanIntent(verb); err != nil {
+				return nil, err
+			}
 		} else if str(a["actor"]) == "agent" {
 			if err := b.taskValid(a); err != nil {
 				return nil, err
@@ -44,6 +77,28 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 			b.s.Task.Expires = time.Now().Add(taskLease).UTC().Format(time.RFC3339Nano)
 		} else {
 			return nil, fmt.Errorf("unknown execution actor")
+		}
+	}
+	if b.s.ServiceVersion > 0 && (verb == "continue" || verb == "next" || verb == "step" || verb == "stepout") {
+		id := str(a["commandId"])
+		if id == "" || len(id) > 128 {
+			return nil, fmt.Errorf("commandId of 1–128 bytes is required")
+		}
+		if b.seenCommands[id] {
+			return nil, fmt.Errorf("command already submitted; inspect state instead of redispatching")
+		}
+		if len(b.seenCommands) >= 4096 {
+			return nil, fmt.Errorf("run command history is full; restart before further execution")
+		}
+		if b.seenCommands == nil {
+			b.seenCommands = map[string]bool{}
+		}
+		b.seenCommands[id] = true
+		b.s.ExecutionCommands = append(b.s.ExecutionCommands, id)
+		if err := b.persist(); err != nil {
+			delete(b.seenCommands, id)
+			b.s.ExecutionCommands = b.s.ExecutionCommands[:len(b.s.ExecutionCommands)-1]
+			return nil, err
 		}
 	}
 	if verb == "editor-error" {
@@ -86,26 +141,37 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 		}
 		return obj{"status": "pending"}, b.queueNotification("reclaim")
 	}
+	if verb == "restart" {
+		return b.restartLocked()
+	}
+	if verb == "pause" {
+		b.generation++
+		return obj{"status": "pause requested"}, b.interruptExecution()
+	}
 	s, e := b.state()
-	if e != nil && verb != "stop" {
+	if e != nil && verb != "stop" && verb != "detach" {
 		return nil, e
 	}
 	status := stateStatus(s, b.moving)
-	if verb == "stop" {
+	if verb == "stop" || verb == "detach" {
 
 		if b.peer != nil {
 			b.peer.close()
 		}
-		_, e = b.rpc("Detach", obj{"Kill": true})
+		_, e = b.rpc("Detach", obj{"Kill": verb == "stop"})
 		if _, exited := delve.ExitState(e); e != nil && !exited {
 			return nil, fmt.Errorf("could not stop Delve: %w", e)
 		}
 		b.s.Stopped = true
-		_ = b.emit("terminated", "")
+		outcome := "terminated"
+		if verb == "detach" {
+			outcome = "detached"
+		}
+		_ = b.emit(outcome, "")
 		cleanupErr := zed.RemoveConfig(b.s)
 		b.generation++
 		go func() { time.Sleep(150 * time.Millisecond); b.once.Do(func() { close(b.done) }) }()
-		return obj{"status": "terminated", "detachError": errorString(e), "cleanupError": errorString(cleanupErr)}, nil
+		return obj{"status": outcome, "detachError": errorString(e), "cleanupError": errorString(cleanupErr)}, nil
 	}
 	if status == "exited" {
 		return nil, fmt.Errorf("program exited; stop this session and start another")
@@ -116,6 +182,9 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 		}
 		expression := str(a["expression"])
 		if verb == "eval" {
+			if b.s.ServiceVersion > 0 && b.backend != nil {
+				return b.evaluateService(a, s)
+			}
 			return b.evaluate(expression, num(a["goroutine"]), num(a["frame"]), num(a["depth"]), num(a["count"]), s)
 		}
 
@@ -170,10 +239,7 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 		return out, nil
 	}
 	takeBrowser := str(a["actor"]) == "browser" && verb == "handover" && str(a["editor"]) == "browser"
-	if verb == "pause" {
-		b.generation++
-		return obj{"status": "pause requested"}, b.interruptExecution()
-	}
+
 	if status != "paused" {
 		return nil, fmt.Errorf("pause the program before %s", verb)
 	}
@@ -182,11 +248,15 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 	}
 	switch verb {
 	case "continue", "next", "step", "stepout":
+		b.setExecutionIntent(verb, str(a["actor"]))
 		if err := b.beginExecution(verb, s); err != nil {
 			return nil, err
 		}
-		return obj{"status": "running", "command": verb}, nil
+		return obj{"status": "running", "dispatch": "accepted", "command": verb, "commandId": str(a["commandId"]), "dispatchId": b.dispatchSequence}, nil
 	case "break":
+		if b.s.ServiceVersion > 0 {
+			return b.legacyDefinitionAction(a)
+		}
 		bp := obj{"name": "agent" + session.NewID(4), "Cond": str(a["condition"]), "HitCond": str(a["hitCondition"])}
 		loc := str(a["function"])
 		if loc == "" {
@@ -210,6 +280,9 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 		}
 		return out, e
 	case "clear":
+		if b.s.ServiceVersion > 0 {
+			return b.legacyDefinitionAction(a)
+		}
 		id := num(a["breakpoint"])
 		if id <= 0 {
 			return nil, fmt.Errorf("positive breakpoint ID required")

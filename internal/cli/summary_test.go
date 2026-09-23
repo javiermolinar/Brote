@@ -21,3 +21,12 @@ func TestSummaryPreservesInspectionAndRouting(t *testing.T) {
 		t.Fatal("mutated input")
 	}
 }
+
+func TestSummaryPreservesServiceIdentity(t *testing.T) {
+	got := summarizeState(obj{"id": "s", "run": "r", "serviceVersion": 1, "pauseEpoch": 9})
+	for key, want := range (obj{"id": "s", "run": "r", "serviceVersion": 1, "pauseEpoch": 9}) {
+		if got[key] != want {
+			t.Fatalf("%s: got %v, want %v", key, got[key], want)
+		}
+	}
+}

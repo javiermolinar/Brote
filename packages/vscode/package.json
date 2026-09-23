@@ -52,6 +52,30 @@
         "command": "brote.nativeChat",
         "title": "Continue in Chat",
         "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "brote.addTracepoint",
+        "title": "Brote: Add Tracepoint",
+        "icon": "$(add)"
+      },
+      {
+        "command": "brote.editTracepoint",
+        "title": "Edit Tracepoint",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "brote.toggleTracepoint",
+        "title": "Enable / Disable Tracepoint",
+        "icon": "$(debug-breakpoint)"
+      },
+      {
+        "command": "brote.removeTracepoint",
+        "title": "Remove Tracepoint",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "brote.attachSession",
+        "title": "Brote: Attach to Session"
       }
     ],
     "chatParticipants": [
@@ -74,6 +98,11 @@
         {
           "command": "brote.ask",
           "when": "isWorkspaceTrusted && resourceScheme == file",
+          "group": "navigation"
+        },
+        {
+          "command": "brote.addTracepoint",
+          "when": "isWorkspaceTrusted && resourceLangId == go && resourceScheme == file",
           "group": "navigation"
         }
       ],
@@ -110,6 +139,23 @@
           "when": "commentController == brote.native && commentThread != brote.nativeDraft",
           "group": "navigation"
         }
+      ],
+      "view/item/context": [
+        {
+          "command": "brote.editTracepoint",
+          "when": "view == brote.tracepoints && viewItem == brote.tracepoint",
+          "group": "inline"
+        },
+        {
+          "command": "brote.toggleTracepoint",
+          "when": "view == brote.tracepoints && viewItem == brote.tracepoint",
+          "group": "inline"
+        },
+        {
+          "command": "brote.removeTracepoint",
+          "when": "view == brote.tracepoints && viewItem == brote.tracepoint",
+          "group": "inline"
+        }
       ]
     },
     "keybindings": [
@@ -125,40 +171,244 @@
         "displayName": "Brote: Inspect paused program",
         "toolReferenceName": "brote",
         "canBeReferencedInPrompt": true,
-        "modelDescription": "Read the selected paused native debug session stack and bounded local variables. Does not execute the program.",
+        "modelDescription": "Read the selected paused Brote service stack and bounded local variables. Does not execute the program.",
         "inputSchema": {
           "type": "object",
           "properties": {},
           "additionalProperties": false
+        }
+      },
+      {
+        "name": "brote_tracepoints",
+        "displayName": "Brote: Manage Go tracepoints",
+        "toolReferenceName": "broteTracepoints",
+        "canBeReferencedInPrompt": true,
+        "modelDescription": "List, add, update or remove shared Go source tracepoints. Use when the user requests configuring runtime captures. Exclusive verified hits capture and automatically continue; ordinary or uncertain stops remain paused. Limits apply per run and values maps aliases to read-only Go expressions. Does not launch or start execution.",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "action"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "list",
+                "add",
+                "update",
+                "remove"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "file": {
+              "type": "string",
+              "description": "Absolute Go source path inside the workspace, required for add."
+            },
+            "line": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "condition": {
+              "type": "string"
+            },
+            "values": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "hitLimit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            },
+            "enabled": {
+              "type": "boolean"
+            }
+          }
         }
       }
     ],
     "configuration": {
       "title": "Brote",
       "properties": {
-        "brote.capturePoints": {
-          "type": "object",
-          "default": {},
-          "description": "Map exact DAP function names to stable capture names and named local selections for trace comparison. Does not add breakpoints or evaluate expressions.",
-          "additionalProperties": {
-            "type": "object",
+        "brote.runtimePath": {
+          "type": "string",
+          "description": "Absolute path to a Brote CLI. Defaults to the packaged runtime."
+        }
+      }
+    },
+    "views": {
+      "debug": [
+        {
+          "id": "brote.tracepoints",
+          "name": "Brote Tracepoints"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "brote.tracepoints",
+        "contents": "Capture Go program state through the shared Brote service.\\n[Attach to Session](command:brote.attachSession)\\n[Add Tracepoint](command:brote.addTracepoint)"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "brote",
+        "label": "Brote Go Debugger",
+        "languages": [
+          "go"
+        ],
+        "configurationAttributes": {
+          "attach": {
+            "required": [],
             "properties": {
-              "name": {
+              "sessionId": {
                 "type": "string",
-                "maxLength": 128
+                "description": "Existing Brote session ID. Omit to choose a session."
+              }
+            }
+          },
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "mode": {
+                "enum": [
+                  "debug",
+                  "test",
+                  "exec"
+                ],
+                "default": "debug"
               },
-              "values": {
+              "program": {
+                "type": "string",
+                "description": "Go package/source path, or executable for exec mode."
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "env": {
                 "type": "object",
                 "additionalProperties": {
                   "type": "string"
                 }
+              },
+              "envFile": {
+                "type": "string"
+              },
+              "buildFlags": {
+                "type": [
+                  "string",
+                  "array"
+                ]
+              },
+              "dlvToolPath": {
+                "type": "string"
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "default": false
+              },
+              "console": {
+                "enum": [
+                  "internalConsole"
+                ]
+              },
+              "substitutePath": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "from",
+                    "to"
+                  ],
+                  "properties": {
+                    "from": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "tracepoints": {
+                "type": "array",
+                "maxItems": 64,
+                "description": "Source tracepoints installed before initial execution.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "file",
+                    "line"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "file": {
+                      "type": "string"
+                    },
+                    "line": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "values": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "condition": {
+                      "type": "string"
+                    },
+                    "hitCondition": {
+                      "type": "string"
+                    },
+                    "captureLimit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10000
+                    }
+                  }
+                }
               }
-            },
-            "additionalProperties": false
+            }
           }
-        }
+        },
+        "initialConfigurations": [
+          {
+            "type": "brote",
+            "request": "launch",
+            "name": "Brote: Go program",
+            "mode": "debug",
+            "program": "${workspaceFolder}"
+          },
+          {
+            "type": "brote",
+            "request": "attach",
+            "name": "Attach to Brote"
+          }
+        ]
       }
-    }
+    ]
   },
   "license": "MIT",
   "extensionKind": [
@@ -170,11 +420,5 @@
     "Go",
     "Delve"
   ],
-  "icon": "assets/brote-plant.png",
-  "dependencies": {
-    "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/exporter-trace-otlp-proto": "^0.222.0",
-    "@opentelemetry/resources": "^2.11.0",
-    "@opentelemetry/sdk-trace-base": "^2.11.0"
-  }
+  "icon": "assets/brote-plant.png"
 }

@@ -413,6 +413,8 @@ func SavedRun(id string) (map[string]any, error) {
 		if d.Stopped {
 			meta.Status = "ended"
 		}
+	} else if discussion, e := ReadDiscussion(id); e == nil && len(discussion.Threads) > 0 {
+		meta = HistoryMetadata{ID: id, Project: discussion.Project, Binary: discussion.Binary, Status: "ended"}
 	} else {
 		return nil, err
 	}

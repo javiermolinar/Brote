@@ -1,7 +1,9 @@
 package broker
 
 import (
+	"agentdebugger/internal/delivery"
 	"agentdebugger/internal/delve"
+	"agentdebugger/internal/protocol"
 	"agentdebugger/internal/session"
 	"fmt"
 	"strings"
@@ -12,7 +14,7 @@ const taskLease = 60 * time.Second
 
 func executionAction(verb string) bool {
 	switch verb {
-	case "continue", "next", "step", "stepout", "pause", "stop":
+	case "continue", "next", "step", "stepout", "pause", "stop", "restart", "detach":
 		return true
 	}
 	return false
@@ -30,13 +32,18 @@ func (b *broker) taskMatches(a obj) bool {
 func (b *broker) taskValid(a obj) error {
 	t := b.s.Task
 	if !b.activeTask() || !b.taskMatches(a) {
-		return fmt.Errorf("agent execution requires a current debugging task; record the user's request with task-start")
+		return &protocol.Error{Code: "scope_required", Message: "agent execution requires a current debugging task; record the user's request with task-start"}
+	}
+	if !b.hostTaskValid(t, time.Now()) {
+		b.cancelTask("host liveness lost")
+		_ = b.interruptExecution()
+		return &protocol.Error{Code: "scope_expired", Message: "host turn is no longer active"}
 	}
 	deadline, err := time.Parse(time.RFC3339Nano, t.Expires)
 	if err != nil || !time.Now().Before(deadline) {
 		b.cancelTask("lease expired")
 		_ = b.interruptExecution()
-		return fmt.Errorf("execution task expired")
+		return &protocol.Error{Code: "scope_expired", Message: "execution task expired"}
 	}
 	return nil
 }
@@ -57,7 +64,7 @@ func (b *broker) coordinate(a obj) (obj, error) {
 		fromAgent := verb == "task-start"
 		if fromAgent {
 			if actor != "agent" || b.s.Binding == nil || str(a["binding"]) != b.s.Binding.ID || uint64(num(a["revision"])) != b.s.Binding.Revision {
-				return nil, fmt.Errorf("task-start requires the current agent binding and revision")
+				return nil, &protocol.Error{Code: "binding_mismatch", Message: "task-start requires the current agent binding and revision"}
 			}
 		} else if !human(actor) {
 			return nil, fmt.Errorf("use task-start to record the user's debugging request")
@@ -79,7 +86,7 @@ func (b *broker) coordinate(a obj) (obj, error) {
 		if b.s.Binding == nil {
 			return nil, fmt.Errorf("bind an agent first")
 		}
-		b.s.Task = &session.ExecutionTask{ID: session.NewID(16), Instruction: instruction, Status: "authorized", Delivery: "pending", Binding: copyBinding(b.s.Binding), Expires: time.Now().Add(taskLease).UTC().Format(time.RFC3339Nano)}
+		b.s.Task = &session.ExecutionTask{ID: session.NewID(16), Instruction: instruction, Status: "authorized", Delivery: "pending", Run: b.s.RunID, Binding: copyBinding(b.s.Binding), Expires: time.Now().Add(taskLease).UTC().Format(time.RFC3339Nano)}
 		kind := "task.authorized"
 		if fromAgent {
 			// The request is already in this conversation. Do not deliver it back
@@ -98,19 +105,22 @@ func (b *broker) coordinate(a obj) (obj, error) {
 			return nil, err
 		}
 		if uint64(num(a["revision"])) != b.s.Binding.Revision {
-			return nil, fmt.Errorf("task binding revision changed")
+			return nil, &protocol.Error{Code: "stale_revision", Message: "task binding revision changed"}
 		}
 		t := b.s.Task
 		status := str(a["status"])
-		if t.Delivery == "acknowledged" && (status == "queued" || status == "unknown" || status == "failed") {
+		if t.Attempt != nil && str(a["attempt"]) != t.Attempt.ID {
+			return nil, fmt.Errorf("delivery attempt required")
+		}
+		next, err := delivery.Transition(t.Delivery, status)
+		if err != nil {
+			return nil, err
+		}
+		if next != status {
 			return obj{"task": b.taskView()}, nil
 		}
-		allowed := (status == "sending" && t.Delivery == "pending") || ((status == "queued" || status == "failed" || status == "unknown") && t.Delivery == "sending")
-		if !allowed {
-			return nil, fmt.Errorf("invalid task delivery transition %s -> %s", t.Delivery, status)
-		}
 		previous, previousError := t.Delivery, t.DeliveryError
-		t.Delivery, t.DeliveryError = status, str(a["error"])
+		t.Delivery, t.DeliveryError = next, str(a["error"])
 		if len(t.DeliveryError) > 1024 {
 			t.DeliveryError = t.DeliveryError[:1024]
 		}
@@ -120,7 +130,7 @@ func (b *broker) coordinate(a obj) (obj, error) {
 		}
 	case "task-cancel":
 		if id := str(a["task"]); id != "" && (b.s.Task == nil || b.s.Task.ID != id) {
-			return nil, fmt.Errorf("execution task changed")
+			return nil, &protocol.Error{Code: "scope_changed", Message: "execution task changed"}
 		}
 		if !human(str(a["actor"])) {
 			if err := b.taskValid(a); err != nil {
@@ -155,10 +165,15 @@ func (b *broker) coordinate(a obj) (obj, error) {
 				return nil, err
 			}
 		} else {
+			previous := *b.s.Task
+			if err := b.associateHost(a); err != nil {
+				return nil, err
+			}
 			b.s.Task.Delivery = "acknowledged"
 			b.s.Task.DeliveryError = ""
 			b.s.Task.Expires = time.Now().Add(taskLease).UTC().Format(time.RFC3339Nano)
 			if err := b.persist(); err != nil {
+				b.s.Task = &previous
 				return nil, err
 			}
 		}
@@ -175,19 +190,17 @@ func (b *broker) beginExecution(verb string, state obj) error {
 	if b.moving || b.interrupting {
 		return fmt.Errorf("execution already in progress")
 	}
+	if b.backend != nil {
+		command := map[string]string{"continue": "continue", "next": "next", "step": "stepIn", "stepout": "stepOut"}[verb]
+		// The shared dispatcher owns the state transition for every DAP caller.
+		return b.dispatchDAP(command, obj{"threadId": asObj(state["currentGoroutine"])["id"]}, nil)
+	}
+
 	b.moving = true
 	b.handleEpoch++
 	b.generation++
 	b.lastError = ""
-	if b.backend != nil {
-		command := map[string]string{"continue": "continue", "next": "next", "step": "stepIn", "stepout": "stepOut"}[verb]
-		_, err := b.backend.Request(command, obj{"threadId": asObj(state["currentGoroutine"])["id"]})
-		if err != nil {
-			b.moving = false
-			b.lastError = err.Error()
-		}
-		return err
-	}
+
 	name := verb
 	if name == "stepout" {
 		name = "stepOut"
@@ -216,8 +229,13 @@ func (b *broker) beginExecution(verb string, state obj) error {
 	return nil
 }
 func (b *broker) interruptExecution() error {
+	b.executionIntent++
+	b.executionMode = ""
 	if b.interrupting {
 		return nil
+	}
+	if b.backend != nil {
+		return b.interruptDAP()
 	}
 	state, err := b.state()
 	if err != nil {
@@ -280,21 +298,43 @@ func (b *broker) maintainTasks() {
 		case <-tick.C:
 		}
 		b.mu.Lock()
-		if b.activeTask() {
-			deadline, _ := time.Parse(time.RFC3339Nano, b.s.Task.Expires)
-			disconnected := b.agentStreams == 0 && !b.agentDisconnected.IsZero() && time.Since(b.agentDisconnected) > 5*time.Second
-			if !time.Now().Before(deadline) || disconnected {
-				reason := "lease expired"
-				if disconnected {
-					reason = "agent disconnected"
-				}
-				b.cancelTask(reason)
-				if err := b.interruptExecution(); err != nil {
+		b.maintainTask(time.Now())
+		b.mu.Unlock()
+	}
+}
+
+// maintainTask runs under b.mu; the timestamp makes expiry boundaries testable.
+func (b *broker) maintainTask(now time.Time) {
+	if b.activeTask() {
+		deadline, _ := time.Parse(time.RFC3339Nano, b.s.Task.Expires)
+		task := b.s.Task
+		hostLost := !b.hostTaskValid(task, now)
+		disconnected := task.HostConsumer == "" && b.agentStreams == 0 && !b.agentDisconnected.IsZero() && now.Sub(b.agentDisconnected) > 5*time.Second
+		if task.HostConsumer != "" && !hostLost && task.Delivery == "acknowledged" && now.Before(deadline) {
+			// A challenged active host can renew; listener presence cannot.
+			next := now.Add(taskLease)
+			if next.Sub(deadline) > 15*time.Second {
+				old := task.Expires
+				task.Expires = next.UTC().Format(time.RFC3339Nano)
+				if err := b.persist(); err != nil {
+					task.Expires = old
 					b.lastError = err.Error()
 				}
 			}
 		}
-		b.mu.Unlock()
+		if !now.Before(deadline) || disconnected || hostLost {
+			reason := "lease expired"
+			if hostLost {
+				reason = "host liveness lost"
+			}
+			if disconnected {
+				reason = "agent disconnected"
+			}
+			b.cancelTask(reason)
+			if err := b.interruptExecution(); err != nil {
+				b.lastError = err.Error()
+			}
+		}
 	}
 }
 

@@ -153,7 +153,7 @@ class HostInstallTest(unittest.TestCase):
         self.assertEqual(metadata['displayName'], 'Brote')
         self.assertTrue((installed[0].parent / metadata['main']).is_file())
         self.assertFalse((installed[0].parent / 'bin').exists())
-        self.assertFalse(metadata.get('contributes', {}).get('debuggers'))
+        self.assertEqual([item['type'] for item in metadata.get('contributes', {}).get('debuggers', [])], ['brote'])
         self.check_web_ui()
         self.uninstall('vscode')
         self.assertNotIn(identity, self.command('code', '--list-extensions'))

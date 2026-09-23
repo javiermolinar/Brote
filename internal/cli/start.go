@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"syscall"
 	"time"
@@ -19,7 +21,13 @@ func start(args []string) (obj, error) {
 }
 
 func startWithLaunch(args []string, settings *session.LaunchSettings) (result obj, err error) {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 	f := flag.NewFlagSet("start", flag.ContinueOnError)
+	editorStart := f.Bool("editor-start", false, "require editor configuration within 30 seconds")
+	attachPID := f.Int("pid", 0, "attach to a local process using the supplied binary for source identity")
+	service := f.Bool("service", settings == nil || settings.Service, "use the authenticated shared-service session contract (default for new launches)")
+	legacy := f.Bool("legacy", false, "explicitly use the legacy session contract for direct Zed/RPC compatibility")
 	noUI := f.Bool("no-ui", false, "return the broker URL without starting the persistent workspace")
 	investigation := f.String("investigation", "", "existing investigation ID")
 	title := f.String("title", "", "new investigation title")
@@ -37,10 +45,40 @@ func startWithLaunch(args []string, settings *session.LaunchSettings) (result ob
 	if e := f.Parse(args); e != nil {
 		return nil, e
 	}
+	if *legacy {
+		explicitService := false
+		f.Visit(func(flag *flag.Flag) {
+			if flag.Name == "service" {
+				explicitService = true
+			}
+		})
+		if explicitService && *service {
+			return nil, fmt.Errorf("--legacy conflicts with --service=true")
+		}
+		*service = false
+	}
+	if *attachPID > 0 && !*service {
+		return nil, fmt.Errorf("process attach requires shared service mode; omit --legacy/--service=false")
+	}
 	if *backend != "dap" && *backend != "rpc" {
 		return nil, fmt.Errorf("backend must be dap or rpc")
 	}
 	fromConfig := *config != "" || *launchFile != ""
+	if *editorStart && (!*service || *attachPID > 0) {
+		return nil, fmt.Errorf("editor-start requires a new shared-service launch; process attach is unsupported")
+	}
+	if *attachPID < 0 {
+		return nil, fmt.Errorf("--pid must be positive")
+	}
+	if *attachPID > 0 {
+		if fromConfig || *build || len(f.Args()) > 0 {
+			return nil, fmt.Errorf("process attach cannot build or pass program arguments")
+		}
+		if !session.ProcessExists(*attachPID) {
+			return nil, fmt.Errorf("attach target does not exist")
+		}
+		*service = true
+	}
 	if *bin == "" && !fromConfig {
 		return nil, fmt.Errorf("--binary or --config is required; use 'brote configs' to list VS Code profiles")
 	}
@@ -95,6 +133,12 @@ func startWithLaunch(args []string, settings *session.LaunchSettings) (result ob
 		}
 		*bin = launch.Program
 	}
+	if *backend != "dap" && settings != nil && len(settings.SubstitutePath) > 0 {
+		return nil, fmt.Errorf("substitutePath requires the DAP backend")
+	}
+	if *service && *backend != "dap" {
+		return nil, fmt.Errorf("shared service sessions require the DAP backend; use --legacy --backend rpc for the old contract")
+	}
 	id := session.NewID(5)
 	dir, e := filepath.Abs(filepath.Join(session.Root(), id))
 	if e != nil {
@@ -127,7 +171,7 @@ func startWithLaunch(args []string, settings *session.LaunchSettings) (result ob
 		delve, e = exec.LookPath(filepath.Join(home, "go", "bin", "dlv"))
 	}
 	if e != nil {
-		return nil, fmt.Errorf("Delve not found: install dlv for your Go version or pass --dlv /absolute/path/dlv; run agentdebugger doctor for diagnostics: %w", e)
+		return nil, fmt.Errorf("Delve not found: install dlv for your Go version or pass --dlv /absolute/path/dlv; run brote doctor for diagnostics: %w", e)
 	}
 	if *investigation != "" {
 		if _, err := session.ReadInvestigation(*investigation); err != nil {
@@ -161,7 +205,7 @@ func startWithLaunch(args []string, settings *session.LaunchSettings) (result ob
 		}
 	}
 	if launch != nil && launch.Mode != "exec" {
-		if e = launch.Build(abs); e != nil {
+		if e = launch.BuildContext(ctx, abs); e != nil {
 			return nil, e
 		}
 	}
@@ -175,6 +219,21 @@ func startWithLaunch(args []string, settings *session.LaunchSettings) (result ob
 		return nil, e
 	}
 	childArgs := []string{"serve", "--backend", *backend, "--id", id, "--binary", abs, "--project", root, "--dlv", delve, "--binding", *binding, "--name", *name, "--"}
+	if *attachPID > 0 {
+		childArgs = append(childArgs[:len(childArgs)-1], "--pid", fmt.Sprint(*attachPID), "--")
+	}
+	if *service {
+		childArgs = append(childArgs[:len(childArgs)-1], "--service", "--")
+	}
+	if *editorStart {
+		if !*service {
+			return nil, fmt.Errorf("editor-start requires service mode")
+		}
+		childArgs = append(childArgs[:len(childArgs)-1], "--editor-start", "--")
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	childArgs = append(childArgs, programArgs...)
 	cmd := exec.Command(exe, childArgs...)
 	cmd.Stdout = log
@@ -188,18 +247,25 @@ func startWithLaunch(args []string, settings *session.LaunchSettings) (result ob
 	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
 		s, e := session.Read(id)
 		if e == nil {
+			if ctx.Err() != nil {
+				_, _ = session.End(context.Background(), id)
+				return nil, ctx.Err()
+			}
 			if *thread != "" {
 				if err := configureBridge(s, *thread); err != nil {
-					return obj{"id": id, "panel": s.HTTP, "notificationError": err.Error()}, nil
+					return obj{"id": id, "run": s.RunID, "serviceVersion": s.ServiceVersion, "panel": s.HTTP, "binary": abs, "project": root, "status": "paused at launch", "notificationError": err.Error()}, nil
 				}
 			}
-			panel := s.HTTP + "/#" + s.Token
-			if !*noUI {
+			panel := s.HTTP
+			if !*service {
+				panel += "/#" + s.Token
+			}
+			if !*noUI && !*service {
 				if ui, err := ensureUI(); err == nil {
 					panel = ui + "/?session=" + id
 				}
 			}
-			return obj{"id": id, "panel": panel, "binary": abs, "project": root, "status": "paused at launch", "log": filepath.Join(dir, "delve.log")}, nil
+			return obj{"id": id, "run": s.RunID, "serviceVersion": s.ServiceVersion, "panel": panel, "binary": abs, "project": root, "status": "paused at launch", "log": filepath.Join(dir, "delve.log")}, nil
 		}
 		if data, e := os.ReadFile(filepath.Join(dir, "error")); e == nil {
 			return nil, fmt.Errorf("start failed: %s", data)

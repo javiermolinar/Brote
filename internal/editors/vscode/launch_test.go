@@ -89,7 +89,7 @@ func TestSelectionAndUnsupportedSemantics(t *testing.T) {
 		{"attach", `,"request":"attach"`, "request 'launch'"},
 		{"remote", `,"mode":"remote"`, "mode"},
 		{"terminal", `,"console":"integratedTerminal"`, "console"},
-		{"mapping", `,"substitutePath":[]`, "substitutePath"},
+		{"mapping", `,"substitutePath":[{"from":"relative","to":"server"}]`, "substitutePath"},
 		{"bad args", `,"args":[42]`, "array of strings"},
 		{"bad env", `,"env":{"VALUE":42}`, "env must map"},
 		{"NUL", `,"env":{"VALUE":"\u0000"}`, "NUL"},
@@ -192,5 +192,17 @@ func TestBuildDebugAndTestProfiles(t *testing.T) {
 				t.Fatalf("%s, %v", data, err)
 			}
 		})
+	}
+}
+
+func TestSourceMapping(t *testing.T) {
+	root := fixture(t, `{"configurations":[{"name":"Go","type":"go","request":"launch","program":".","substitutePath":[{"from":"${workspaceFolder}","to":"example/module"}]}]}`)
+	launch, err := Load(root, "", "Go", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapping := launch.Settings.SubstitutePath
+	if len(mapping) != 1 || mapping[0].From != root || mapping[0].To != "example/module" {
+		t.Fatalf("bad mappings: %+v", mapping)
 	}
 }

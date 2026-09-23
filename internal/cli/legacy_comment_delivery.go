@@ -1,14 +1,15 @@
 package cli
 
 import (
-	"context"
 	"agentdebugger/internal/agents/codex"
 	"agentdebugger/internal/session"
+	"context"
 	"fmt"
 	"strconv"
 	"time"
 )
 
+// Legacy-only queue compatibility; shared questions use managedCodex.
 func deliverQuestions(s session.Descriptor, cfg bridgeConfig) error {
 	d, err := session.ReadDiscussion(s.ID)
 	if err != nil {

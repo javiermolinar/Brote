@@ -64,11 +64,17 @@ class ReleaseTest(unittest.TestCase):
                 with zipfile.ZipFile(release / f'brote-{version}-{folder}.vsix') as archive:
                     self.assertFalse(any(name.startswith('extension/bin/') for name in archive.namelist()))
                     self.assertIn('extension/dist/extension.js', archive.namelist())
+                    self.assertIn('extension/assets/tracepoint.svg', archive.namelist())
+                    runtime = archive.getinfo('extension/runtime/brote')
+                    self.assertTrue(runtime.external_attr >> 16 & 0o111)
+                    self.assertGreater(runtime.file_size, 1000000)
                     self.assertNotIn('extension/dist/protocol.cjs', archive.namelist())
                     self.assertIn('extension/assets/brote-plant.png', archive.namelist())
                     self.assertIn(f'TargetPlatform="{folder}"', archive.read('extension.vsixmanifest').decode())
                     ext_manifest = json.loads(archive.read('extension/package.json'))
                     self.assertEqual(ext_manifest['publisher'] + '.' + ext_manifest['name'], manifest['vscode'])
+                    self.assertIn('brote', [d['type'] for d in ext_manifest['contributes']['debuggers']])
+                    self.assertFalse(any(k.startswith('@opentelemetry/') for k in ext_manifest.get('dependencies', {})))
                     if folder == target:
                         archive.extractall(root / 'vscode')
             with tarfile.open(release / f'brote-v{version}-{system}-{arch}.tar.gz') as archive:
