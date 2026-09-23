@@ -201,3 +201,34 @@ test('saved breakpoint gutters cannot prompt or mutate',async t=>{
  w.fetch=async(url,options)=>{calls.push({url:String(url),options});return {ok:true,json:async()=>String(url).includes('saved-run')?{id:'1111111111',historical:true,status:'paused',state:{},frame:0,source:{file:'main.go',start:1,line:1,lines:['func main() {}']},breakpoints:[{id:1,file:'main.go',line:1,Cond:'x == 1'}],discussion:{threads:[]}}:{investigations:[]}}};
  w.eval(js.outputFiles[0].text);await new Promise(r=>setTimeout(r,0));const gutter=d.querySelector('.breakpointGutter');assert.equal(gutter.disabled,true);assert.match(gutter.ariaLabel,/Saved breakpoint/);gutter.dispatchEvent(new w.MouseEvent('contextmenu',{bubbles:true}));assert.equal(prompts,0);assert.equal(calls.some(c=>c.options.method==='POST'),false);
 });
+
+test('paused excerpts expand to the full file and polling preserves browsing position', async t => {
+ const html=await readFile('packages/web/public/index.html','utf8');
+ const js=await build({entryPoints:['packages/web/src/app.ts'],bundle:true,write:false,format:'iife',logLevel:'silent'});
+ const dom=new JSDOM(html,{url:'http://127.0.0.1:1234',runScripts:'outside-only'});
+ t.after(()=>dom.window.close());
+ const w=dom.window,d=w.document;
+ let tick,resolveSource,loads=0;
+ const lines=Array.from({length:200},(_,i)=>'// line '+(i+1));
+ let state={id:'test',generation:1,status:'paused',state:{Pid:1},project:'/demo',binary:'/demo/bin',frame:0,goroutine:1,frames:[],source:{file:'/demo/main.go',start:90,line:100,lines:lines.slice(89,110)}};
+ w.setInterval=fn=>{tick=fn;return 1;};
+ w.HTMLElement.prototype.getBoundingClientRect=function(){return {height:this.classList.contains('sourceNumber')?22:0,width:0};};
+ w.fetch=async url=>{
+  const path=new URL(url,w.location.href).pathname;
+  if(path==='/api/sources'){loads++;return new Promise(resolve=>{resolveSource=()=>resolve({ok:true,json:async()=>({file:'/demo/main.go',start:1,line:0,lines})});});}
+  return {ok:true,json:async()=>path==='/api/workspace'?{investigations:[]}:path==='/api/comments'?{threads:[]}:structuredClone(state)};
+ };
+ const flush=()=>new Promise(r=>setTimeout(r,0));
+ w.eval(js.outputFiles[0].text);await flush();
+ const pane=d.querySelector('#source');pane.scrollTop=44;pane.scrollLeft=30;
+ resolveSource();await flush();
+ assert.equal(d.querySelectorAll('.sourceCodeLine').length,200);
+ assert.equal(pane.scrollTop,44+89*22,'loading earlier lines preserves the visible source position');
+ assert.equal(pane.scrollLeft,30);
+ pane.scrollTop=3000;
+ state={...state,breakpoints:[{id:1,file:'/demo/main.go',line:120}]};tick();await flush();
+ assert.equal(pane.scrollTop,3000);
+ assert.equal(loads,1);
+ d.querySelector('#followSource').click();
+ assert.equal(d.querySelectorAll('.sourceCodeLine').length,200,'Current frame retains the complete file');
+});

@@ -98,3 +98,28 @@ footer{height:34px;flex-shrink:0;display:flex;align-items:center;gap:16px;paddin
 }
 
 @media(max-width:750px){.brandTagline{display:none}.brandMark{width:32px;height:32px}.brandCopy h1{font-size:16px}}
+
+/* Constrain content to the viewport and leave each pane independently scrollable. */
+@media(min-width:751px){
+ main{min-height:0;overflow:hidden}
+ .workspace{grid-template-rows:minmax(0,1fr);grid-template-columns:clamp(140px,var(--navigation-width,185px),30%) minmax(260px,1fr) clamp(220px,var(--discussion-width,320px),40%)}
+ main[data-navigation="closed"] .workspace{grid-template-columns:clamp(140px,var(--navigation-width,185px),30%) minmax(260px,1fr) clamp(220px,var(--discussion-width,320px),40%)}
+ .navigation,.inspectorPane{min-height:0}
+ .editorPane{position:relative}
+ .editorPane>.controls{flex-shrink:0}
+ .source{min-height:0;height:0;flex:1 1 0;overscroll-behavior:contain}
+ .inspectionDock{height:var(--inspection-height,25%);min-height:0;max-height:calc(100% - 240px);overflow:auto}
+ .panelResize{position:absolute;z-index:5;touch-action:none;user-select:none}
+ .navigationResize,.discussionResize{top:0;bottom:0;width:8px;cursor:col-resize}
+ .navigationResize{left:-4px}.discussionResize{right:-4px}
+ .inspectionResize{left:0;right:0;height:8px;bottom:min(var(--inspection-height,25%),calc(100% - 240px));transform:translateY(50%);cursor:row-resize}
+ .editorPane:has(.inspectionDock[hidden]) .inspectionResize{display:none}
+ .panelResize:hover,.panelResize:focus-visible{background:var(--accent);opacity:.6;outline:none}
+}
+@media(min-width:751px) and (max-width:1100px){
+ main[data-navigation="closed"] .workspace{grid-template-columns:minmax(260px,1fr) clamp(220px,var(--discussion-width,280px),45%)}
+ main[data-navigation="closed"] .navigationResize{display:none}
+}
+@media(max-width:750px){.panelResize{display:none}}
+.resizingColumns,.resizingColumns *{cursor:col-resize!important;user-select:none!important}
+.resizingRows,.resizingRows *{cursor:row-resize!important;user-select:none!important}

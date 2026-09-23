@@ -1,3 +1,4 @@
+import {initializePanelResizing} from './layout';
 import {createWorkspace} from './workspace';
 import { createComments } from './comments';
 import hljs from 'highlight.js/lib/core';
@@ -21,6 +22,8 @@ function node<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, cls?
   return element;
 }
 
+initializePanelResizing();
+
 const token = location.hash.slice(1); // Authenticated service launch URLs carry a private fragment.
 const previewSession = new URLSearchParams(location.search).get('session');
 let historicalID = new URLSearchParams(location.search).get('history');
@@ -39,6 +42,8 @@ let sourceKey = '';
 let displayedSource: Source | undefined;
 let lastPid: number | undefined;
 const openSources = new Map<string, Source>();
+const fullSources = new Set<string>();
+const loadingSources = new Set<string>();
 const sourceScroll = new Map<string, {top:number;left:number}>();
 let activeFile = '';
 let lastLocation = '';
@@ -60,7 +65,7 @@ const api = createClient({baseURL: location.origin, token, session: previewSessi
 const request = <T>(path: string, body?: ActionRequest | Record<string, unknown>) => api.request<T>(path, body);
 
 const comments = createComments(<T>(route:string,body?:Record<string,unknown>)=>request<T>(route==='comments'&&historicalID?'comments?history='+encodeURIComponent(historicalID):route,body), (file,line)=>openSourceFile(file,line,true), token);
-const workspace = createWorkspace({request,runs:names=>comments.runs(names),history:items=>comments.history([...items,...ownHistory]),ended:()=>{if(snapshot){historicalID=snapshot.id;historicalLoaded=false;openSources.clear();activeFile='';displayedSource=undefined;sourceKey='';lastLocation='';renderKey='';const url=new URL(location.href);url.searchParams.delete('session');url.searchParams.set('history',historicalID);history.replaceState(null,'',url.pathname+url.search);void refresh();}}});
+const workspace = createWorkspace({request,runs:names=>comments.runs(names),history:items=>comments.history([...items,...ownHistory]),ended:()=>{if(snapshot){historicalID=snapshot.id;historicalLoaded=false;openSources.clear();fullSources.clear();activeFile='';displayedSource=undefined;sourceKey='';lastLocation='';renderKey='';const url=new URL(location.href);url.searchParams.delete('session');url.searchParams.set('history',historicalID);history.replaceState(null,'',url.pathname+url.search);void refresh();}}});
 $('newQuestion').onclick=()=>{const source=displayedSource||snapshot?.source;if(source)comments.start(source.file,navigationTarget?.line||source.line||source.start,undefined,true);};
 $('copyPath').onclick=()=>{if(displayedSource)void navigator.clipboard.writeText(displayedSource.file).then(()=>message('notice','Absolute source path copied.')).catch(()=>message('notice',displayedSource!.file));};
 
@@ -143,6 +148,7 @@ function renderSource(source: Source): void {
   renderedLocation = location;
   const previous = displayedSource;
   const reusable = previous && previous.file === source.file
+    && source.lines.length <= previous.lines.length
     && source.line >= previous.start + 3 && source.line < previous.start + previous.lines.length - 3
     && source.lines.every((line, i) => {
       const oldIndex = source.start + i - previous.start;
@@ -507,16 +513,43 @@ if(landing){workspace.empty();$('status').textContent='No run selected';$('debug
 function rememberScroll(): void {
   if (activeFile) sourceScroll.set(activeFile,{top:$('source').scrollTop,left:$('source').scrollLeft});
 }
+// Pause snapshots contain a window of lines; expand it without navigating away
+// from the user's selected tab or accepting a response from a previous run.
+async function loadFullSource(file: string): Promise<void> {
+  if (historicalID || snapshot?.historical || fullSources.has(file) || loadingSources.has(file)) return;
+  const run = snapshot?.id;
+  loadingSources.add(file);
+  try {
+    const source = await request<Source>('sources?file=' + encodeURIComponent(file));
+    if (snapshot?.id !== run || historicalID || snapshot?.historical || !openSources.has(file)) return;
+    if (source.file !== file || source.start !== 1 || !Array.isArray(source.lines)) return;
+    fullSources.add(file);
+    openSources.set(file, source);
+    if (activeFile === file) {
+      const pane = $('source');
+      const old = displayedSource;
+      const top = pane.scrollTop, left = pane.scrollLeft;
+      const rowHeight = pane.querySelector<HTMLElement>('.sourceNumber')?.getBoundingClientRect().height || 0;
+      showActiveSource();
+      pane.scrollTop = top + ((old?.start || 1) - 1) * rowHeight;
+      pane.scrollLeft = left;
+    }
+  } catch { /* Keep the captured excerpt available when disk source is unavailable. */ }
+  finally { loadingSources.delete(file); }
+}
 function showActiveSource(): void {
   const source = openSources.get(activeFile);
-  if (source) renderSource({...source,line:snapshot?.status==='paused' && snapshot.source?.file===activeFile ? snapshot.source.line : 0});
+  if (source) {
+    renderSource({...source,line:snapshot?.status==='paused' && snapshot.source?.file===activeFile ? snapshot.source.line : 0});
+    void loadFullSource(source.file);
+  }
   $('fileTabs').replaceChildren();
   for (const [file] of openSources) {
     const group=node('div',undefined,'fileTab');
     const button=node('button',basename(file));button.title=file;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(file===activeFile));
     button.onclick=()=>{rememberScroll();activeFile=file;showActiveSource();const pos=sourceScroll.get(file);if(pos){$('source').scrollTop=pos.top;$('source').scrollLeft=pos.left;}};
     const close=node('button','×','closeTab');close.setAttribute('aria-label','Close '+basename(file));
-    close.onclick=()=>{openSources.delete(file);sourceScroll.delete(file);if(activeFile===file){activeFile=Array.from(openSources.keys()).pop()||'';sourceKey='';if(!activeFile){$('source').replaceChildren();$('filename').textContent='Open a source file';$('line').textContent='';}}showActiveSource();};
+    close.onclick=()=>{openSources.delete(file);fullSources.delete(file);sourceScroll.delete(file);if(activeFile===file){activeFile=Array.from(openSources.keys()).pop()||'';sourceKey='';if(!activeFile){$('source').replaceChildren();$('filename').textContent='Open a source file';$('line').textContent='';}}showActiveSource();};
     group.append(button,close);$('fileTabs').append(group);
   }
   paintBreakpoints();
@@ -550,7 +583,7 @@ async function openSourceFile(file: string, targetLine?: number,quiet=false): Pr
     const source=(historicalID||snapshot?.historical)?(snapshot?.source?.file===file?snapshot.source:undefined):await request<Source>('sources?file='+encodeURIComponent(file));
     if(!source)throw Error('This file was not captured in the saved snapshot.');
     if(revision!==fileRequest)return;
-    rememberScroll();openSources.set(file,source);activeFile=file;navigationTarget=targetLine ? {file,line:targetLine} : undefined;showActiveSource();
+    rememberScroll();if(!historicalID&&!snapshot?.historical)fullSources.add(file);openSources.set(file,source);activeFile=file;navigationTarget=targetLine ? {file,line:targetLine} : undefined;showActiveSource();
     if (targetLine) {
       const target=$('source').querySelector<HTMLElement>(`.sourceHighlight[data-line="${targetLine}"]`);
       if(target) $('source').scrollTop=Math.max(0,target.offsetTop-$('source').clientHeight/2);
@@ -582,7 +615,7 @@ $('openFile').onclick=()=>{void showFilePicker();};
 $('closePicker').onclick=()=>{$<HTMLDialogElement>('filePicker').close();};
 $('fileSearch').oninput=filterFiles;
 $('fileSearch').onkeydown=event=>{if(event.key==='ArrowDown'||event.key==='Enter'){event.preventDefault();$('fileResults').querySelector<HTMLButtonElement>('button')?.focus();}};
-$('followSource').onclick=()=>{if(snapshot?.source){rememberScroll();activeFile=snapshot.source.file;openSources.set(activeFile,snapshot.source);showActiveSource();}};
+$('followSource').onclick=()=>{if(snapshot?.source){rememberScroll();activeFile=snapshot.source.file;if(!fullSources.has(activeFile))openSources.set(activeFile,snapshot.source);renderedLocation='';showActiveSource();}};
 document.addEventListener('keydown',event=>{if(!document.querySelector('dialog[open]')&&(event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='p'){event.preventDefault();void showFilePicker();}});
 
 $('toggleNavigation').onclick=()=>{const main=document.querySelector('main')!;const open=main.dataset.navigation!=='open';main.dataset.navigation=open?'open':'closed';$('toggleNavigation').setAttribute('aria-expanded',String(open));};
