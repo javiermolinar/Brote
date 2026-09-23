@@ -20,10 +20,14 @@ func start(args []string) (obj, error) {
 	return startWithLaunch(args, nil)
 }
 
-func startWithLaunch(args []string, settings *session.LaunchSettings) (result obj, err error) {
+func startWithLaunch(args []string, settings *session.LaunchSettings) (obj, error) {
+	return startWithMode(args, settings, false)
+}
+func attachSession(args []string) (any, error) { return startWithMode(args, nil, true) }
+func startWithMode(args []string, settings *session.LaunchSettings, requireAttach bool) (result obj, err error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	f := flag.NewFlagSet("start", flag.ContinueOnError)
+	f := newFlagSet("start")
 	editorStart := f.Bool("editor-start", false, "require editor configuration within 30 seconds")
 	attachPID := f.Int("pid", 0, "attach to a local process using the supplied binary for source identity")
 	service := f.Bool("service", settings == nil || settings.Service, "use the authenticated shared-service session contract (default for new launches)")
@@ -44,6 +48,9 @@ func startWithLaunch(args []string, settings *session.LaunchSettings) (result ob
 	thread := f.String("thread", os.Getenv("CODEX_THREAD_ID"), "Codex task for inspector handovers; empty disables wakeups")
 	if e := f.Parse(args); e != nil {
 		return nil, e
+	}
+	if requireAttach && *attachPID <= 0 {
+		return nil, fmt.Errorf("--pid must be positive for attach")
 	}
 	if *legacy {
 		explicitService := false
@@ -80,7 +87,7 @@ func startWithLaunch(args []string, settings *session.LaunchSettings) (result ob
 		*service = true
 	}
 	if *bin == "" && !fromConfig {
-		return nil, fmt.Errorf("--binary or --config is required; use 'brote configs' to list VS Code profiles")
+		return nil, fmt.Errorf("--binary or --config is required; use 'brote session configs' to list VS Code profiles")
 	}
 	if fromConfig && *bin != "" {
 		return nil, fmt.Errorf("--binary cannot be combined with --config or --launch-file")
@@ -171,7 +178,7 @@ func startWithLaunch(args []string, settings *session.LaunchSettings) (result ob
 		delve, e = exec.LookPath(filepath.Join(home, "go", "bin", "dlv"))
 	}
 	if e != nil {
-		return nil, fmt.Errorf("Delve not found: install dlv for your Go version or pass --dlv /absolute/path/dlv; run brote doctor for diagnostics: %w", e)
+		return nil, fmt.Errorf("Delve not found: install dlv for your Go version or pass --dlv /absolute/path/dlv; run brote system doctor for diagnostics: %w", e)
 	}
 	if *investigation != "" {
 		if _, err := session.ReadInvestigation(*investigation); err != nil {

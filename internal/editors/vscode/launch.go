@@ -131,7 +131,7 @@ func Load(project, path, name, file string) (*Launch, error) {
 		}
 	}
 	if len(names) == 0 {
-		return nil, fmt.Errorf("launch configuration %q not found; use 'brote configs --project %s' to list profiles", name, root)
+		return nil, fmt.Errorf("launch configuration %q not found; use 'brote session configs --project %s' to list profiles", name, root)
 	}
 	if len(names) != 1 {
 		return nil, fmt.Errorf("launch configuration is ambiguous (%s); select a unique name with --config", strings.Join(names, ", "))

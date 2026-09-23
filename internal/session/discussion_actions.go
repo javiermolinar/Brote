@@ -3,6 +3,7 @@ package session
 import (
 	"agentdebugger/internal/delivery"
 	"agentdebugger/internal/protocol"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -21,6 +22,18 @@ type DiscussionRequest struct {
 	Status    string              `json:"status"`
 	Error     string              `json:"error"`
 	Recipient *protocol.Recipient `json:"recipient,omitempty"`
+}
+
+// DecodeDiscussionRequest preserves JSON number and recipient validation at
+// live and offline boundaries, including errors encoding unsupported values.
+func DecodeDiscussionRequest(value map[string]any) (DiscussionRequest, error) {
+	var request DiscussionRequest
+	data, err := json.Marshal(value)
+	if err != nil {
+		return request, err
+	}
+	err = json.Unmarshal(data, &request)
+	return request, err
 }
 
 func DiscussionRecipient(d CommentDelivery) protocol.Recipient {

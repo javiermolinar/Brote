@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -110,7 +109,10 @@ func hostCommand(name string, args ...string) error {
 	return nil
 }
 func installation(verb string, args []string) (any, error) {
-	f := flag.NewFlagSet(verb, flag.ContinueOnError)
+	return installationCommand(verb, args, false)
+}
+func installationCommand(verb string, args []string, strict bool) (any, error) {
+	f := newFlagSet(verb)
 	agent := f.String("agent", "", "codex or pi")
 	editor := f.String("editor", "", "optional vscode")
 	bundle := f.String("bundle", "", "extracted release directory")
@@ -118,6 +120,16 @@ func installation(verb string, args []string) (any, error) {
 	if err := f.Parse(args); err != nil {
 		return nil, err
 	}
+	if strict {
+		allowed := map[string]string{"setup": "agent editor bundle", "installation": "", "uninstall": "component"}[verb]
+		if err := validateFlags(f, allowed); err != nil {
+			return nil, err
+		}
+		if f.NArg() != 0 {
+			return nil, fmt.Errorf("unexpected arguments")
+		}
+	}
+	restoreExisting := !strict || (*agent == "" && *editor == "")
 	if *agent != "" && *agent != "codex" && *agent != "pi" {
 		return nil, fmt.Errorf("agent must be codex or pi")
 	}
@@ -140,6 +152,9 @@ func installation(verb string, args []string) (any, error) {
 	}
 	if verb == "installation" {
 		return obj{"root": root, "installation": state, "platform": runtime.GOOS + "/" + runtime.GOARCH}, nil
+	}
+	if strict && verb == "setup" && restoreExisting && state.Bundle == "" && len(state.Components) == 0 {
+		return nil, fmt.Errorf("choose components for first setup: --agent codex|pi and/or --editor vscode")
 	}
 	if err = os.MkdirAll(root, 0755); err != nil {
 		return nil, err
@@ -223,7 +238,7 @@ func installation(verb string, args []string) (any, error) {
 		state.Components[*component] = "removed"
 		return state, save()
 	}
-	if verb == "repair" {
+	if verb == "repair" || (strict && verb == "setup") {
 		if *bundle == "" {
 			*bundle = state.Bundle
 		}
@@ -301,6 +316,15 @@ func installation(verb string, args []string) (any, error) {
 	state.Version = manifest.Version
 	state.Bundle = release
 	state.Components["core"] = "installed"
+	// Persist the entire requested selection before any host registration can
+	// fail, so an option-free repair also retries not-yet-attempted components.
+	if strict {
+		for _, name := range []string{*agent, *editor} {
+			if name != "" && (state.Components[name] == "" || state.Components[name] == "removed") {
+				state.Components[name] = "pending"
+			}
+		}
+	}
 	if err = save(); err != nil {
 		return nil, err
 	}
@@ -370,7 +394,7 @@ func installation(verb string, args []string) (any, error) {
 		selected bool
 		fn       func() error
 	}{{"codex", *agent == "codex", installCodex}, {"pi", *agent == "pi", installPi}, {"vscode", *editor == "vscode", installEditor}} {
-		if item.selected || (state.Components[item.name] != "" && state.Components[item.name] != "removed") {
+		if item.selected || (restoreExisting && state.Components[item.name] != "" && state.Components[item.name] != "removed") {
 			if err = run(item.name, item.fn); err != nil {
 				return nil, err
 			}

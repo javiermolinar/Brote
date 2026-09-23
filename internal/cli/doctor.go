@@ -2,7 +2,7 @@ package cli
 
 import (
 	"context"
-	"flag"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,12 +13,17 @@ import (
 	"agentdebugger/internal/session"
 )
 
-func doctor(args []string) (obj, error) {
-	f := flag.NewFlagSet("doctor", flag.ContinueOnError)
+func doctor(args []string) (obj, error)          { return doctorCommand(args, false) }
+func canonicalDoctor(args []string) (obj, error) { return doctorCommand(args, true) }
+func doctorCommand(args []string, strict bool) (obj, error) {
+	f := newFlagSet("doctor")
 	binary := f.String("binary", "", "optional target")
 	project := f.String("project", ".", "project")
 	if e := f.Parse(args); e != nil {
 		return nil, e
+	}
+	if strict && f.NArg() != 0 {
+		return nil, fmt.Errorf("unexpected arguments")
 	}
 	checks := obj{}
 	for name, argv := range map[string][]string{"go": {"version"}, "dlv": {"version"}, "zed": {"--version"}, "code": {"--version"}, "codex": {"--version"}, "pi": {"--version"}} {

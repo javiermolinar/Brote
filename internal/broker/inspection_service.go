@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"agentdebugger/internal/backend"
 	"agentdebugger/internal/session"
 	"context"
 	"encoding/json"
@@ -8,10 +9,26 @@ import (
 	"time"
 )
 
+// inspectionFence captures the snapshot/evaluation contract while b.mu is held.
+// Editor and service inspections deliberately retain their distinct fences.
+type inspectionFence struct {
+	source       *backend.Delve
+	handleEpoch  int
+	backendEpoch uint64
+	run          string
+}
+
+func (b *broker) inspectionFenceLocked() inspectionFence {
+	return inspectionFence{b.backend, b.handleEpoch, b.backend.Epoch(), b.s.RunID}
+}
+func (f inspectionFence) validLocked(b *broker) bool {
+	return b.backend == f.source && b.handleEpoch == f.handleEpoch && f.source.Epoch() == f.backendEpoch && b.s.RunID == f.run && !b.moving && !b.closing
+}
+
 // Called with b.mu held; releases it while collecting evidence and reacquires it
 // before returning. Only an immutable descriptor copy is used outside the lock.
 func (b *broker) inspectSnapshot(v, s obj, gid, frame int) (obj, error) {
-	source, epoch, backendEpoch, run := b.backend, b.handleEpoch, b.backend.Epoch(), b.s.RunID
+	fence := b.inspectionFenceLocked()
 	data, err := json.Marshal(b.s)
 	if err != nil {
 		return nil, err
@@ -22,11 +39,11 @@ func (b *broker) inspectSnapshot(v, s obj, gid, frame int) (obj, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	reader := &broker{s: descriptor, backend: source, generation: b.generation, inspectionContext: ctx}
+	reader := &broker{s: descriptor, backend: fence.source, generation: b.generation, inspectionContext: ctx}
 	b.mu.Unlock()
 	result, err := reader.enrichSnapshot(v, s, gid, frame)
 	b.mu.Lock()
-	if b.backend != source || b.handleEpoch != epoch || source.Epoch() != backendEpoch || b.s.RunID != run || b.moving || b.closing {
+	if !fence.validLocked(b) {
 		err = fmt.Errorf("target changed during inspection; refresh the paused state")
 		result = nil
 	} else if err == nil {
@@ -114,18 +131,18 @@ func (b *broker) inspectEditor(p *dapPeer, request obj, command string, args obj
 // evaluateService follows the same epoch fence as snapshots without holding the
 // coordinator mutex while Delve expands a value.
 func (b *broker) evaluateService(a, s obj) (obj, error) {
-	source, epoch, backendEpoch, run := b.backend, b.handleEpoch, b.backend.Epoch(), b.s.RunID
+	fence := b.inspectionFenceLocked()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	reader := &broker{backend: source, generation: b.generation, inspectionContext: ctx}
+	reader := &broker{backend: fence.source, generation: b.generation, inspectionContext: ctx}
 	b.mu.Unlock()
 	value, err := reader.evaluate(str(a["expression"]), num(a["goroutine"]), num(a["frame"]), num(a["depth"]), num(a["count"]), s)
 	b.mu.Lock()
-	if b.backend != source || b.handleEpoch != epoch || source.Epoch() != backendEpoch || b.s.RunID != run || b.moving || b.closing {
+	if !fence.validLocked(b) {
 		return nil, fmt.Errorf("target changed during inspection; refresh the paused state")
 	}
 	if err == nil {
-		value["run"], value["pauseEpoch"] = run, epoch
+		value["run"], value["pauseEpoch"] = fence.run, fence.handleEpoch
 	}
 	return value, err
 }

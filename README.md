@@ -80,6 +80,29 @@ and ask where its value comes from; the answer stays with the captured evidence.
 
 [Debugging guide](docs/debugging.md) · [Pi guide](adapters/pi/README.md) · [VS Code guide](packages/vscode/README.md)
 
+## Try it from a terminal
+
+With `brote` and `dlv` on your PATH, run this from a checkout of Brote:
+
+```sh
+go build -gcflags='all=-N -l' -o /tmp/brote-demo ./examples/demo
+brote session start --binary /tmp/brote-demo --project "$PWD/examples/demo" --thread ''
+```
+
+The program starts paused. Replace `SESSION` below with the returned session ID:
+
+```sh
+brote debug breakpoint add SESSION --function main.process
+brote debug continue SESSION --human --wait 20s
+brote debug eval SESSION --expression attempt
+brote debug step SESSION --over --human --wait 20s
+brote session stop SESSION --confirmed
+```
+
+This stops at `main.process`, reads `attempt`, steps one line, then ends the run.
+You can also open the returned inspector URL. `--human` marks commands you run
+yourself; `--thread ''` starts without connecting an agent conversation.
+
 ## OpenTelemetry traces
 
 Brote embeds [Grafana Tempo](https://github.com/grafana/tempo) to store traces locally
@@ -88,7 +111,7 @@ first-class workflow: capture debugger state as traces and compare runs. The bun
 runtime is managed by Brote; its internal listeners bind only to loopback.
 
 The Go core captures and stores traces for VS Code, Codex and Pi through one Brote API.
-Use `brote traces` and `brote trace TRACE_ID` to inspect saved evidence.
+Use `brote query traces` and `brote query traces TRACE_ID` to inspect saved evidence.
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` in Brote's environment to export debugger
 actions and captured program state to Tempo, Grafana Cloud, or another OTLP/HTTP
@@ -107,11 +130,17 @@ VS Code debugger ─── DAP ─── language adapter ─── program
 
 MIT licensed. Third-party notices are retained.
 
-### Shared debugger sessions
+## Build from source
 
-New `brote start` launches use the shared Go session service. Pi, Codex, browser,
-and Brote VS Code launch/attach workflows share execution, definitions, immutable
-evidence and Go-backed discussions. Use `--legacy` only for direct Zed/RPC compatibility.
-VS Code inline discussions use Brote sessions; other native adapters retain automatic
-read-only tracing into the same embedded Tempo store. See [debugging](docs/debugging.md)
-and [ownership](docs/ownership.md) for the current boundaries.
+Use the Go version in `go.mod`, Node.js 22.19 or later, and Delve for debugging:
+
+```sh
+npm ci
+npm run build
+go build -o bin/brote ./cmd/brote
+npm test
+go test ./...
+```
+
+Use `make vsix` to package the VS Code extension. Release bundles include Brote
+and unmodified Tempo source, dependency checksums, licenses, and notices.

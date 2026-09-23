@@ -2,6 +2,7 @@ package cli
 
 import (
 	"agentdebugger/internal/session"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -210,5 +211,76 @@ func TestUpgradeMigratesRecordedLegacyIntegrations(t *testing.T) {
 				t.Fatal("did not remove actual installed identity")
 			}
 		})
+	}
+}
+
+func TestCanonicalSetupSelectionAndRepair(t *testing.T) {
+	temp := t.TempDir()
+	root := filepath.Join(temp, "install")
+	bundle := filepath.Join(temp, "bundle")
+	stubs := filepath.Join(temp, "stubs")
+	t.Setenv("DELVE_LLM_ADAPTER_HOME", root)
+	t.Setenv("DEBUG_HANDOVER_HOME", filepath.Join(temp, "sessions"))
+	t.Setenv("PATH", stubs+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if _, err := Run([]string{"system", "setup"}); err == nil || !strings.Contains(err.Error(), "choose components") {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatal("fresh setup mutated installation", err)
+	}
+	for _, dir := range []string{stubs, filepath.Join(bundle, "bin"), filepath.Join(bundle, "adapters", "pi"), filepath.Join(bundle, "editors")} {
+		os.MkdirAll(dir, 0755)
+	}
+	log := filepath.Join(temp, "calls")
+	t.Setenv("INSTALL_TEST_LOG", log)
+	for _, name := range []string{"pi", "code"} {
+		os.WriteFile(filepath.Join(stubs, name), []byte("#!/bin/sh\nprintf '%s\\n' \"$0 $*\" >> \"$INSTALL_TEST_LOG\"\n"), 0755)
+	}
+	os.WriteFile(filepath.Join(bundle, "bin", "delve-llm-adapter"), []byte("fixture"), 0755)
+	session.Write(filepath.Join(bundle, "release.json"), obj{"version": "v-test", "os": runtime.GOOS, "arch": runtime.GOARCH})
+	// Partial installation records the requested integration for a no-option repair.
+	os.WriteFile(filepath.Join(stubs, "pi"), []byte("#!/bin/sh\nexit 1\n"), 0755)
+	if _, err := Run([]string{"system", "setup", "--bundle", bundle, "--agent", "pi", "--editor", "vscode"}); err == nil {
+		t.Fatal("expected partial failure")
+	}
+	os.WriteFile(filepath.Join(stubs, "pi"), []byte("#!/bin/sh\nprintf 'pi\\n' >> \"$INSTALL_TEST_LOG\"\n"), 0755)
+	var partial installationState
+	data, err := os.ReadFile(filepath.Join(root, "installation.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(data, &partial); err != nil || partial.Components["vscode"] != "pending" {
+		t.Fatal("lost unattempted selection", partial, err)
+	}
+	if _, err := Run([]string{"system", "setup"}); err != nil {
+		t.Fatal(err)
+	}
+	repairedCalls, _ := os.ReadFile(log)
+	if !strings.Contains(string(repairedCalls), "pi") || !strings.Contains(string(repairedCalls), "--install-extension") {
+		t.Fatal("repair omitted original selection", string(repairedCalls))
+	}
+	os.WriteFile(log, nil, 0600)
+	if _, err := Run([]string{"system", "setup", "--editor", "vscode"}); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ := os.ReadFile(log)
+	if strings.Contains(string(calls), "pi") {
+		t.Fatal("explicit setup reinstalled unrequested integration", string(calls))
+	}
+	os.WriteFile(log, nil, 0600)
+	if _, err := Run([]string{"system", "setup"}); err != nil {
+		t.Fatal(err)
+	}
+	calls, _ = os.ReadFile(log)
+	if !strings.Contains(string(calls), "pi") || !strings.Contains(string(calls), "--install-extension") {
+		t.Fatal("repair lost installed choices", string(calls))
+	}
+	before, _ := os.ReadFile(filepath.Join(root, "installation.json"))
+	if _, err := Run([]string{"system", "status"}); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(filepath.Join(root, "installation.json"))
+	if string(before) != string(after) {
+		t.Fatal("status changed installation")
 	}
 }

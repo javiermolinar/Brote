@@ -9,7 +9,7 @@ service owns embedded Tempo and optional remote OTLP export.
 
 ## Attach to a session
 
-Start a target with `brote start --binary /absolute/path/program`, then
+Start a target with `brote session start --binary /absolute/path/program`, then
 run **Brote: Attach to Session**. The picker discovers existing service sessions.
 An explicit configuration is also available:
 
@@ -58,13 +58,13 @@ The CLI creates a paused session; initial tracepoints and editor breakpoints are
 installed before configuration completes. Execution then continues unless
 `stopOnEntry` is true. A startup that never finishes configuration expires after
 30 seconds. Build/start failures report errors; cancellation cleans up newly
-created sessions. F5 sessions appear in `brote sessions` and accept the same CLI
+created sessions. F5 sessions appear in `brote session list` and accept the same CLI
 commands as terminal-created sessions. Configure OTLP in `env`, `envFile`, or the
 launching VS Code environment for these sessions.
 
 VS Code disconnect leaves the service and target available to the CLI or a later
-editor. Use `brote end-session SESSION --confirmed` to end the target explicitly, or
-`brote detach SESSION --human` to release an externally attached target. Detach
+editor. Use `brote session stop SESSION --confirmed` to end the target explicitly, or
+`brote session detach SESSION --human` to release an externally attached target. Detach
 is rejected for Brote-launched targets; disconnect the editor to keep the session
 alive, or explicitly terminate it. Only one editor can attach at a time.
 DAP restart preserves session identity and the editor connection, creates a new
@@ -122,4 +122,4 @@ Discussion workflows above use Brote sessions and Go-backed history.
 
 Local tracing requires no OTLP environment. Optional remote export is configured
 on the shared tracing service at startup; local storage continues on remote failure.
-See [embedded Tempo](../../docs/embedded-tempo.md) for query delay and durability limits.
+See [tracing examples](../../docs/tracing.md) to query captures and configure export.

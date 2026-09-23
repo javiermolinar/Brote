@@ -32,6 +32,9 @@ func serviceAPI(s session.Descriptor, operation string, payload obj) (obj, error
 	return result, nil
 }
 func definitionCommand(kind string, args []string) (any, error) {
+	return definitionCommandMode(kind, args, false)
+}
+func definitionCommandMode(kind string, args []string, strict bool) (any, error) {
 	if len(args) < 2 {
 		return nil, fmt.Errorf("usage: %s add|update|remove|list SESSION [options]", kind)
 	}
@@ -39,11 +42,7 @@ func definitionCommand(kind string, args []string) (any, error) {
 	if operation != "add" && operation != "update" && operation != "remove" && operation != "list" {
 		return nil, fmt.Errorf("unknown definition operation")
 	}
-	s, err := session.Read(id)
-	if err != nil {
-		return nil, err
-	}
-	f := flag.NewFlagSet(kind, flag.ContinueOnError)
+	f := newFlagSet(kind)
 	client := f.String("client", "cli", "stable configuration owner")
 	definitionID := f.String("id", "", "stable definition ID")
 	revision := f.Uint64("revision", 0, "expected definition revision for update/remove")
@@ -57,11 +56,20 @@ func definitionCommand(kind string, args []string) (any, error) {
 	limit := f.Int("capture-limit", 100, "maximum capture attempts per run")
 	enabled := f.Bool("enabled", true, "enable this definition")
 	scope := f.String("scope", "session", "session or current run")
-	if err = f.Parse(args[2:]); err != nil {
+	if err := f.Parse(args[2:]); err != nil {
 		return nil, err
 	}
 	if f.NArg() != 0 {
 		return nil, fmt.Errorf("unexpected arguments")
+	}
+	if strict {
+		if err := validateFlags(f, definitionFlagNames(kind, operation)); err != nil {
+			return nil, err
+		}
+	}
+	s, err := session.Read(id)
+	if err != nil {
+		return nil, err
 	}
 	payload := obj{"client": *client}
 	if operation == "list" {
@@ -158,22 +166,30 @@ func definitionCommand(kind string, args []string) (any, error) {
 	return serviceAPI(s, "definition.put", payload)
 }
 func serviceReadCommand(verb string, args []string) (any, error) {
+	return serviceReadCommandMode(verb, args, false)
+}
+func serviceReadCommandMode(verb string, args []string, strict bool) (any, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("session ID required")
 	}
-	s, err := session.Read(args[0])
-	if err != nil {
-		return nil, err
-	}
-	f := flag.NewFlagSet(verb, flag.ContinueOnError)
+	f := newFlagSet(verb)
 	gid := f.Int("goroutine", 0, "goroutine ID")
 	start := f.Int("start", 0, "page offset")
 	count := f.Int("count", 64, "page size")
-	if err = f.Parse(args[1:]); err != nil {
+	if err := f.Parse(args[1:]); err != nil {
 		return nil, err
 	}
 	if f.NArg() != 0 {
 		return nil, fmt.Errorf("unexpected arguments")
+	}
+	if strict {
+		if err := validateFlags(f, serviceFlagNames(verb)); err != nil {
+			return nil, err
+		}
+	}
+	s, err := session.Read(args[0])
+	if err != nil {
+		return nil, err
 	}
 	if verb == "capabilities" {
 		state, err := api(s, "GET", "/api/state?brief=1", nil)

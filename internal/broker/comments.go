@@ -220,9 +220,8 @@ func (b *broker) commentsLocked(a obj) (obj, error) {
 		t.Delivery = session.CommentDelivery{Question: id, Status: "pending", Binding: copyBinding(b.s.Binding), Recipient: recipient}
 		kind = "question.created"
 	case "reply", "delivery", "answer-failed", "resolve", "reopen", "retry", "claim":
-		var request session.DiscussionRequest
-		data, _ := json.Marshal(a)
-		if err := json.Unmarshal(data, &request); err != nil {
+		request, err := session.DecodeDiscussionRequest(a)
+		if err != nil {
 			return nil, err
 		}
 		recipient := session.DiscussionRecipient(t.Delivery)

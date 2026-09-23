@@ -3,7 +3,6 @@ package cli
 import (
 	"agentdebugger/internal/session"
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -27,7 +26,7 @@ func taskExecute(args []string) (any, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("task-execute requires a session")
 	}
-	f := flag.NewFlagSet("task-execute", flag.ContinueOnError)
+	f := newFlagSet("task-execute")
 	task := f.String("task", "", "current debugging task ID")
 	binding := f.String("binding", "", "expected conversation binding")
 	operation := f.String("operation", "", "continue, next, step, stepout or pause")

@@ -139,3 +139,40 @@ func TestServiceSnapshotSelectsDeepFramePage(t *testing.T) {
 		t.Fatal("snapshot stalled")
 	}
 }
+
+func TestSnapshotRejectsChangedFence(t *testing.T) {
+	for _, change := range []string{"backend", "handle", "run", "closing"} {
+		t.Run(change, func(t *testing.T) {
+			b, a := delayedFixture(t, "stackTrace")
+			result := make(chan error, 1)
+			go func() { _, err := b.snapshot(1, 0, false); result <- err }()
+			request := executionRequest(t, a)
+			b.mu.Lock()
+			original := b.backend
+			switch change {
+			case "backend":
+				b.backend = nil
+			case "handle":
+				b.handleEpoch++
+			case "run":
+				b.s.RunID = "new-run"
+			case "closing":
+				b.closing = true
+			}
+			b.mu.Unlock()
+			replyCaptureStack(a, request)
+			select {
+			case err := <-result:
+				if err == nil {
+					t.Fatal("accepted obsolete snapshot")
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("snapshot stalled")
+			}
+			b.mu.Lock()
+			b.backend = original
+			b.closing = false
+			b.mu.Unlock()
+		})
+	}
+}

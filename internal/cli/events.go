@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -66,10 +65,13 @@ func stream(ctx context.Context, s session.Descriptor, cursor uint64, binding st
 var eventDone = errors.New("event received")
 
 func eventsCommand(args []string, wait bool) (any, error) {
+	return eventsCommandMode(args, wait, false)
+}
+func eventsCommandMode(args []string, wait, strict bool) (any, error) {
 	if len(args) < 1 {
 		return nil, fmt.Errorf("session ID required")
 	}
-	f := flag.NewFlagSet("events", flag.ContinueOnError)
+	f := newFlagSet("events")
 	managed := f.Bool("managed", false, "service-owned delivery and host facts over NDJSON")
 	consumer := f.String("consumer", "", "stable host consumer ID")
 	cursor := f.Uint64("cursor", 0, "last event ID")
@@ -77,6 +79,23 @@ func eventsCommand(args []string, wait bool) (any, error) {
 	timeout := f.Duration("timeout", 20*time.Second, "bounded wait timeout")
 	if err := f.Parse(args[1:]); err != nil {
 		return nil, err
+	}
+	if strict {
+		if f.NArg() != 0 {
+			return nil, fmt.Errorf("unexpected arguments")
+		}
+		allowed := "cursor binding managed"
+		if wait {
+			allowed = "cursor binding timeout"
+		} else if *managed {
+			allowed = "binding managed consumer"
+			if *consumer == "" {
+				return nil, fmt.Errorf("managed events require --consumer")
+			}
+		}
+		if err := validateFlags(f, allowed); err != nil {
+			return nil, err
+		}
 	}
 	s, err := session.Read(args[0])
 	if err != nil {

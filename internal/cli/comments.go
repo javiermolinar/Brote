@@ -4,23 +4,26 @@ import (
 	"agentdebugger/internal/protocol"
 	"agentdebugger/internal/session"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 )
 
-func commentCommand(args []string) (any, error) {
+func commentCommand(args []string) (any, error) { return commentCommandMode(args, false) }
+func commentCommandMode(args []string, strict bool) (any, error) {
 	if len(args) < 2 {
 		return nil, fmt.Errorf("usage: comment list SESSION | comment reply SESSION THREAD --question ID --body-file PATH --message-id KEY")
 	}
 	verb, id := args[0], args[1]
+	if strict && (verb == "list" || verb == "index") && len(args) != 2 {
+		return nil, fmt.Errorf("unexpected arguments")
+	}
 	if verb == "index" {
 		return session.ReadImportIndex(id)
 	}
 	if verb == "list" {
 		return session.ReadDiscussion(id)
 	}
-	f := flag.NewFlagSet("comment "+verb, flag.ContinueOnError)
+	f := newFlagSet("comment " + verb)
 	thread := ""
 	rest := args[2:]
 	if len(rest) > 0 && rest[0] != "" && rest[0][0] != '-' {
@@ -52,6 +55,11 @@ func commentCommand(args []string) (any, error) {
 	expression := f.String("expression", "", "variable expression")
 	if err := f.Parse(rest); err != nil {
 		return nil, err
+	}
+	if strict {
+		if err := validateFlags(f, commentFlagNames(verb)); err != nil {
+			return nil, err
+		}
 	}
 	if verb == "import" {
 		data, err := os.ReadFile(*body)
@@ -99,9 +107,8 @@ func commentCommand(args []string) (any, error) {
 		if verb == "create" || verb == "continue-thread" || (*contextMode == "current" && verb == "ask") {
 			return nil, fmt.Errorf("current evidence requires a live session")
 		}
-		var request session.DiscussionRequest
-		data, _ := json.Marshal(a)
-		if err := json.Unmarshal(data, &request); err != nil {
+		request, err := session.DecodeDiscussionRequest(a)
+		if err != nil {
 			return nil, err
 		}
 		thread, err := session.MutateDiscussion(id, request)

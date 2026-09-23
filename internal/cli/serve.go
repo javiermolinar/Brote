@@ -1,13 +1,11 @@
 package cli
 
 import (
-	"flag"
-
 	"agentdebugger/internal/broker"
 )
 
 func serve(args []string) error {
-	f := flag.NewFlagSet("serve", flag.ContinueOnError)
+	f := newFlagSet("serve")
 	editorStart := f.Bool("editor-start", false, "editor startup lease")
 	attachPID := f.Int("pid", 0, "local target process")
 	service := f.Bool("service", false, "authenticated shared-service mode")

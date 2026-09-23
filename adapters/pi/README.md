@@ -21,7 +21,7 @@ cache outside the checkout. If npm install scripts are disabled, the extension
 prepares the same verified core on first load. No Go compiler is needed.
 npm distribution follows later.
 
-To switch from the shell installation, run `brote uninstall --component pi`
+To switch from the shell installation, run `brote system uninstall --component pi`
 before installing the Git source. Keep only one Brote adapter enabled.
 
 For an offline installation, extract the release's Pi tarball and use

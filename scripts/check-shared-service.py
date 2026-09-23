@@ -63,7 +63,7 @@ def run():
 
         def service(sid, operation, **payload):
             descriptor = json.loads((work / "sessions" / sid / "session.json").read_text())
-            state = cli("state", sid, "--summary")
+            state = cli("debug", "state", sid, "--summary")
             request = dict(version=1, session=sid, run=state["run"], generation=state["generation"], pauseEpoch=state["pauseEpoch"],
                            client="integration", commandId=str(time.monotonic_ns()), operation=operation, **payload)
             req = urllib.request.Request(descriptor["http"] + "/api/v1", data=json.dumps(request).encode(),
@@ -71,7 +71,7 @@ def run():
             return json.load(urllib.request.urlopen(req, timeout=10))
 
         def start(*args):
-            value = cli("start", "--thread", "", "--project", str(fixture), *args)
+            value = cli("session", "attach" if "--pid" in args else "start", "--thread", "", "--project", str(fixture), *args)
             assert value.get("run") and value.get("serviceVersion")==1
             assert "#" not in value["panel"]
             live.add(value["id"])
@@ -80,19 +80,24 @@ def run():
         try:
             # Both explicit opt-outs retain the old contract without relabelling it.
             for optout in ('--legacy', '--service=false'):
-                old=cli('start',optout,'--no-ui','--thread','','--project',str(fixture),'--binary',str(target_binary))
+                old=cli('session', 'start',optout,'--no-ui','--thread','','--project',str(fixture),'--binary',str(target_binary))
                 live.add(old['id']);assert old.get('serviceVersion',0)==0 and not old.get('run'),old
-                cli('end-session',old['id'],'--confirmed');live.remove(old['id'])
+                cli('session', 'stop',old['id'],'--confirmed');live.remove(old['id'])
+                rerun = cli("session", "restart", old["id"], "--new-session")
+                live.add(rerun["id"])
+                assert rerun.get("serviceVersion", 0) == 0 and not rerun.get("run"), rerun
+                cli("session", "stop", rerun["id"], "--confirmed"); live.remove(rerun["id"])
+
             stubdir=work/"stub-bin";stubdir.mkdir()
             codex_stub=stubdir/"codex";codex_stub.write_text("#!/bin/sh\nexit 1\n");codex_stub.chmod(0o700)
             warning_env=dict(env,PATH=str(stubdir)+os.pathsep+env["PATH"])
-            warning=subprocess.run([str(core),"start","--service","--binary",str(target_binary),"--project",str(fixture),"--thread","00000000-0000-0000-0000-000000000000"],env=warning_env,capture_output=True,text=True,timeout=35)
+            warning=subprocess.run([str(core),"session","start","--service","--binary",str(target_binary),"--project",str(fixture),"--thread","00000000-0000-0000-0000-000000000000"],env=warning_env,capture_output=True,text=True,timeout=35)
             assert warning.returncode==0,warning.stderr
             warning_start=json.loads(warning.stdout);live.add(warning_start["id"])
             warning_record=json.loads((work/"sessions"/warning_start["id"]/"session.json").read_text())
             assert warning_start["notificationError"] and warning_start["run"]==warning_record["run"] and warning_start["serviceVersion"]==1
             assert warning_record["token"] not in warning.stdout
-            cli("end-session",warning_start["id"],"--confirmed");live.remove(warning_start["id"])
+            cli("session", "stop",warning_start["id"],"--confirmed");live.remove(warning_start["id"])
 
             sid = start("--binary", str(target_binary))
             descriptor = json.loads((work / "sessions" / sid / "session.json").read_text())
@@ -101,14 +106,14 @@ def run():
                 raise AssertionError("unauthenticated health accepted")
             except urllib.error.HTTPError as error:
                 assert error.code == 401
-            discovered = cli("sessions")
+            discovered = cli("session", "list", "--all")
             assert descriptor["token"] not in json.dumps(discovered)
             assert next(s for s in discovered if s["id"] == sid)["run"] == descriptor["run"]
-            state = cli("state", sid, "--summary")
+            state = cli("debug", "state", sid, "--summary")
             rejected_detach=subprocess.run([str(core),"detach",sid,"--human"],env=env,capture_output=True,text=True,timeout=10)
             assert rejected_detach.returncode and json.loads(rejected_detach.stderr)["code"]=="unsupported_operation"
-            assert cli("state",sid)["state"]["Pid"]==state["state"]["Pid"]
-            assert not cli("capabilities",sid)["capabilities"]["service"]["detach"]
+            assert cli("debug", "state",sid)["state"]["Pid"]==state["state"]["Pid"]
+            assert not cli("debug", "capabilities",sid)["capabilities"]["service"]["detach"]
             editor = subprocess.Popen([str(core), "dap", sid], stdin=subprocess.PIPE,
                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
             pending = b""
@@ -142,40 +147,40 @@ def run():
             assert not dap_request(4, "setVariable", {"variablesReference": 1, "name": "x", "value": "1"})["success"]
             point = dap_request(5, "setBreakpoints", {"source": {"path": str(fixture / "main.go")}, "breakpoints": [{"line": 3}]})
             assert point["success"] and point["body"]["breakpoints"][0]["verified"], point
-            stored = cli("state", sid)["definitions"]["items"]
+            stored = cli("debug", "state", sid)["definitions"]["items"]
             assert len(stored) == 1 and stored[0]["owner"] == "editor"
             stable_id = stored[0]["id"]
             assert dap_request(6, "setBreakpoints", {"source": {"path": str(fixture / "main.go")}, "breakpoints": [{"line": 3}]})["success"]
-            assert cli("state", sid)["definitions"]["items"][0]["id"] == stable_id
+            assert cli("debug", "state", sid)["definitions"]["items"][0]["id"] == stable_id
             assert dap_request(7, "setBreakpoints", {"source": {"path": str(fixture / "main.go")}, "breakpoints": []})["success"]
             assert dap_request(8, "disconnect")["success"]
             editor.stdin.close()
             editor.wait(timeout=5)
             editor = None
-            assert cli("state", sid)["state"]["Pid"] == state["state"]["Pid"]
-            cli("continue", sid, "--human", "--command-id", "real-continue")
-            cli("pause", sid, "--human", "--wait", "10s")
-            assert cli("state", sid)["status"] == "paused"
+            assert cli("debug", "state", sid)["state"]["Pid"] == state["state"]["Pid"]
+            cli("debug", "continue", sid, "--human", "--command-id", "real-continue")
+            cli("debug", "pause", sid, "--human", "--wait", "10s")
+            assert cli("debug", "state", sid)["status"] == "paused"
             duplicate = subprocess.run([str(core), "continue", sid, "--human", "--command-id", "real-continue"],
                                        env=env, capture_output=True, text=True, timeout=10)
             assert duplicate.returncode and "already submitted" in duplicate.stderr
-            restarted = cli("restart", sid, "--human")
+            restarted = cli("session", "restart", sid, "--human")
             assert restarted["id"] == sid and restarted["run"] != descriptor["run"]
-            assert cli("state", sid)["state"]["Pid"] != state["state"]["Pid"]
-            cli("continue", sid, "--human", "--command-id", "survive-recovery")
-            cli("pause", sid, "--human", "--wait", "10s")
-            before_recovery = cli("state", sid)
+            assert cli("debug", "state", sid)["state"]["Pid"] != state["state"]["Pid"]
+            cli("debug", "continue", sid, "--human", "--command-id", "survive-recovery")
+            cli("debug", "pause", sid, "--human", "--wait", "10s")
+            before_recovery = cli("debug", "state", sid)
             record = json.loads((work / "sessions" / sid / "session.json").read_text())
             os.kill(record["brokerPid"], signal.SIGKILL)
             time.sleep(.2)
-            cli("recover", sid)
-            recovered = cli("state", sid)
+            cli("session", "recover", sid)
+            recovered = cli("debug", "state", sid)
             assert recovered["run"] == before_recovery["run"] and recovered["state"]["Pid"] == before_recovery["state"]["Pid"]
             duplicate = subprocess.run([str(core), "continue", sid, "--human", "--command-id", "survive-recovery"],
                                        env=env, capture_output=True, text=True, timeout=10)
             assert duplicate.returncode and "already submitted" in duplicate.stderr
             binding = recovered["binding"]
-            task = cli("task-start", sid, "--binding", binding["id"], "--revision", str(binding["revision"]),
+            task = cli("debug", "task", "start", sid, "--binding", binding["id"], "--revision", str(binding["revision"]),
                        "--instruction", "Validate bounded execution in the isolated test fixture")["task"]
             wrong = subprocess.run([str(core), "continue", sid, "--binding", "wrong-client", "--task", task["id"]],
                                    env=env, capture_output=True, text=True, timeout=10)
@@ -185,7 +190,7 @@ def run():
                                      env=env, capture_output=True, text=True, timeout=15)
             assert bounded.returncode and "timed out" in bounded.stderr
             for _ in range(50):
-                settled = cli("state", sid)
+                settled = cli("debug", "state", sid)
                 if settled["status"] == "paused":
                     break
                 time.sleep(.1)
@@ -193,12 +198,12 @@ def run():
             renewed = subprocess.run([str(core), "task-heartbeat", sid, "--binding", binding["id"], "--task", task["id"]],
                                      env=env, capture_output=True, text=True, timeout=10)
             assert renewed.returncode
-            cli("end-session", sid, "--confirmed")
+            cli("session", "stop", sid, "--confirmed")
             live.remove(sid)
 
             one = start("--binary", str(target_binary))
             two = start("--binary", str(target_binary))
-            before_two = cli("state", two)
+            before_two = cli("debug", "state", two)
             first_descriptor = json.loads((work / "sessions" / one / "session.json").read_text())
             cross = urllib.request.Request(first_descriptor["http"]+"/api/sessions/stop",data=json.dumps({"id":two,"confirmed":True}).encode(),headers={"Authorization":"Bearer "+first_descriptor["token"],"Content-Type":"application/json"})
             try:
@@ -206,29 +211,29 @@ def run():
                 raise AssertionError("cross-session stop accepted")
             except urllib.error.HTTPError as error:
                 assert error.code==403
-            assert cli("state",two)["state"]["Pid"]==before_two["state"]["Pid"]
-            cli("continue", one, "--human")
-            cli("pause", one, "--human", "--wait", "10s")
-            assert cli("state", two)["state"]["Pid"] == before_two["state"]["Pid"]
-            assert cli("state", two)["status"] == "paused"
-            cli("end-session", one, "--confirmed")
+            assert cli("debug", "state",two)["state"]["Pid"]==before_two["state"]["Pid"]
+            cli("debug", "continue", one, "--human")
+            cli("debug", "pause", one, "--human", "--wait", "10s")
+            assert cli("debug", "state", two)["state"]["Pid"] == before_two["state"]["Pid"]
+            assert cli("debug", "state", two)["status"] == "paused"
+            cli("session", "stop", one, "--confirmed")
             live.remove(one)
-            assert cli("state", two)["state"]["Pid"] == before_two["state"]["Pid"]
-            cli("end-session", two, "--confirmed")
+            assert cli("debug", "state", two)["state"]["Pid"] == before_two["state"]["Pid"]
+            cli("session", "stop", two, "--confirmed")
             live.remove(two)
 
             target = subprocess.Popen([str(target_binary)])
-            invalid_editor_attach=subprocess.run([str(core),"start","--service","--editor-start","--pid",str(target.pid),"--binary",str(target_binary),"--project",str(fixture),"--thread",""],env=env,capture_output=True,text=True,timeout=10)
+            invalid_editor_attach=subprocess.run([str(core),"session","start","--service","--editor-start","--pid",str(target.pid),"--binary",str(target_binary),"--project",str(fixture),"--thread",""],env=env,capture_output=True,text=True,timeout=10)
             assert invalid_editor_attach.returncode and "process attach is unsupported" in invalid_editor_attach.stderr
             assert target.poll() is None
             sid = start("--pid", str(target.pid), "--binary", str(target_binary))
-            attached = cli("state", sid)
+            attached = cli("debug", "state", sid)
             assert attached["state"]["Pid"] == target.pid and attached["debugger"]["mode"] == "attached"
             denied = subprocess.run([str(core), "restart", sid, "--human"], env=env,
                                     capture_output=True, text=True, timeout=10)
             assert denied.returncode and "externally attached" in denied.stderr
-            cli("continue", sid, "--human")
-            cli("detach", sid, "--human")
+            cli("debug", "continue", sid, "--human")
+            cli("session", "detach", sid, "--human")
             live.remove(sid)
             time.sleep(.3)
             assert target.poll() is None
@@ -260,7 +265,7 @@ def run():
                     assert not any(row.strip()==str(target_binary) for row in rows), "failed launch leaked its target"
 
             abandoned = start("--editor-start", "--binary", str(target_binary))
-            abandoned_pid=cli("state",abandoned)["state"]["Pid"]
+            abandoned_pid=cli("debug", "state",abandoned)["state"]["Pid"]
             for _ in range(350):
                 record=json.loads((work/"sessions"/abandoned/"session.json").read_text())
                 if record.get("stopped"):break
@@ -274,43 +279,43 @@ def run():
             live.remove(abandoned)
 
             sid = start("--config", "Selected test", "--build")
-            cli("break", sid, "--human", "--file", str(fixture / "main_test.go"), "--line", "3")
+            cli("debug", "breakpoint", "add", sid, "--file", str(fixture / "main_test.go"), "--line", "3")
             for iteration in range(2):
-                cli("continue", sid, "--human", "--wait", "10s")
-                paused = cli("state", sid)
+                cli("debug", "continue", sid, "--human", "--wait", "10s")
+                paused = cli("debug", "state", sid)
                 assert paused["status"] == "paused" and paused["source"]["file"] == str(fixture / "main_test.go")
-                cli("continue", sid, "--human", "--wait", "10s")
-                state = cli("state", sid)
+                cli("debug", "continue", sid, "--human", "--wait", "10s")
+                state = cli("debug", "state", sid)
                 assert state["status"] == "exited" and state["state"]["exitStatus"] == 0
                 if iteration == 0:
                     old_run = state["run"]
-                    assert cli("restart", sid, "--human")["run"] != old_run
-            cli("end-session", sid, "--confirmed")
+                    assert cli("session", "restart", sid, "--human")["run"] != old_run
+            cli("session", "stop", sid, "--confirmed")
             live.remove(sid)
             (fixture / "main.go").write_text('package main\nimport "fmt"\nfunc main(){\n for value:=7;value<10;value++ {\n fmt.Println(value)\n }\n}\n')
             subprocess.run(["go", "build", "-gcflags=all=-N -l", "-o", str(target_binary), "."], cwd=fixture, check=True)
             sid = start("--binary", str(target_binary))
-            saved = cli("tracepoint", "add", sid, "--file", str(fixture / "main.go"), "--line", "5", "--name", "observe value", "--values", '{"selected_value":"value"}', "--capture-limit", "1")
+            saved = cli("debug", "tracepoint", "add", sid, "--file", str(fixture / "main.go"), "--line", "5", "--name", "observe value", "--values", '{"selected_value":"value"}', "--capture-limit", "1")
             assert saved["resolutions"][0]["verified"], saved
-            cli("continue", sid, "--human", "--wait", "10s")
+            cli("debug", "continue", sid, "--human", "--wait", "10s")
             for _ in range(50):
-                captures = cli("captures", sid)
+                captures = cli("debug", "captures", sid)
                 if len(captures["captures"]) >= 2:
                     break
                 time.sleep(.1)
             assert [c["status"] for c in captures["captures"]] == ["captured", "skipped"], captures
-            assert cli("state", sid)["status"] == "paused"
+            assert cli("debug", "state", sid)["status"] == "paused"
             point_id = saved["definitions"]["items"][0]["id"]
-            listed = cli("tracepoint", "list", sid)
+            listed = cli("debug", "tracepoint", "list", sid)
             assert listed["definitions"]["items"][0]["id"] == point_id
-            assert cli("capabilities", sid)["capabilities"]["service"]["tracepoints"]
-            assert cli("goroutines", sid, "--count", "1")["result"]["Goroutines"]
-            assert len(cli("stack", sid, "--count", "1")["result"]["Locations"]) == 1
-            updated = cli("tracepoint", "update", sid, "--id", point_id, "--revision", "1", "--enabled=false")
+            assert cli("debug", "capabilities", sid)["capabilities"]["service"]["tracepoints"]
+            assert cli("debug", "goroutines", sid, "--count", "1")["result"]["Goroutines"]
+            assert len(cli("debug", "stack", sid, "--count", "1")["result"]["Locations"]) == 1
+            updated = cli("debug", "tracepoint", "update", sid, "--id", point_id, "--revision", "1", "--enabled=false")
             assert not updated["definitions"]["items"][0]["enabled"]
             stale = subprocess.run([str(core), "tracepoint", "remove", sid, "--id", point_id, "--revision", "1"], env=env, capture_output=True, text=True, timeout=10)
             assert stale.returncode and json.loads(stale.stderr)["code"]=="stale_revision" and json.loads(stale.stderr)["version"]==1
-            assert not cli("tracepoint", "remove", sid, "--id", point_id, "--revision", "2")["definitions"]["items"]
+            assert not cli("debug", "tracepoint", "remove", sid, "--id", point_id, "--revision", "2")["definitions"]["items"]
             first = captures["captures"][0]
             assert first["values"]["selected_value"]["value"] == "7", first
             assert first["snapshot"]["frames"] and first["goroutine"] > 0
@@ -321,8 +326,25 @@ def run():
                 assert program_trace != debugger_trace
             else:
                 assert first["exportStatus"] in ("queued", "sent"), first
-            cli("end-session", sid, "--confirmed")
+            binding = cli("debug", "state", sid)["binding"]
+            task = cli("debug", "task", "start", sid, "--binding", binding["id"], "--revision", str(binding["revision"]),
+                       "--instruction", "Step once in the disposable validation target")["task"]
+            cli("debug", "step", sid, "--over", "--task", task["id"], "--binding", binding["id"], "--wait", "10s")
+            cli("debug", "task", "complete", sid, "--task", task["id"], "--binding", binding["id"])
+            cli("session", "stop", sid, "--confirmed")
             live.remove(sid)
+            assert cli("session", "history", sid)
+            records = cli("query", "traces", "--session", sid)
+            assert records and any(record["adapter"] == "brote" and record["session"].startswith(sid + ":") for record in records), records
+            for _ in range(100):
+                try:
+                    saved_trace = cli("query", "traces", first["programTraceId"])
+                    assert saved_trace.get("batches", saved_trace.get("resourceSpans")), saved_trace
+                    break
+                except RuntimeError:
+                    time.sleep(.2)
+            else:
+                raise AssertionError("saved local trace retrieval did not settle")
 
             if os.environ.get("BROTE_CHECK_OTLP"):
                 query = os.environ.get("BROTE_TEMPO_QUERY_URL", "http://127.0.0.1:3200")
@@ -359,17 +381,17 @@ def run():
                 old_endpoint = env.get("OTEL_EXPORTER_OTLP_ENDPOINT")
                 env["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://127.0.0.1:" + str(unavailable.getsockname()[1])
                 sid = start("--binary", str(target_binary))
-                cli("tracepoint", "add", sid, "--file", str(fixture / "main.go"), "--line", "5", "--name", "unavailable export", "--values", '{"value":"value"}', "--capture-limit", "1")
-                cli("continue", sid, "--human", "--wait", "10s")
+                cli("debug", "tracepoint", "add", sid, "--file", str(fixture / "main.go"), "--line", "5", "--name", "unavailable export", "--values", '{"value":"value"}', "--capture-limit", "1")
+                cli("debug", "continue", sid, "--human", "--wait", "10s")
                 for _ in range(50):
-                    outcomes = cli("captures", sid)["captures"]
+                    outcomes = cli("debug", "captures", sid)["captures"]
                     if outcomes and outcomes[0]["exportStatus"] == "failed":
                         break
                     time.sleep(.1)
                 assert outcomes[0]["status"] == "captured" and outcomes[0]["exportStatus"] == "failed", outcomes
-                assert cli("state", sid)["status"] == "paused"
+                assert cli("debug", "state", sid)["status"] == "paused"
                 started = time.monotonic()
-                cli("end-session", sid, "--confirmed")
+                cli("session", "stop", sid, "--confirmed")
                 assert time.monotonic() - started < 8
                 live.remove(sid)
                 if old_endpoint is None:
@@ -381,11 +403,11 @@ def run():
             (fixture / "main.go").write_text('package main\nfunc main(){panic("service panic evidence")}\n')
             subprocess.run(["go", "build", "-gcflags=all=-N -l", "-o", str(target_binary), "."], cwd=fixture, check=True)
             sid = start("--binary", str(target_binary))
-            cli("continue", sid, "--human", "--wait", "10s")
-            evidence = cli("state", sid)
+            cli("debug", "continue", sid, "--human", "--wait", "10s")
+            evidence = cli("debug", "state", sid)
             assert evidence["status"] == "paused" and evidence["state"]["stopReason"] == "exception", evidence
             assert evidence["frames"] and "service panic evidence" in json.dumps(evidence.get("exception")), evidence
-            cli("end-session", sid, "--confirmed")
+            cli("session", "stop", sid, "--confirmed")
             live.remove(sid)
             print(json.dumps({"launchedDetachRejectedSafely": True, "warningStartupIdentity": True, "abandonedEditorStartupCleaned": True, "crossSessionStopDenied": True, "partialLaunchCleanup": True, "failedAttachPreservesTarget": True, "simultaneousSessionsIsolated": True, "unavailableOTLPReported": True, "cliTracepointCRUD": True, "cliPagedInspection": True, "guardedAutoContinue": True, "boundedTracepointCapture": True, "exactSelectedValue": True, "captureLimitPreservesPause": True, "editorDefinitionReplay": True, "panicEvidence": True, "boundedAgentExecution": True, "cancelledScopeCannotRenew": True, "pauseRunningTarget": True, "duplicateCommandRejected": True, "authenticatedDiscovery": True, "stdioDAP": True,
                               "disconnectPreservesTarget": True, "restartNewRun": True, "recoveryPreservesRunAndPID": True,
@@ -397,7 +419,7 @@ def run():
                 editor.kill()
                 editor.wait(timeout=5)
             for sid in live:
-                cli("end-session", sid, "--confirmed")
+                cli("session", "stop", sid, "--confirmed")
             if target is not None and target.poll() is None:
                 target.terminate()
                 target.wait(timeout=5)
