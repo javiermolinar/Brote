@@ -6,6 +6,14 @@ import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {build} from 'esbuild';
 
+// Mock CLI processes publish complete snapshots, just like the Go state store.
+// In-place writes briefly truncate the file while the test and event reader poll it.
+const persistState = `function persistState() {
+ const temporary = file + '.' + process.pid + '.tmp';
+ fs.writeFileSync(temporary, JSON.stringify(state));
+ fs.renameSync(temporary, file);
+}`;
+
 const delay = ms => new Promise(resolve=>setTimeout(resolve,ms));
 test('Pi handback uses the matching conversation, deduplicates, and does not inherit on fork',async t=>{
  const dir=await mkdtemp(join(tmpdir(),'handover-pi-'));t.after(()=>rm(dir,{recursive:true,force:true}));
@@ -16,10 +24,11 @@ test('Pi handback uses the matching conversation, deduplicates, and does not inh
  await writeFile(store,JSON.stringify({id:'0123456789',owner:'agent',binding,cursor:1,notification:{id:'1',status:'pending'}}));
  await writeFile(cli,`#!${process.execPath}
 const fs=require('node:fs');const file=${JSON.stringify(store)};const [command,...args]=process.argv.slice(2);let state=JSON.parse(fs.readFileSync(file));
+${persistState}
 if(command==='version')console.log(JSON.stringify({protocol:2,capabilities:['executionTasks','taskDelivery','taskExecute','embeddedWebUI']}));
 else if(command==='sessions') console.log(JSON.stringify([{id:state.id,status:'paused'}]));
 else if(command==='state')console.log(JSON.stringify(state));
-else if(command==='event-status'){state.notification.status=args[args.indexOf('--status')+1];fs.writeFileSync(file,JSON.stringify(state));console.log('{}');}
+else if(command==='event-status'){state.notification.status=args[args.indexOf('--status')+1];persistState();console.log('{}');}
 else if(command==='events'){const event={id:1,kind:'control_returned',binding:state.binding};console.log(JSON.stringify(event));console.log(JSON.stringify(event));setInterval(()=>{},1000);}
 else throw new Error(command);
 `,{mode:0o755});
@@ -59,11 +68,12 @@ test('Pi delivers persisted questions while browser owns execution and reconcile
  await writeFile(store,JSON.stringify({id:'0123456789',owner:'browser',binding,cursor:1,capabilities:{comments:true},threads:[{id:'thread',resolved:false,delivery:{binding,question:'question',status:'pending'},messages:[{body:'Why is total 21?'}]}]}));
  await writeFile(cli,`#!${process.execPath}
 const fs=require('node:fs');const file=${JSON.stringify(store)};const [command,...args]=process.argv.slice(2);let state=JSON.parse(fs.readFileSync(file));
+${persistState}
 if(command==='version')console.log(JSON.stringify({protocol:2,capabilities:['executionTasks','taskDelivery','taskExecute','embeddedWebUI']}));
 else if(command==='sessions') console.log(JSON.stringify([{id:state.id,status:'paused'}]));
 else if(command==='state')console.log(JSON.stringify(state));
 else if(command==='comment'&&args[0]==='list')console.log(JSON.stringify({threads:state.threads}));
-else if(command==='comment'&&args[0]==='delivery'){state.threads[0].delivery.status=args[args.indexOf('--status')+1];fs.writeFileSync(file,JSON.stringify(state));console.log('{}');}
+else if(command==='comment'&&args[0]==='delivery'){state.threads[0].delivery.status=args[args.indexOf('--status')+1];persistState();console.log('{}');}
 else if(command==='events'){const event={id:1,kind:'question.created',binding:state.binding};console.log(JSON.stringify(event));console.log(JSON.stringify(event));setInterval(()=>{},1000);}
 else throw new Error(command);
 `,{mode:0o755});
@@ -125,11 +135,12 @@ test('Pi task delivery reconciles, claims, executes and settles only its bound g
  await writeFile(store,JSON.stringify({id:'0123456789',status:'paused',binding,cursor:1,capabilities:{taskStart:true},task:{id:'task',binding,status:'authorized',delivery:'pending',instruction:'Inspect retry'},calls:[]}));
  await writeFile(cli,`#!${process.execPath}
 const fs=require('node:fs'),file=${JSON.stringify(store)};const [command,...args]=process.argv.slice(2);let state=JSON.parse(fs.readFileSync(file));
+${persistState}
 if(command==='version')console.log(JSON.stringify({protocol:2,capabilities:['executionTasks','taskDelivery','taskExecute','embeddedWebUI']}));
 else if(command==='sessions')console.log(JSON.stringify([{id:state.id,status:'paused'}]));
 else if(command==='state')console.log(JSON.stringify(state));
 else if(command==='events'){console.log(JSON.stringify({id:2,kind:'task.authorized',binding:state.binding}));setInterval(()=>{},1000);}
-else if(command.startsWith('task-')){state.calls.push({command,args});if(command==='task-start')state.task={id:'chat-task',binding:state.binding,status:'authorized',delivery:'acknowledged',instruction:args[args.indexOf('--instruction')+1]};if(command==='task-delivery')state.task.delivery=args[args.indexOf('--status')+1];if(command==='task-heartbeat')state.task.delivery='acknowledged';if(command==='task-complete')state.task.status='completed';if(command==='task-cancel')state.task.status='cancelled';fs.writeFileSync(file,JSON.stringify(state));console.log(JSON.stringify(state));}
+else if(command.startsWith('task-')){state.calls.push({command,args});if(command==='task-start')state.task={id:'chat-task',binding:state.binding,status:'authorized',delivery:'acknowledged',instruction:args[args.indexOf('--instruction')+1]};if(command==='task-delivery')state.task.delivery=args[args.indexOf('--status')+1];if(command==='task-heartbeat')state.task.delivery='acknowledged';if(command==='task-complete')state.task.status='completed';if(command==='task-cancel')state.task.status='cancelled';persistState();console.log(JSON.stringify(state));}
 else throw new Error(command);
 `,{mode:0o755});
  await build({entryPoints:['adapters/pi/index.ts'],bundle:true,platform:'node',format:'esm',outfile:module,logLevel:'silent'});

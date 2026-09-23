@@ -1,6 +1,6 @@
 import { ROOT_CONTEXT, trace, Span, SpanStatusCode, Attributes } from '@opentelemetry/api';
-import { BasicTracerProvider, BatchSpanProcessor, SpanExporter } from '@opentelemetry/sdk-trace-base';
-import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
+import { BasicTracerProvider, BatchSpanProcessor, SpanExporter, ReadableSpan } from '@opentelemetry/sdk-trace-base';
+import { configuredExporter } from './configuredExporter';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 
 // Span names and resource attributes are outside the SDK's attribute-value limit.
@@ -15,14 +15,16 @@ function boundedName(value:string,maxBytes=512):string {
   return result;
 }
 
-export interface ExportConfig {url:string;headers:Record<string,string>}
+export interface ExportConfig {url:string;headers:Record<string,string>;push?:(data:Uint8Array)=>Promise<void>}
 export function exportConfig(env:NodeJS.ProcessEnv):ExportConfig|undefined {
-  if(!env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim())return;
+  const tracesEndpoint=env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT?.trim();
+  const endpoint=tracesEndpoint || env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
+  if(!endpoint)return;
   const protocol=env.OTEL_EXPORTER_OTLP_TRACES_PROTOCOL ?? env.OTEL_EXPORTER_OTLP_PROTOCOL;
   if(protocol && protocol!=='http/protobuf')throw new Error('Use OTLP HTTP/protobuf.');
-  const url=new URL(env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT || env.OTEL_EXPORTER_OTLP_ENDPOINT);
+  const url=new URL(endpoint);
   if(!['http:','https:'].includes(url.protocol) || url.username || url.password || url.hash || url.search)throw new Error('Invalid OTLP endpoint.');
-  if(!env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT)url.pathname=url.pathname.replace(/\/$/,'')+'/v1/traces';
+  if(!tracesEndpoint)url.pathname=url.pathname.replace(/\/$/,'')+'/v1/traces';
   const headers:Record<string,string>={};
   for(const pair of (env.OTEL_EXPORTER_OTLP_TRACES_HEADERS ?? env.OTEL_EXPORTER_OTLP_HEADERS ?? '').split(',')) {
     if(!pair.trim())continue;
@@ -33,6 +35,35 @@ export function exportConfig(env:NodeJS.ProcessEnv):ExportConfig|undefined {
     headers[key]=value;
   }
   return {url:url.href,headers};
+}
+// Keep startup outside the SDK's network-export deadline. This queue has the
+// same bound as the SDK queue; a slow helper cannot accumulate unbounded spans.
+class ReadyBatchProcessor extends BatchSpanProcessor {
+  private ready=false;
+  private pending:ReadableSpan[]=[];
+  private readonly readiness:Promise<void>;
+  constructor(exporter:SpanExporter, readiness:Promise<unknown>) {
+    super(exporter,{maxQueueSize:256,maxExportBatchSize:64,scheduledDelayMillis:500,exportTimeoutMillis:2000});
+    const release=()=>{this.ready=true;const spans=this.pending;this.pending=[];for(const span of spans)super.onEnd(span);};
+    // Also drain through the failed exporter so every retained batch reports failure.
+    this.readiness=readiness.then(release,release);
+  }
+  override onEnd(span:ReadableSpan):void {
+    if(this.ready)super.onEnd(span);
+    else if(this.pending.length<256)this.pending.push(span);
+  }
+  override async forceFlush():Promise<void>{await this.readiness;await super.forceFlush();}
+  override async shutdown():Promise<void>{await this.readiness;await super.shutdown();}
+}
+// Remote failures are reported by the exporter callback, but must not let a
+// provider's aggregate shutdown finish before the local processor has drained.
+class RemoteBatchProcessor extends BatchSpanProcessor {
+  override async shutdown():Promise<void>{try{await super.shutdown();}catch{/* reported by exporter */}}
+  override async forceFlush():Promise<void>{try{await super.forceFlush();}catch{/* reported by exporter */}}
+}
+async function settleAll(promises:Promise<void>[]):Promise<void>{
+  const results=await Promise.allSettled(promises);
+  if(results.some(result=>result.status==='rejected'))throw new Error('Local trace export failed.');
 }
 export interface Frame {name?:string;line?:number;source?:{path?:string}}
 export interface Observation {thread:number;frame:Frame;stack:Frame[];scopes:unknown[];capturedAt:string}
@@ -53,9 +84,9 @@ export class SessionTrace {
   private shutdownPromise?:Promise<void>;
   readonly debuggerTraceID:string;
   readonly programTraceID:string;
-  constructor(readonly id:string,name:string,type:string,exporter:()=>SpanExporter) {
+  constructor(readonly id:string,name:string,type:string,exporter:()=>SpanExporter,additionalExporters:(()=>SpanExporter)[]=[],localReadiness?:Promise<unknown>) {
     name=boundedName(name);type=boundedName(type,128);
-    const provider=(service:string)=>new BasicTracerProvider({resource:resourceFromAttributes({'service.name':service,'debugger.adapter.type':type}),spanLimits:{attributeCountLimit:128,attributeValueLengthLimit:65536},spanProcessors:[new BatchSpanProcessor(exporter(),{maxQueueSize:256,maxExportBatchSize:64,scheduledDelayMillis:500,exportTimeoutMillis:2000})]});
+    const provider=(service:string)=>new BasicTracerProvider({resource:resourceFromAttributes({'service.name':service,'debugger.adapter.type':type}),spanLimits:{attributeCountLimit:128,attributeValueLengthLimit:65536},spanProcessors:[exporter,...additionalExporters].map((factory,index)=>index===0 && localReadiness?new ReadyBatchProcessor(factory(),localReadiness):new (index===0?BatchSpanProcessor:RemoteBatchProcessor)(factory(),{maxQueueSize:256,maxExportBatchSize:64,scheduledDelayMillis:500,exportTimeoutMillis:2000}))});
     this.debuggerProvider=provider('brote');this.programProvider=provider(name);
     this.root=this.debuggerProvider.getTracer('brote.debugger').startSpan('debugger.session',{attributes:{'debugger.session.id':id}},ROOT_CONTEXT);
     this.run=this.programProvider.getTracer('brote.program').startSpan(boundedName(`run ${name}`),{attributes:{...this.common(),'program.span.type':'run'},links:[{context:this.root.spanContext()}]},ROOT_CONTEXT);
@@ -124,17 +155,35 @@ export class SessionTrace {
     if(observation.frame.line)attrs['code.line.number']=observation.frame.line;
     this.programProvider.getTracer('brote.program').startSpan(boundedName(label || observation.frame.name || 'capture'),{startTime:instant,attributes:attrs},trace.setSpan(ROOT_CONTEXT,parent)).end(instant);
   }
-  async flush():Promise<void>{await Promise.all([this.debuggerProvider.forceFlush(),this.programProvider.forceFlush()]);}
+  async flush():Promise<void>{await settleAll([this.debuggerProvider.forceFlush(),this.programProvider.forceFlush()]);}
   close():Promise<void>{
     if(this.shutdownPromise)return this.shutdownPromise;
     this.closed=true;
     for(const seq of this.requests.keys())this.finish(seq,'interrupted');
     for(const span of this.threads.values()){span.setAttribute('program.observation.boundary','session-ended');span.end();}
     this.run.end();this.root.end();
-    this.shutdownPromise=Promise.all([this.debuggerProvider.shutdown(),this.programProvider.shutdown()]).then(()=>{});
+    this.shutdownPromise=settleAll([this.debuggerProvider.shutdown(),this.programProvider.shutdown()]);
     return this.shutdownPromise;
   }
 }
-export function createSessionTrace(id:string,name:string,type:string,config:ExportConfig):SessionTrace {
-  return new SessionTrace(id,name,type,()=>new OTLPTraceExporter({...config,timeoutMillis:2000}));
+export async function preflight(config:ExportConfig):Promise<void> {
+  const response=await fetch(config.url,{method:'POST',headers:{...config.headers,'Content-Type':'application/x-protobuf'},body:new Uint8Array(),signal:AbortSignal.timeout(2000),redirect:'error'});
+  await response.body?.cancel();
+  if(!response.ok)throw new Error('Remote OTLP connection or authentication failed.');
+}
+export function createSessionTrace(id:string,name:string,type:string,config:ExportConfig|Promise<ExportConfig>,remote?:ExportConfig,onExport?:(destination:'local'|'remote',success:boolean,traceID:string)=>void):SessionTrace {
+  const factory=(settings:ExportConfig|Promise<ExportConfig>,destination:'local'|'remote')=>():SpanExporter=>{
+    let exporter:SpanExporter|undefined,closed=false;
+    const ready=Promise.resolve(settings).then(config=>{
+      if(closed)throw new Error('Trace exporter is closed.');
+      return exporter=configuredExporter(config,destination==='local');
+    });
+    // Readiness may fail before the first batch is exported.
+    void ready.catch(()=>{});
+    return {
+      export(spans,done){void ready.then(target=>target.export(spans,result=>{onExport?.(destination,result.code===0,spans[0]?.spanContext().traceId || '');done(result);})).catch(()=>{onExport?.(destination,false,spans[0]?.spanContext().traceId || '');done({code:1,error:new Error('Trace exporter is unavailable.')});});},
+      async shutdown(){closed=true;await exporter?.shutdown();},
+    };
+  };
+  return new SessionTrace(id,name,type,factory(config,'local'),remote?[factory(remote,'remote')]:[],Promise.resolve(config));
 }

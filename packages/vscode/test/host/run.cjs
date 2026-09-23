@@ -19,12 +19,13 @@ async function main(){
  await fs.writeFile(path.join(project,'go.mod'),'module nativehosttest\n\ngo 1.23\n');
  await fs.cp(goExtension,path.join(extensions,'golang.go'),{recursive:true});
  execFileSync('go',['build','-gcflags=all=-N -l','-o',path.join(project,'demo'),'.'],{cwd:project,stdio:'inherit'});
- execFileSync('unzip',['-q',path.join(root,'dist/brote.vsix'),'-d',path.join(work,'vsix')]);
+ execFileSync('unzip',['-q',process.env.BROTE_TEST_VSIX || path.join(root,'dist/brote.vsix'),'-d',path.join(work,'vsix')]);
  // Put the host test under the development extension so VS Code attributes its API calls correctly.
  const extension=path.join(work,'vsix/extension');
  await fs.copyFile(path.join(__dirname,'otlp.cjs'),path.join(extension,'host-test.cjs'));
  const log=await fs.open(path.join(work,'host.log'),'w');
- const env={...process.env,BROTE_HOST_TEST_DIR:project,OTEL_EXPORTER_OTLP_ENDPOINT:process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://127.0.0.1:4318'};
+ const env={...process.env,BROTE_HOST_TEST_DIR:project,AGENTDEBUGGER_DATA_DIR:path.join(work,'data')};
+ for(const key of Object.keys(env))if(key.startsWith('OTEL_EXPORTER_'))delete env[key];
  delete env.ELECTRON_RUN_AS_NODE;
  const args=['--new-window','--skip-welcome','--skip-release-notes','--disable-workspace-trust','--user-data-dir',user,'--extensions-dir',extensions,`--extensionDevelopmentPath=${extension}`,`--extensionTestsPath=${path.join(extension,'host-test.cjs')}`,project];
  try{
@@ -38,7 +39,11 @@ async function main(){
   const output=process.env.BROTE_HOST_RESULT || path.join(root,'dist/vscode-host-result.json');
   await fs.mkdir(path.dirname(output),{recursive:true});await fs.writeFile(output,JSON.stringify(result,null,2));
   console.log(JSON.stringify({result:output,traceIDs:result.traceIDs,spans:result.spanCount,snapshots:result.snapshots,value:result.value}));
-  await log.close();await fs.rm(work,{recursive:true,force:true});
+  await log.close();
+  const pid=Number(await fs.readFile(path.join(work,'data/tracing/service.pid'),'utf8'));try{process.kill(pid,'SIGTERM');}catch{}
+  // Retain data until the core service has flushed Tempo.
+  for(let i=0;i<200;i++){try{process.kill(pid,0);}catch{break;}await new Promise(r=>setTimeout(r,100));}
+  await fs.rm(work,{recursive:true,force:true});
  }catch(error){await log.close();console.error(`Host test evidence retained at ${work}`);throw error;}
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

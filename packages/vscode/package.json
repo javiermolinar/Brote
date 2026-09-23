@@ -52,6 +52,10 @@
         "command": "brote.nativeChat",
         "title": "Continue in Chat",
         "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "brote.traces",
+        "title": "Brote: Session Traces"
       }
     ],
     "chatParticipants": [
@@ -171,9 +175,11 @@
     "Delve"
   ],
   "icon": "assets/brote-plant.png",
-  "dependencies": {
+  "devDependencies": {
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.222.0",
+    "@opentelemetry/otlp-exporter-base": "0.222.0",
+    "@opentelemetry/otlp-transformer": "0.222.0",
     "@opentelemetry/resources": "^2.11.0",
     "@opentelemetry/sdk-trace-base": "^2.11.0"
   }

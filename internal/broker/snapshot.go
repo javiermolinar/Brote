@@ -31,6 +31,7 @@ func (b *broker) snapshotLocked(gid, frame int, brief bool) (obj, error) {
 	}
 	v["debugger"] = obj{"adapter": "Delve", "protocol": protocol, "pid": b.s.DelvePID, "status": "connected", "mode": "launched"}
 	v["historyError"] = b.historyError
+	v["traces"] = b.traces.Status()
 	v["task"] = b.taskView()
 	v["agentConnected"] = b.agentStreams > 0
 	v["panel"] = b.s.HTTP + "/"

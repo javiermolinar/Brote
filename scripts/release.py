@@ -40,6 +40,14 @@ def copy_runtime(source, destination):
     destination.chmod(0o755)
 
 
+def copy_tempo_materials(destination, source_archive):
+    destination.mkdir(parents=True, exist_ok=True)
+    tempo = Path(subprocess.check_output(['go', 'list', '-m', '-f', '{{.Dir}}', 'github.com/grafana/tempo/v3'], cwd=ROOT, text=True).strip())
+    shutil.copy2(tempo / 'LICENSE', destination / 'TEMPO-LICENSE')
+    shutil.copy2(ROOT / 'THIRD_PARTY_NOTICES.md', destination / 'THIRD_PARTY_NOTICES.md')
+    shutil.copy2(source_archive, destination / 'brote-source.tar.gz')
+
+
 def copy_brand(destination, include_screenshot=False):
     destination.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / 'assets/brote-plant.png', destination / 'brote-plant.png')
@@ -52,8 +60,23 @@ def copy_integration_readme(source, destination):
 
 
 def archive_tree(source, output):
+    # Native bundles retain compatibility aliases and self-contained adapters.
+    # Store identical large files once; tar hardlinks preserve every public path.
+    seen = {}
+    def deduplicate(info):
+        if info.isfile() and info.size >= 1024 * 1024:
+            relative = Path(info.name).relative_to(source.name)
+            digest = hashlib.sha256((source / relative).read_bytes()).hexdigest()
+            key = (digest, info.mode)
+            if key in seen:
+                info.type = tarfile.LNKTYPE
+                info.linkname = seen[key]
+                info.size = 0
+            else:
+                seen[key] = info.name
+        return info
     with tarfile.open(output, 'w:gz') as archive:
-        archive.add(source, arcname=source.name)
+        archive.add(source, arcname=source.name, filter=deduplicate)
 
 
 def package_release(args):
@@ -74,8 +97,11 @@ def package_release(args):
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     # Rebuild before packaging; artifacts never silently reuse stale bundles.
+    run('go', 'mod', 'download')
     run('npm', 'run', 'build')
-    artifacts = []
+    source_archive = out / f'brote-source-{version}.tar.gz'
+    run('python3', 'scripts/tempo-source.py', str(source_archive))
+    artifacts = [source_archive]
     with tempfile.TemporaryDirectory(prefix='brote-release-') as tmp:
         work = Path(tmp)
         runtimes = {}
@@ -83,7 +109,7 @@ def package_release(args):
             system, arch = target.split('/')
             binary = work / TARGETS[target] / 'brote'
             binary.parent.mkdir()
-            run('go', 'build', '-trimpath', '-ldflags', f'-X agentdebugger/internal/cli.Version={version}', '-o', str(binary), './cmd/brote', env={**os.environ, 'GOOS': system, 'GOARCH': arch, 'CGO_ENABLED': '0'})
+            run('go', 'build', '-trimpath', '-ldflags', f'-s -w -X agentdebugger/internal/cli.Version={version}', '-o', str(binary), './cmd/brote', env={**os.environ, 'GOOS': system, 'GOARCH': arch, 'CGO_ENABLED': '0'})
             runtimes[target] = binary
             # Pi Git installs fetch only the matching native core; its WebUI is embedded.
             native = out / f'brote-v{version}-{system}-{arch}'
@@ -93,7 +119,8 @@ def package_release(args):
         pi = work / 'pi'
         pi.mkdir()
         pi_manifest = manifest(ROOT / 'adapters/pi/package.json')
-        pi_manifest.update(name=args.npm_name, version=version)
+        pi_manifest.update(name=args.npm_name, version=version, license='AGPL-3.0-only')
+        pi_manifest['files'] = list(dict.fromkeys(pi_manifest.get('files', []) + ['TEMPO-LICENSE', 'THIRD_PARTY_NOTICES.md', 'brote-source.tar.gz']))
         pi_manifest['pi']['extensions'] = ['./index.js']
         if args.repository:
             pi_manifest['repository'] = {'type': 'git', 'url': 'https://github.com/' + args.repository + '.git', 'directory': 'adapters/pi'}
@@ -105,6 +132,7 @@ def package_release(args):
         copy_integration_readme(ROOT / 'adapters/pi/README.md', pi / 'README.md')
         copy_brand(pi / 'assets')
         shutil.copy2(ROOT / 'LICENSE', pi / 'LICENSE')
+        copy_tempo_materials(pi, source_archive)
         # npm pack applies the actual publication file allowlist, without scripts.
         run('npm', 'pack', '--ignore-scripts', '--pack-destination', str(out), cwd=pi)
         npm_tar = out / (args.npm_name.replace('@', '').replace('/', '-') + '-' + version + '.tgz')
@@ -121,6 +149,7 @@ def package_release(args):
         for target, binary in runtimes.items():
             copy_runtime(binary, plugin / 'runtime' / TARGETS[target] / 'brote')
         shutil.copy2(ROOT / 'LICENSE', plugin / 'LICENSE')
+        copy_tempo_materials(plugin, source_archive)
         plugin_zip = out / f'brote-codex-{version}.zip'
         with zipfile.ZipFile(plugin_zip, 'w', zipfile.ZIP_DEFLATED) as archive:
             for file in sorted(plugin.rglob('*')):
@@ -129,15 +158,18 @@ def package_release(args):
 
         extension_manifest = manifest(ROOT / 'packages/vscode/package.json')
         extension_manifest['version'] = version
+        extension_manifest['license'] = 'AGPL-3.0-only'
         if args.publisher: extension_manifest['publisher'] = args.publisher
         if args.repository:
             extension_manifest['repository'] = {'type': 'git', 'url': 'https://github.com/' + args.repository + '.git'}
         for target, binary in runtimes.items():
             ext = work / ('vscode-' + TARGETS[target])
             shutil.copytree(ROOT / 'packages/vscode/dist', ext / 'dist')
+            copy_runtime(binary, ext / 'runtime' / 'brote')
             copy_brand(ext / 'assets')
             copy_integration_readme(ROOT / 'packages/vscode/README.md', ext / 'README.md')
             shutil.copy2(ROOT / 'LICENSE', ext / 'LICENSE')
+            copy_tempo_materials(ext, source_archive)
             shutil.copy2(ROOT / 'THIRD_PARTY_NOTICES.md', ext / 'THIRD_PARTY_NOTICES.md')
             (ext / '.vscodeignore').write_text('')
             write_json(ext / 'package.json', extension_manifest)
@@ -152,6 +184,7 @@ def package_release(args):
             system, arch = target.split('/')
             # Preserve the old archive root and executable aliases for upgrades.
             bundle = work / TARGETS[target] / 'delve-llm-adapter'
+            copy_tempo_materials(bundle, source_archive)
             copy_runtime(binary, bundle / 'bin/brote')
             copy_runtime(binary, bundle / 'bin/delve-llm-adapter')
             copy_runtime(binary, bundle / 'bin/agentdebugger')

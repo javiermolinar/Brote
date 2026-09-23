@@ -11,12 +11,28 @@ import (
 	"agentdebugger/internal/editors"
 	"agentdebugger/internal/editors/zed"
 	"agentdebugger/internal/session"
+	"agentdebugger/internal/tracing"
 )
 
 func (b *broker) action(a obj) (result obj, actionErr error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	defer func() { b.historyAction(a, result, actionErr) }()
+	command := str(a["action"])
+	switch command {
+	case "step":
+		command = "stepIn"
+	case "stepout":
+		command = "stepOut"
+	case "eval":
+		command = "evaluate"
+	case "break", "clear":
+		command = "setBreakpoints"
+	}
+	b.traceSequence++
+	traceSeq := b.traceSequence
+	b.traces.Event(tracing.Event{Kind: "request", Seq: traceSeq, Command: command, Thread: num(a["goroutine"])})
+	defer func() { b.traces.Event(tracing.Event{Kind: "response", Seq: traceSeq, Success: actionErr == nil}) }()
 	// A human pause is always current intent; it must win over an agent step
 	// which advanced the generation while the inspector request was in flight.
 	humanInterrupt := human(str(a["actor"])) && (str(a["action"]) == "pause" || (str(a["action"]) == "task-cancel" && b.s.Task != nil && str(a["task"]) == b.s.Task.ID))

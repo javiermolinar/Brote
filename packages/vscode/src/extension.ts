@@ -1,16 +1,21 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
+import { CoreTracing, CoreSessionTrace, TraceRecord } from './coreTrace';
 import { nativeDiscussions } from './native';
-import { exportConfig, createSessionTrace, SessionTrace } from './telemetry';
 
 const breakpointReasons=new Set(['breakpoint','function breakpoint','data breakpoint','instruction breakpoint']);
-const sessions=new Map<string,SessionTrace>();
+const sessions=new Map<string,CoreSessionTrace>();
 const closing=new Set<Promise<void>>();
+let runtime:CoreTracing|undefined;
+let shuttingDown=false;
 export async function deactivate():Promise<void> {
+  shuttingDown=true;
   await Promise.allSettled([...closing,...[...sessions.values()].map(s=>s.close())]);
   sessions.clear();
+  runtime=undefined;
 }
-export function activate(context:vscode.ExtensionContext):void {
+export function activate(context:vscode.ExtensionContext) {
+  shuttingDown=false;
   const log=vscode.window.createOutputChannel('Brote');
   const native=nativeDiscussions(context,observation=>{
     const points=vscode.workspace.getConfiguration('brote').get<Record<string,{name?:string;values?:Record<string,string>}>>('capturePoints',{});
@@ -18,14 +23,25 @@ export function activate(context:vscode.ExtensionContext):void {
     const label=typeof point?.name==='string' && point.name.trim() && point.name.length<=128?point.name:undefined;
     sessions.get(observation.session)?.snapshot(observation,label,point?.values || {});
   });
-  let config:ReturnType<typeof exportConfig>;
-  try{config=exportConfig(process.env);}catch{log.appendLine('Tracing disabled: invalid OTLP endpoint, headers, or protocol.');}
+  runtime=new CoreTracing(path.join(context.extensionPath,'runtime','brote'));
+  const records=context.workspaceState.get<TraceRecord[]>('brote.traces',[]);
+  context.subscriptions.push(vscode.commands.registerCommand('brote.traces',async()=>{
+    try{records.splice(0,records.length,...await runtime!.records());}catch{log.appendLine('Could not refresh trace records.');}
+    const items=records.flatMap(record=>[{label:record.name+' · program',description:record.program+' · '+(record.local?.[record.program] || 'ID assigned'),id:record.program},{label:record.name+' · debugger',description:record.debugger+' · '+(record.local?.[record.debugger] || 'ID assigned'),id:record.debugger}]);
+    const selected=await vscode.window.showQuickPick(items,{title:'Brote session traces',placeHolder:'Trace IDs are assigned before export; Open trace JSON checks local availability.'});if(!selected)return;
+    const action=await vscode.window.showQuickPick(['Copy ID','Open trace JSON']);
+    if(action==='Copy ID'){await vscode.env.clipboard.writeText(selected.id);return;}
+    if(action==='Open trace JSON')try{const document=await vscode.workspace.openTextDocument({language:'json',content:await runtime!.traceJSON(selected.id)});await vscode.window.showTextDocument(document);}catch(error){void vscode.window.showErrorMessage(String(error));}
+  }));
   function end(id:string){const session=sessions.get(id);if(!session)return;sessions.delete(id);const pending=session.close().catch(()=>{log.appendLine('Trace export failed.');}).finally(()=>closing.delete(pending));closing.add(pending);}
   context.subscriptions.push(log,vscode.debug.registerDebugAdapterTrackerFactory('*',{
     createDebugAdapterTracker(session){
-      if(!config || !vscode.workspace.isTrusted || sessions.size>=16)return;
-      const telemetry=createSessionTrace(session.id,session.name,session.type,config);sessions.set(session.id,telemetry);
-      log.appendLine(`${session.name}: program trace ${telemetry.programTraceID}; debugger trace ${telemetry.debuggerTraceID}`);
+      if(shuttingDown || !vscode.workspace.isTrusted || sessions.size>=16)return;
+      const telemetry=runtime!.session(session.id,session.name,session.type,record=>{
+        const index=records.findIndex(value=>value.session===record.session);
+        if(index<0)records.unshift(record);else records[index]=record;
+        void context.workspaceState.update('brote.traces',records);
+      },message=>log.appendLine(message));sessions.set(session.id,telemetry);
       let capturing=false;
       return {
         onWillReceiveMessage(m){if(m.type==='request')telemetry.request(m.seq,m.command,m.arguments?.threadId);},
@@ -68,4 +84,5 @@ export function activate(context:vscode.ExtensionContext):void {
   context.subscriptions.push(participant,vscode.lm.registerTool('brote_inspect',{
     async invoke(){const evidence=await native.capture();return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(JSON.stringify(evidence))]);},
   }));
+  return {traces:()=>records.map(record=>({...record})),traceJSON:(id:string)=>runtime!.traceJSON(id)};
 }

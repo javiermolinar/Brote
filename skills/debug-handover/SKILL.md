@@ -151,3 +151,12 @@ Prefer `state --summary`; avoid immediately repeating the snapshot returned by
 `task-execute`. Report stop location, relevant values and the next observation.
 Keep routing IDs and acknowledgements out of normal replies unless diagnosing a
 connection or delivery failure.
+
+## Saved traces
+
+Brote core captures debugger actions, stops and inspected values for sessions from
+Codex, Pi and editors automatically. `brote traces` lists saved program/debugger
+trace IDs and independent local/remote export status. `brote trace TRACE_ID` reads
+Tempo JSON through the core query API, including after the broker exits. An assigned
+ID or accepted export does not prove disk durability; query to verify availability.
+No separate Tempo process or collector needs to be launched by the agent.
