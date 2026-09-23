@@ -16,6 +16,7 @@ import (
 	"agentdebugger/internal/backend"
 	"agentdebugger/internal/editors/zed"
 	"agentdebugger/internal/session"
+	"agentdebugger/internal/tracing"
 )
 
 // Options configures a broker process; command-line parsing belongs to the CLI.
@@ -248,6 +249,8 @@ func Serve(options Options) (err error) {
 	if e = b.persist(); e != nil {
 		return e
 	}
+	b.traces = tracing.NewRecorder(b.s.ID, filepath.Base(b.s.Binary), "delve")
+	defer b.traces.Close()
 	b.record("broker.connected", "core", obj{"recovered": options.Recover})
 	if discussion, err := session.ReadDiscussion(b.s.ID); err != nil {
 		return err

@@ -24,6 +24,11 @@ jobs:
       - run: npm run build && npm test
       - run: git diff --exit-code -- packages/web/public/app.js packages/vscode/dist/extension.js packages/vscode/dist/protocol.cjs
       - run: npm run test:packaging
+      - name: Verify embedded Tempo durability
+        run: |
+          go build -o bin/brote ./cmd/brote
+          BROTE_EMBEDDED_INTEGRATION=1 node --test packages/vscode/test/embedded-tempo.test.cjs
+          BROTE_CORE_INTEGRATION=1 node --test packages/client/test/core-tracing.test.cjs
       - run: go vet ./...
       - run: go test -race -v ./...
         env:

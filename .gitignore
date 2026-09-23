@@ -16,3 +16,7 @@ __pycache__/
 # Generated VS Code package notices
 /packages/vscode/LICENSE
 /packages/vscode/THIRD_PARTY_NOTICES.md
+
+/packages/vscode/runtime/
+/packages/vscode/brote-source.tar.gz
+/packages/vscode/TEMPO-LICENSE

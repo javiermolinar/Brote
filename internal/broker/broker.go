@@ -7,9 +7,12 @@ import (
 	"agentdebugger/internal/backend"
 	"agentdebugger/internal/delve"
 	"agentdebugger/internal/session"
+	"agentdebugger/internal/tracing"
 )
 
 type broker struct {
+	traces            *tracing.Recorder
+	traceSequence     int
 	interrupting      bool
 	agentStreams      int
 	agentDisconnected time.Time

@@ -55,7 +55,7 @@ class PiGitInstallTest(unittest.TestCase):
                     shutil.copy2(file, dest)
             env = {k: v for k, v in os.environ.items() if k in ('PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'SHELL')}
             env.update(HOME=str(root / 'home'), PI_CODING_AGENT_DIR=str(root / 'pi-agent'),
-                       PI_TELEMETRY='0', CODEX_THREAD_ID='',
+                       PI_TELEMETRY='0', CODEX_THREAD_ID='', CGO_ENABLED='0',
                        npm_config_ignore_scripts='true' if ignore_scripts else 'false',
                        DEBUG_HANDOVER_HOME=str(root / 'sessions'), AGENTDEBUGGER_DATA_DIR=str(root / 'data'),
                        BROTE_RUNTIME_CACHE=str(root / 'runtime-cache'), GIT_TERMINAL_PROMPT='0',
@@ -80,7 +80,7 @@ class PiGitInstallTest(unittest.TestCase):
                 if tag == version:
                     shutil.copy2(release / binary.name, binary)
                 else:
-                    run('go', 'build', '-ldflags', f'-X agentdebugger/internal/cli.Version={tag}',
+                    run('go', 'build', '-trimpath', '-ldflags', f'-s -w -X agentdebugger/internal/cli.Version={tag}',
                         '-o', binary, './cmd/brote', cwd=ROOT)
                 (folder / 'SHA256SUMS').write_text(f'{hashlib.sha256(binary.read_bytes()).hexdigest()}  {binary.name}\n')
 

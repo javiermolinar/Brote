@@ -1,7 +1,13 @@
-# Native VS Code traces
+# Brote core traces
 
-Set the environment before launching VS Code (including the remote extension host,
-when using SSH or a container):
+Brote Go core stores debugger and program traces from VS Code, Codex and Pi using embedded Tempo
+runtime. No endpoint or separately launched backend is required. Use **Brote: Session
+Traces** to copy either trace ID or open its stored JSON. Local data survives normal
+shutdown and upgrades. Retention is currently configured to about 292 years.
+See [storage details](embedded-tempo.md) for the finite retention and loopback listener limits.
+
+To additionally export to a remote backend, set the environment before launching
+Brote (or VS Code when it starts the core, including remote extension hosts):
 
 ```sh
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
@@ -10,14 +16,14 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 code .
 ```
 
-Fully quit an existing VS Code process first: opening another window may reuse its
-old environment. Tempo or another backend runs separately. Brote embeds neither a
-Collector nor Tempo.
+The shared core reads its environment at startup. Restart an existing core after changing
+settings; a new VS Code window may also reuse the old editor environment. These settings configure optional remote export; local storage
+remains enabled with its own exporter queue.
 
-The generic endpoint opts in and receives `/v1/traces`; a traces-specific
-`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` overrides the full URL. Traces-specific headers
+The generic endpoint receives `/v1/traces`; a traces-specific
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` supplies the full URL and works on its own. Traces-specific headers
 override generic headers. Only `http/protobuf` is supported. Invalid configuration
-disables export with a credential-free diagnostic in the Brote output channel.
+disables remote export and records a credential-free failure status in the core trace record.
 Authentication belongs in headers, not URL credentials. Export is asynchronous and
 best effort; an unavailable backend does not block debugging.
 
@@ -33,7 +39,7 @@ Each native debug session produces two traces:
 
 Both include `debugger.session.id`. Program spans use the debug profile name as
 `service.name`; keep it stable between runs. The program root links to the debugger
-root. The Brote output channel prints both trace IDs. Parents finish when VS Code
+root. The core returns both trace IDs through its API and saves them in its application data directory. Parents finish when VS Code
 stops the session, the adapter terminates/exits, or the extension shuts down; children may arrive first.
 
 ## Comparing runs
@@ -77,31 +83,37 @@ Captures read at most 30 frames, 8 scopes, and 50 variables per scope, with valu
 limited to 2,000 characters. Capture requests share a two-second deadline; DAP
 cannot guarantee cancellation of adapter work already issued. Moving the debugger
 discards mixed-state captures. Automatic collection allows one pending capture per
-session. Snapshots are reduced to valid JSON under 32 KiB; configure Tempo's
-`distributor.max_attribute_bytes` to accept that payload (for example 65536).
-Each session tracks at most 256 threads and 1,000 snapshots; the extension tracks
-16 simultaneous sessions. SDK queues hold 256 ended spans per provider with a
-two-second export timeout. Crashes, full queues, and shutdown can lose data.
+session. Snapshots are reduced to valid JSON under 32 KiB; Brote configures Tempo's
+attribute limit to 65,536 bytes. Each capture tracks at most 256 threads and 1,000
+snapshots; the extension tracks 16 simultaneous sessions. The adapter and Go broker
+buffer at most 256 observations while core startup completes. Core export queues
+hold 64 batches per destination and export calls have two-second deadlines. A final
+close event is retained separately from the adapter's normal backlog limit.
+Local listeners bind to loopback; authentication headers configure only remote export.
+Crashes, full queues, and interrupted shutdown can lose data.
 
-The native port does not implement the prototype's broker recovery, automatic
-continue tracepoints, expression capture, or Delve-specific origin lookup. The
-original prototype checkout is preserved separately; no claim of parity is made.
+The native adapter does not add automatic continue tracepoints, expression capture,
+or Delve-specific origin lookup. Broker sessions support the existing Go recovery
+and inspection workflows independently of the native adapter.
 
 ## Verification
 
 ```sh
-node --test packages/vscode/test/*.test.cjs
-BROTE_TEMPO_INTEGRATION=1 node --test packages/vscode/test/telemetry.test.cjs
+go test -race ./...
+npm run build && npm test
+go build -o bin/brote ./cmd/brote
+BROTE_CORE_INTEGRATION=1 node --test packages/client/test/core-tracing.test.cjs
+BROTE_EMBEDDED_INTEGRATION=1 node --test packages/vscode/test/embedded-tempo.test.cjs
 ```
 
-The opt-in test sends protobuf to the running Docker Tempo and retrieves a complete
-program hierarchy. Set `BROTE_TEMPO_QUERY_URL` to override localhost:3200. This tests
-the real exporter and backend with synthetic DAP observations; a live VS Code F5
-session is a separate manual check.
+These opt-in suites start Brote's own embedded backend in isolated data directories.
+The core suite covers concurrent clients, native observations, real Delve broker
+capture, remote failure and restart. The lower-level suite verifies compaction,
+large traces, lifecycle and listeners with a test-only workload generator.
 
 ### Real VS Code host
 
-With Go, Delve, VS Code, and the Go extension installed, and Tempo running:
+With Go, Delve, VS Code, and the Go extension installed (Tempo starts automatically):
 
 ```sh
 BROTE_GO_EXTENSION=/absolute/path/to/golang.go-extension \
@@ -117,3 +129,5 @@ The captured local must equal `42`. Results are saved to
 `dist/vscode-host-result.json`; failed runs retain their isolated profile/logs.
 It does not install into your normal profile or require a model login. Generating
 an actual model answer still requires a separately configured provider.
+
+Core ownership, data locations, CLI/Pi query access and lifecycle details are documented in [embedded storage](embedded-tempo.md). Native DAP collection remains in the editor adapter; span construction, limits and export are in Go.

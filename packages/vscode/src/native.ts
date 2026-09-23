@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Frame } from './telemetry';
+import type { Frame } from './coreTrace';
 
 interface Evidence {session:string;name:string;type:string;capturedAt:string;thread:number;frame:Frame;stack:Frame[];scopes:unknown[]}
 interface Turn {question:string;answer?:string;evidence:Evidence;contextNote?:string}

@@ -2,12 +2,20 @@ package broker
 
 import (
 	"agentdebugger/internal/session"
+	"agentdebugger/internal/tracing"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"time"
 )
 
 // All broker history calls run under b.mu (or during single-threaded startup).
 func (b *broker) record(kind, actor string, data any) {
+	if kind == "session.ended" || kind == "target_exited" {
+		b.traces.Event(tracing.Event{Kind: "exited", AllThreads: true})
+	}
+	payload, _ := json.Marshal(data)
+	b.traces.Event(tracing.Event{Kind: "record", Command: kind, Data: payload})
 	if b.history == nil {
 		return
 	}
@@ -16,6 +24,7 @@ func (b *broker) record(kind, actor string, data any) {
 	}
 }
 func (b *broker) historyStop(reason string) {
+	b.traces.Event(tracing.Event{Kind: "stopped", AllThreads: true})
 	if b.history == nil {
 		return
 	}
@@ -32,7 +41,9 @@ func (b *broker) historyStop(reason string) {
 		data["location"] = pick(asObj(state["currentThread"]), "file", "line")
 		stack, e := b.rpc("Stacktrace", obj{"Id": gid, "Depth": 30, "Full": false})
 		if e == nil {
-			snapshot := b.historyContext(obj{"goroutine": gid, "frames": stack["Locations"]})
+			view := obj{"goroutine": gid, "frames": stack["Locations"]}
+			b.traceInspection(view)
+			snapshot := b.historyContext(view)
 			if ref, e := b.history.Snapshot(snapshot); e == nil {
 				data["snapshot"] = ref
 			} else {
@@ -77,6 +88,7 @@ func (b *broker) historyInspection(v obj) {
 		return
 	}
 	b.captured[ref] = true
+	b.traceInspection(v)
 	b.record("inspection.captured", "observer", obj{"stop_id": b.stopID, "context_id": fmt.Sprint(num(v["goroutine"])), "snapshot": ref})
 }
 func (b *broker) historyAction(a, result obj, err error) {
@@ -127,4 +139,42 @@ func (b *broker) historyDiscussion(d session.Discussion, action string) {
 		actor = "core"
 	}
 	b.record("discussion."+action, actor, obj{"snapshot": ref, "stop_id": b.stopID})
+}
+
+// Convert debugger observations at the broker boundary, independent of its client.
+func (b *broker) traceInspection(v obj) {
+	if b.traces == nil {
+		return
+	}
+	frames := []tracing.Frame{}
+	for _, value := range asList(v["frames"]) {
+		f := asObj(value)
+		frame := tracing.Frame{Name: str(asObj(f["function"])["name"]), Line: num(f["line"])}
+		if path := str(f["file"]); path != "" {
+			frame.Source = &struct {
+				Path string `json:"path"`
+			}{path}
+		}
+		frames = append(frames, frame)
+	}
+	selected := tracing.Frame{}
+	index := num(v["frame"])
+	if index >= 0 && index < len(frames) {
+		selected = frames[index]
+	}
+	scopes := []json.RawMessage{}
+	rawFrames := asList(v["frames"])
+	if index >= 0 && index < len(rawFrames) {
+		for _, name := range []string{"Locals", "Arguments"} {
+			if values := asObj(rawFrames[index])[name]; values != nil {
+				data, _ := json.Marshal(obj{"name": name, "variables": values})
+				scopes = append(scopes, data)
+			}
+		}
+	}
+	if values := v["watches"]; values != nil {
+		data, _ := json.Marshal(obj{"name": "watches", "variables": values})
+		scopes = append(scopes, data)
+	}
+	b.traces.Event(tracing.Event{Kind: "snapshot", Observation: &tracing.Observation{Thread: num(v["goroutine"]), Frame: selected, Stack: frames, Scopes: scopes, CapturedAt: time.Now()}})
 }
