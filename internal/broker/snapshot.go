@@ -36,6 +36,7 @@ func (b *broker) snapshotLocked(gid, frame int, brief bool) (obj, error) {
 		asObj(v["debugger"])["mode"] = "attached"
 	}
 	v["historyError"] = b.historyError
+	v["traces"] = b.traces.Status()
 	v["traceIds"], v["exportError"], v["exportFailures"] = b.s.TraceIDs, b.exportError, b.trace.Failures()
 	v["stopAttribution"] = b.currentStop
 	v["captureCounts"] = maps.Clone(b.s.CaptureCounts)

@@ -76,6 +76,10 @@
       {
         "command": "brote.attachSession",
         "title": "Brote: Attach to Session"
+      },
+      {
+        "command": "brote.traces",
+        "title": "Brote: Session Traces"
       }
     ],
     "chatParticipants": [
@@ -420,5 +424,13 @@
     "Go",
     "Delve"
   ],
-  "icon": "assets/brote-plant.png"
+  "icon": "assets/brote-plant.png",
+  "devDependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.222.0",
+    "@opentelemetry/otlp-exporter-base": "0.222.0",
+    "@opentelemetry/otlp-transformer": "0.222.0",
+    "@opentelemetry/resources": "^2.11.0",
+    "@opentelemetry/sdk-trace-base": "^2.11.0"
+  }
 }

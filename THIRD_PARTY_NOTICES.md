@@ -3515,3 +3515,14 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
+## Grafana Tempo
+
+The embedded runtime links Grafana Tempo at commit
+3cd938cabb3e0ae1c2a5b4044f0532c18652b867, without local patches. Tempo is licensed under GNU AGPL version 3.
+Its full license is supplied as TEMPO-LICENSE in bundles.
+Brote source, dependency checksums, and unmodified Tempo source are supplied
+in brote-source.tar.gz. Build instructions are in docs/embedded-tempo.md.
+Original source: https://github.com/grafana/tempo
+
+The root MIT notice applies to the original Brote source; it does not relicense
+Tempo or other dependencies.

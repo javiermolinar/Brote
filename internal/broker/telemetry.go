@@ -3,6 +3,8 @@ package broker
 import (
 	"agentdebugger/internal/session"
 	"agentdebugger/internal/telemetry"
+	"agentdebugger/internal/tracing"
+	"context"
 	"path/filepath"
 	"time"
 )
@@ -13,19 +15,21 @@ func (b *broker) openTrace(settings *session.LaunchSettings) {
 	if b.s.ServiceVersion == 0 || settings == nil {
 		return
 	}
-	b.exportError = settings.OTLPError
-	if settings.OTLP == nil {
-		return
-	}
-	trace, err := telemetry.New(settings.OTLP, b.s.ID, b.s.RunID, filepath.Base(b.s.Binary), b.s.TraceIDs)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	endpoint, err := tracing.EnsureSpanService(ctx)
+	cancel()
 	if err != nil {
 		b.exportError = err.Error()
 		return
 	}
+	exporter := tracing.NewSpanExporter(endpoint)
+	trace := telemetry.NewWithExporter(exporter, b.s.ID, b.s.RunID, filepath.Base(b.s.Binary), b.s.TraceIDs)
+	exporter.Record = tracing.Record{Session: b.s.ID + ":" + b.s.RunID, Name: filepath.Base(b.s.Binary), Adapter: "brote", Program: trace.IDs.Program, Debugger: trace.IDs.Debugger, Run: trace.IDs.ProgramRoot, Root: trace.IDs.DebuggerRoot, Started: time.Now()}
+	exporter.Start()
 	b.trace = trace
-	if trace != nil {
-		b.s.TraceIDs = trace.IDs
-	}
+	b.s.TraceIDs = trace.IDs
+
 }
 func (b *broker) exportCapture(record *captureRecord) {
 	if record.Run != b.s.RunID {

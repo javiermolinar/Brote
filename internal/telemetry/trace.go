@@ -65,6 +65,9 @@ func New(config *Config, session, runID, name string, saved IDs) (*Session, erro
 	}
 	return newSession(exporter, session, runID, name, saved), nil
 }
+func NewWithExporter(exporter sdk.SpanExporter, session, runID, name string, saved IDs) *Session {
+	return newSession(exporter, session, runID, name, saved)
+}
 func newSession(exporter sdk.SpanExporter, session, runID, name string, saved IDs) *Session {
 	q := newQueue(exporter)
 	d, p := makeIDs(saved.Debugger, saved.DebuggerRoot), makeIDs(saved.Program, saved.ProgramRoot)

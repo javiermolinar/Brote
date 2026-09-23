@@ -126,13 +126,13 @@ reclaim commands remain for compatibility; they are not required by this workflo
 
 ## Use the native VS Code debugger
 
-Start your normal Go debugger with **F5** and stop at a breakpoint. Select code,
+Start a Brote debugger configuration with **F5** and stop at a breakpoint. Select code,
 choose **Ask Brote About Selection**, and type in the inline comment box. Select
 an available model when prompted. Answers stream into the thread; use **Continue
 in Chat** for a longer conversation.
 
 This mode captures the selected frame through VS Code's active debug adapter.
-Its discussions are stored in VS Code, separate from the browser's shared runs.
+Native adapters retain trace observation; Go-backed discussion commands require a Brote launch or attach session.
 Use VS Code's normal debugger controls to step and continue.
 
 To use a shared Brote run instead, launch it from `@brote` Chat or choose

@@ -33,7 +33,9 @@ export interface Breakpoint {
   HitCond?: string;
 }
 
+export interface TraceRecord {session:string;name:string;program:string;debugger:string;local:Record<string,string>;remote?:Record<string,string>;closed:boolean;incomplete?:boolean}
 export interface Snapshot {
+ traces?:{record:TraceRecord;error?:string};
  snapshotUnavailable?:boolean;historical?:boolean;runEnded?:boolean;capturedAt?:string;
  debugger?:{adapter:string;protocol:string;pid?:number;status:string;mode:string};
   id: string;

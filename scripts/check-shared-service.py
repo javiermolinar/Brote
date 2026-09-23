@@ -49,6 +49,18 @@ def run():
                 raise RuntimeError(result.stderr)
             return json.loads(result.stdout)
 
+        def stop_tracing():
+            try:
+                pid = int((work / "data/tracing/service.pid").read_text())
+                os.kill(pid, signal.SIGTERM)
+            except (OSError, ValueError):
+                return
+            for _ in range(200):
+                try: os.kill(pid, 0)
+                except ProcessLookupError: return
+                time.sleep(.1)
+            raise RuntimeError("fixture tracing service did not stop")
+
         def service(sid, operation, **payload):
             descriptor = json.loads((work / "sessions" / sid / "session.json").read_text())
             state = cli("state", sid, "--summary")
@@ -308,7 +320,7 @@ def run():
                 debugger_trace = first["debuggerTraceId"]
                 assert program_trace != debugger_trace
             else:
-                assert first["exportStatus"] == "disabled"
+                assert first["exportStatus"] in ("queued", "sent"), first
             cli("end-session", sid, "--confirmed")
             live.remove(sid)
 
@@ -340,6 +352,7 @@ def run():
                 assert any(span["name"] == "debugger.session" for span in exported)
                 print(json.dumps({"tempoRetrieved": True, "programTraceId": program_trace, "debuggerTraceId": debugger_trace, "exactValue": "7"}))
 
+            stop_tracing()  # Remote settings belong to the shared tracing process.
             # A bound but non-listening local socket deterministically refuses OTLP.
             with socket.socket() as unavailable:
                 unavailable.bind(("127.0.0.1", 0))
@@ -364,6 +377,7 @@ def run():
                 else:
                     env["OTEL_EXPORTER_OTLP_ENDPOINT"] = old_endpoint
 
+            stop_tracing()
             (fixture / "main.go").write_text('package main\nfunc main(){panic("service panic evidence")}\n')
             subprocess.run(["go", "build", "-gcflags=all=-N -l", "-o", str(target_binary), "."], cwd=fixture, check=True)
             sid = start("--binary", str(target_binary))
@@ -387,6 +401,7 @@ def run():
             if target is not None and target.poll() is None:
                 target.terminate()
                 target.wait(timeout=5)
+            stop_tracing()
 
 
 if __name__ == "__main__":

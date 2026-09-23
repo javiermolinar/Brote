@@ -4,7 +4,8 @@
 | --- | --- | --- |
 | Debugger connection, run/pause identity, inspection | Persistent Go broker | CLI transport; VS Code DAP/frame selection; browser rendering |
 | Breakpoints, tracepoints, hit attribution, capture/continuation | Go service | Definition UI/tools with owner/revision; no second debugger controller |
-| OTLP/export and trace association | Go service | Display captured/skipped/failed/export outcomes |
+| Span generation and trace association | Go session broker for shared sessions; Go tracing core for native adapters | Native adapters report bounded read-only DAP observations; Brote sessions never duplicate them |
+| Local Tempo, OTLP export and saved trace queries | Shared Go tracing service | Display destination status; query via `traces`/`trace` |
 | Task grant, lease renewal, cancellation | Go broker | Pi reports challenged active/idle/closed turn facts; Codex uses bounded task commands |
 | Durable delivery claims, attempts, cursor reconciliation | Common Go ledger and managed CLI stream | Pi injects canonical text; Codex invokes queue; hosts report send outcomes |
 | Question/reply association, immutable evidence, import/offline writes | Locked Go discussion store and common reducer | VS Code invokes models and renders transient drafts/streams; browser HTTP/SSE is a facade |
@@ -30,3 +31,10 @@ Normal VS Code reload persists provider interruption; abrupt OS death cannot run
 that callback and requires inspection and explicit retry. Codex queue acceptance
 is only queued delivery, never proof of an active agent turn. No integration
 claims exactly-once external delivery; ambiguous sends remain unknown.
+
+The tracing service is a separate lazy process shared across debugger sessions.
+It embeds Tempo and owns both local ingestion and optional remote export. Shared
+session brokers send bounded span batches with their existing run/capture IDs;
+native editor adapters send observations. Shared trace records use session:run keys
+so restart cannot overwrite earlier trace IDs. Session HTTP/DAP authentication is
+separate from the loopback tracing API, which has host/origin checks but no token.

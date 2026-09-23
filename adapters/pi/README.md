@@ -56,3 +56,5 @@ Configuration and capture reads do not resume the target. New CLI starts use the
 shared service; old services without managed coordination must be updated and
 recovered. The adapter relays canonical Go delivery messages and send receipts;
 it owns no durable delivery cursor, retry reducer or lease timer.
+
+`debug_traces` lists saved embedded-Tempo trace IDs or queries one trace through the Go core. Local storage is automatic; remote export remains optional.

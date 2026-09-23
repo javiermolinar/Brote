@@ -27,7 +27,7 @@ export default function (pi: ExtensionAPI, runtime = () => resolveRuntime({bundl
     type Host={child:ReturnType<typeof spawn>;instance:string;sequence:number;pending:Map<number,{turn:string;resolve:()=>void;reject:(error:Error)=>void}>;proofWaiters:{resolve:()=>void;reject:(error:Error)=>void}[]};
     const children=new Map<string,Host>();
     let turn=ctx.isIdle()?'':randomUUID();
-    const call = async (...args: string[]) => JSON.parse((await execute(cli, args, {maxBuffer: 36 * 1024 * 1024})).stdout);
+    const call = async (...args: string[]) => JSON.parse((await execute(cli, args, {maxBuffer: (args[0]==='trace'?128:36) * 1024 * 1024})).stdout);
     const write=(host:Host,frame:unknown)=>{if(host.child.stdin?.writable)host.child.stdin.write(JSON.stringify(frame)+'\n');};
     const rejectWaiters=(host:Host,error:Error)=>{const proofs=host.proofWaiters,pending=[...host.pending.values()];host.proofWaiters=[];host.pending.clear();for(const waiter of proofs)waiter.reject(error);for(const waiter of pending)waiter.reject(error);};
     const fact=(host:Host,challenge?:string)=>{
@@ -153,6 +153,7 @@ export default function (pi: ExtensionAPI, runtime = () => resolveRuntime({bundl
       child?.child.stdin?.end();
       return result;
     }
+    pi.registerTool({name:'debug_traces',label:'Saved debugger traces',description:'Read trace IDs and export status captured by Brote core across all clients, or retrieve a stored trace by ID. Works after the debugger exits.',parameters:Type.Object({trace:Type.Optional(Type.String())}),async execute(_id,params){const result=params.trace?await call('trace',params.trace):await call('traces');return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
     pi.registerTool({name:'debug_sessions',label:'List debugger sessions',description:'List current debugger sessions, their projects, statuses, browser URLs, and the Brote CLI path for starting a run. Does not connect or change execution.',parameters:Type.Object({}),async execute(){const sessions=await currentSessions();return {content:[{type:'text',text:`${showSessions(sessions)}\nBrote CLI: ${cli}`}],details:{sessions,cli}};}});
     pi.registerTool({name:'debug_stop',label:'Stop debugger session',description:'Terminate one debugger session and its target process. Use only when the user explicitly asks to end that session. Saved history is retained.',parameters:Type.Object({session:Type.String()}),async execute(_id,params){const result=await endSession(params.session);return {content:[{type:'text',text:JSON.stringify(result)}],details:result};}});
     pi.registerCommand('debug-connect', {description:'Connect a debugger session and show its browser URL', handler:async (args) => {const result=await connect(args.trim());ctx.ui.notify(`Debugger connected: ${result.panel}`, 'info');}});

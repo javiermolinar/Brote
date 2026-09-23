@@ -8,6 +8,7 @@ import (
 
 	"agentdebugger/internal/editors/vscode"
 	"agentdebugger/internal/session"
+	"agentdebugger/internal/tracing"
 )
 
 type obj = map[string]any
@@ -48,6 +49,8 @@ func usage() string {
   brote captures|capabilities SESSION
   brote goroutines SESSION [--start N] [--count 64]
   brote stack SESSION [--goroutine N] [--start N] [--count 64]
+  brote traces  (saved trace IDs and export status for all adapters)
+  brote trace TRACE_ID  (stored Tempo trace JSON)
   brote sessions
   brote history [ID]  (saved sessions or ordered events, works offline)
   brote state ID [--goroutine N] [--frame N] [--summary]
@@ -96,6 +99,25 @@ func Run(args []string) (any, error) {
 	}
 	if verb == "dap" {
 		return nil, runDAP(args[1:])
+	}
+	if verb == "trace-serve" {
+		return nil, tracing.Serve()
+	}
+	if verb == "trace-service" || verb == "traces" || verb == "trace" {
+		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+		defer cancel()
+		switch verb {
+		case "trace-service":
+			endpoint, err := tracing.Ensure(ctx)
+			return obj{"endpoint": endpoint}, err
+		case "traces":
+			return tracing.Records(ctx)
+		case "trace":
+			if len(args) != 2 {
+				return nil, fmt.Errorf("usage: trace TRACE_ID")
+			}
+			return tracing.Query(ctx, args[1])
+		}
 	}
 	if verb == "configs" {
 		f := flag.NewFlagSet("configs", flag.ContinueOnError)

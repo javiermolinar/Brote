@@ -1,8 +1,59 @@
 name: Verify Brote
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
+# Independent lanes keep slow native builds from blocking client feedback.
+# Each OS retains client, debugger, tracing and installation coverage.
 jobs:
+  clients:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Build and type-check clients
+        run: npm run build
+      - name: Test clients
+        run: npm test
+      - name: Check generated assets
+        run: git diff --exit-code -- packages/web/public/app.js packages/vscode/dist/extension.js packages/vscode/dist/protocol.cjs
+      - name: Test packaging helpers
+        run: npm run test:packaging
+  go:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install Delve
+        run: go install github.com/go-delve/delve/cmd/dlv@v1.27.1
+      - name: Vet Go packages
+        run: go vet ./...
+      - name: Build and run Go race tests with Delve integration
+        run: go test -race -v ./...
+        env:
+          DH_INTEGRATION: '1'
+          CODEX_THREAD_ID: ''
   integration:
     strategy:
       fail-fast: false
@@ -13,25 +64,42 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
-          cache: false
+          go-version-file: go.mod
+          cache: true
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
-      - run: go install github.com/go-delve/delve/cmd/dlv@v1.27.1
       - run: npm ci
-      - run: npm run build && npm test
-      - run: git diff --exit-code -- packages/web/public/app.js packages/vscode/dist/extension.js packages/vscode/dist/protocol.cjs
-      - run: npm run test:packaging
-      - run: go vet ./...
-      - run: go test -race -v ./...
-        env:
-          DH_INTEGRATION: '1'
-          CODEX_THREAD_ID: ''
-      - run: npm run package:vscode
-      - run: npm run test:packaging
+      - name: Install Delve
+        run: go install github.com/go-delve/delve/cmd/dlv@v1.27.1
+      - name: Build Brote tracing runtime
+        run: go build -o bin/brote ./cmd/brote
+      - name: Verify shared Brote tracing integration
+        run: BROTE_CORE_INTEGRATION=1 node --test packages/client/test/core-tracing.test.cjs
+  packaging:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Build host release packages
+        run: npm run package:vscode
+      - name: Verify release packages and Pi installation
+        run: npm run test:packaging
         env:
           AGENTDEBUGGER_RELEASE_DIR: dist/releases
           AGENTDEBUGGER_TEST_PI: ${{ github.workspace }}/node_modules/.bin/pi
-      - run: python3 scripts/package.py --include-vsix --output /tmp/debug-handover.zip
+      - name: Verify source bundle with VSIX
+        run: python3 scripts/package.py --include-vsix --output /tmp/debug-handover.zip

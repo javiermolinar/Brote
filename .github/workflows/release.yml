@@ -12,13 +12,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version-file: go.mod
+          cache: true
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
       - run: npm ci && npm run build && npm test
       - run: go install github.com/go-delve/delve/cmd/dlv@v1.27.1
+      - name: Verify shared Brote tracing integration
+        run: |
+          go build -o bin/brote ./cmd/brote
+          BROTE_CORE_INTEGRATION=1 node --test packages/client/test/core-tracing.test.cjs
       - run: go test -race ./... && go vet ./...
         env:
           DH_INTEGRATION: '1'

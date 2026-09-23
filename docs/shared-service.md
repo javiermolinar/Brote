@@ -14,8 +14,9 @@ flowchart LR
   API --> Core[Session service]
   DAP --> Core
   Core --> Delve[Delve backend]
-  Core --> OTLP[OTLP exporter]
-  OTLP --> Tempo[Tempo]
+  Core --> Tracing[Shared Go tracing service]
+  Tracing --> Tempo[Embedded Tempo]
+  Tracing --> OTLP[Optional remote OTLP]
 ```
 
 ## Contract and migration
@@ -157,19 +158,25 @@ captured, skipped, truncated and failed. Automatic continuation requires a compl
 capture, unchanged execution intent/configuration/epoch, and valid execution scope.
 Human Pause, a step, uncertain attribution or exhausted limits leaves it paused.
 
-Shared sessions export OTLP HTTP/protobuf from the broker when configured through
-`OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`. Standard
-traces-specific headers/protocol override generic OTLP values. Configuration is
-saved privately with launch settings; public state contains trace IDs and status.
-Invalid configuration disables export with an error while debugging remains usable.
-Each run has separate program and debugger traces. Program captures are instantaneous
-observations under an observed-goroutine span and run span, not function durations.
-Selected scalar values use `program.value.<alias>` attributes.
+Shared sessions send bounded Go-generated span batches to the shared tracing
+service, which embeds Tempo and owns optional remote OTLP export. Local capture
+requires no OTLP environment. Remote settings and credentials are read only by the
+tracing service at startup; restart that service after changing them. Invalid or
+unavailable remote export remains visible without disabling local ingestion.
 
-Export uses a 256-span queue, batches of at most 64, a two-second transport timeout
-and a three-second shutdown deadline. Overflow or transport errors report failure.
-`disabled`, `queued`, `sent`, `skipped` and `failed` describe exporter state; `sent`
-means the receiver accepted the export, not that a Tempo query has confirmed it.
+Each execution run has separate program/debugger trace IDs and a `session:run`
+trace record. The broker retains capture IDs, selected scalar values and per-run
+limits; native VS Code tracing explicitly excludes Brote sessions. Restart creates
+new trace IDs; recovery preserves saved IDs. `brote traces` lists destination status,
+and `brote trace TRACE_ID` queries embedded Tempo after block flushing and polling.
+Export acceptance is distinct from query availability and crash durability.
+See [embedded Tempo](embedded-tempo.md) for the local API and storage boundaries.
+
+The broker's producer queue is bounded to 256 spans and batches to 64. The tracing
+service owns independent bounded local/remote queues. Human pause and capture
+failure behavior is unchanged. The following check uses an optional external Tempo
+receiver; the core tracing integration also verifies embedded local storage.
+
 Run the real receiver check with:
 
 ```sh

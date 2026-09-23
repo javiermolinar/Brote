@@ -27,6 +27,8 @@ async function main(){
   });
   const result=JSON.parse(await fs.readFile(path.join(project,'result.json'),'utf8'));
   await fs.writeFile(path.join(root,process.env.BROTE_HOST_SCENARIO==='f5'?'dist/shared-f5-host-result.json':process.env.BROTE_HOST_SCENARIO==='otlp'?'dist/shared-otlp-host-result.json':process.env.BROTE_HOST_SCENARIO==='chat'?'dist/shared-chat-host-result.json':'dist/shared-host-result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify({vscode:result.vscode,session:result.session,programTraceId:result.programTraceId,debuggerTraceId:result.debuggerTraceId,snapshots:result.snapshots,values:result.values,ordinaryPausePreserved:result.ordinaryPausePreserved,disconnectPreservesProcess:result.disconnectPreservesProcess}));success=true;
- }finally{try{for(const s of cli('sessions'))if(s.status!=='ended')try{cli('end-session',s.id,'--confirmed');}catch{}}finally{await log.close();if(success)await fs.rm(work,{recursive:true,force:true});else console.error(`Evidence retained at ${work}`);}}
+ }finally{try{for(const s of cli('sessions'))if(s.status!=='ended')try{cli('end-session',s.id,'--confirmed');}catch{}}finally{
+   try{const pid=Number(await fs.readFile(path.join(work,'data/tracing/service.pid'),'utf8'));process.kill(pid,'SIGTERM');for(let i=0;i<200;i++){try{process.kill(pid,0);}catch{break;}await new Promise(r=>setTimeout(r,100));}}catch{}
+   await log.close();if(success)await fs.rm(work,{recursive:true,force:true});else console.error(`Evidence retained at ${work}`);}}
 }
 main().catch(err=>{console.error(err);process.exitCode=1;});

@@ -19,6 +19,7 @@ import (
 	"agentdebugger/internal/protocol"
 	"agentdebugger/internal/session"
 	"agentdebugger/internal/telemetry"
+	"agentdebugger/internal/tracing"
 )
 
 // Options configures a broker process; command-line parsing belongs to the CLI.
@@ -285,6 +286,10 @@ func Serve(options Options) (err error) {
 		}
 	}
 	b.openTrace(settings)
+	if b.s.ServiceVersion == 0 {
+		b.traces = tracing.NewRecorder(b.s.ID, filepath.Base(b.s.Binary), "delve")
+		defer b.traces.Close()
+	}
 	// Publish only after the settings needed by Run again are safely archived.
 	if e = b.persist(); e != nil {
 		return e

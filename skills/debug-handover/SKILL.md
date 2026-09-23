@@ -172,3 +172,13 @@ In Pi, use `debug_tracepoints` for list/create/update/delete, preserving the
 returned owner/ID/revision and scope. Use `debug_captures` for bounded outcomes,
 export status and program/debugger trace IDs. These tools do not resume execution;
 use an authorized `debug_task` and `debug_execute` for that.
+
+## Saved traces
+
+Brote core stores shared-session tracepoint captures and debugger actions in embedded
+Tempo. Native editor adapters submit bounded read-only observations to the same
+tracing service. `brote traces` lists saved program/debugger IDs and independent
+local/remote export status; `brote trace TRACE_ID` reads saved Tempo JSON after the
+broker exits. Shared records use session:run keys, so restart preserves earlier
+traces. An assigned ID or accepted export does not prove query availability or
+crash durability. Agents do not launch a separate Tempo process or collector.

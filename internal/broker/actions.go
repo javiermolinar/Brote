@@ -12,6 +12,7 @@ import (
 	"agentdebugger/internal/editors"
 	"agentdebugger/internal/editors/zed"
 	"agentdebugger/internal/session"
+	"agentdebugger/internal/tracing"
 )
 
 func (b *broker) action(a obj) (result obj, actionErr error) {
@@ -33,6 +34,23 @@ func (b *broker) action(a obj) (result obj, actionErr error) {
 	}
 	if strings.HasPrefix(str(a["action"]), "consumer-") || (str(a["action"]) == "event-status" && str(a["kind"]) != "") {
 		return b.deliveryAction(a)
+	}
+	if b.traces != nil {
+		command := str(a["action"])
+		switch command {
+		case "step":
+			command = "stepIn"
+		case "stepout":
+			command = "stepOut"
+		case "eval":
+			command = "evaluate"
+		case "break", "clear":
+			command = "setBreakpoints"
+		}
+		b.traceSequence++
+		seq := b.traceSequence
+		b.traces.Event(tracing.Event{Kind: "request", Seq: seq, Command: command, Thread: num(a["goroutine"])})
+		defer func() { b.traces.Event(tracing.Event{Kind: "response", Seq: seq, Success: actionErr == nil}) }()
 	}
 	// A human pause is always current intent; it must win over an agent step
 	// which advanced the generation while the inspector request was in flight.

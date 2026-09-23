@@ -1,98 +1,144 @@
-# Service-owned traces
+# Brote core traces
 
-Configure the environment before starting a shared CLI session:
+Brote Go core stores debugger and program traces from VS Code, Codex and Pi using embedded Tempo
+runtime. No endpoint or separately launched backend is required. Use **Brote: Session
+Traces** to copy either trace ID or open its stored JSON. Local data survives normal
+shutdown and upgrades. Retention is currently configured to about 292 years.
+See [storage details](embedded-tempo.md) for the finite retention and loopback listener limits.
+
+To additionally export to a remote backend, set the environment before launching
+Brote (or VS Code when it starts the core, including remote extension hosts):
 
 ```sh
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
-# Optional percent-encoded header values:
+# Optional, percent-encoded header values:
 # export OTEL_EXPORTER_OTLP_HEADERS='Authorization=Bearer%20TOKEN'
-brote start --binary /absolute/path/program
+code .
 ```
 
-Tempo or another receiver runs separately. Brote embeds neither Tempo nor a
-Collector. CLI-only sessions export automatically; attaching or disconnecting
-VS Code does not transfer exporter ownership. Configuration is saved in private
-launch settings for recovery and restart.
+The shared core reads its environment at startup. Restart an existing core after changing
+settings; a new VS Code window may also reuse the old editor environment. These settings configure optional remote export; local storage
+remains enabled with its own exporter queue.
 
-The generic endpoint receives `/v1/traces`.
-`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` overrides it with a full URL; traces-specific
-headers and protocol override generic values. Only `http/protobuf` is supported.
-Invalid configuration disables export with a credential-free diagnostic in state.
-Use headers for authentication, not URL credentials.
+The generic endpoint receives `/v1/traces`; a traces-specific
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` supplies the full URL and works on its own. Traces-specific headers
+override generic headers. Only `http/protobuf` is supported. Invalid configuration
+disables remote export and records a credential-free failure status in the core trace record.
+Authentication belongs in headers, not URL credentials. Export is asynchronous and
+best effort; an unavailable backend does not block debugging.
 
-## Captures and trace structure
+Each native debug session produces two traces:
 
-```sh
-brote tracepoint add SESSION --file /absolute/path/main.go --line 12 \
-  --name process.result --values '{"total":"total","count":"len(items)"}' \
-  --capture-limit 100
-brote tracepoint list SESSION
-brote captures SESSION
-brote state SESSION --brief
+- **Debugger:** a `debugger.session` root and DAP command spans. Execution spans
+  wait for both a successful response and a stop/exit event, in either order.
+  Ordinary stack/scope/variable refresh requests are omitted. Request bodies,
+  expressions, and free-form adapter errors are not exported here.
+- **Program:** a run root, thread observation spans, and snapshots from breakpoint
+  stops (source, function, data, or instruction breakpoints) or explicit inspections. Snapshots contain the selected/reported thread's
+  stack and bounded non-expensive scopes. They do not resume execution.
+
+Both include `debugger.session.id`. Program spans use the debug profile name as
+`service.name`; keep it stable between runs. The program root links to the debugger
+root. The core returns both trace IDs through its API and saves them in its application data directory. Parents finish when VS Code
+stops the session, the adapter terminates/exits, or the extension shuts down; children may arrive first.
+
+## Comparing runs
+
+Use stable function names and optional labels in VS Code settings:
+
+```json
+{
+  "brote.capturePoints": {
+    "main.process": {
+      "name": "process.result",
+      "values": { "total": "total" }
+    }
+  }
+}
 ```
 
-Tracepoints use stable IDs and revisions shared by the CLI and VS Code. Selected
-values are read-only expressions, with at most 16 selections. Exact selected scalar
-strings become `program.value.<alias>`. Conditions and hit conditions control when
-Delve stops; the capture limit separately bounds attempts per definition per run.
-Source tracepoints are supported; function breakpoints are ordinary breakpoints.
+Keys match exact frame names supplied by the adapter. This configuration labels
+existing captures; set breakpoints using VS Code. `values` selects already captured
+locals by name, without expression evaluation. Exact debugger strings become
+`program.value.<alias>`. Companion status attributes distinguish `available`,
+`ambiguous`, `not_captured`, `truncated`, and `non_scalar`. Aliases use lowercase
+letters, digits, and underscores, beginning with a letter (maximum 64 characters).
+At most 16 selections are exported. Names must be at most 128 characters.
 
-Each run produces a program trace and a debugger trace. The program run links to
-the `debugger.session` root. Snapshot spans sit beneath observed-goroutine spans,
-with stable capture names and bounded state. Debugger action spans record accepted
-or acknowledged actions; they do not measure target execution duration. State
-returns both trace IDs.
+Thread names describe the first observed stack, without numeric IDs or source line
+numbers. Generic DAP does not expose goroutine creation sites, binary hashes, or
+spawn relationships. Repeated workers can still share names; stable names do not
+solve ambiguous concurrent-worker pairing in a diff.
 
-Snapshots are instantaneous observations. Goroutine spans describe observation
-windows, not goroutine lifetimes or spawn relationships. Debugger pauses distort
-wall-clock timing. Parents finish on service shutdown or restart, so children may
-arrive before their parents. Editor disconnect does not end these spans.
+Native program payloads use `program.schema.version=2`, `program.thread.id`, and
+`program.span.type` values `run`, `thread`, and `snapshot`. They differ from the
+prototype's Delve-specific goroutine schema. A thread span covers an observation
+window, not function duration, CPU time, or a full goroutine lifetime. Snapshot
+spans have zero duration; debugger pauses distort wall-clock timings.
 
-Exclusive verified tracepoint hits automatically resume only after a complete
-capture and unchanged execution intent, configuration, run, and pause epoch.
-Ordinary/mixed breakpoints, manual Pause, steps, uncertain attribution, capture
-errors, truncation, and exhausted limits preserve the pause. Human interruption
-cancels agent execution. Disabled or failed export is independent of capture success.
+Exported span names and service names are limited to 512 UTF-8 bytes; adapter
+types are limited to 128 bytes. Truncation preserves whole Unicode characters.
 
-## Bounds and delivery status
+Captures read at most 30 frames, 8 scopes, and 50 variables per scope, with values
+limited to 2,000 characters. Capture requests share a two-second deadline; DAP
+cannot guarantee cancellation of adapter work already issued. Moving the debugger
+discards mixed-state captures. Automatic collection allows one pending capture per
+session. Snapshots are reduced to valid JSON under 32 KiB; Brote configures Tempo's
+attribute limit to 65,536 bytes. Each capture tracks at most 256 threads and 1,000
+snapshots; the extension tracks 16 simultaneous sessions. The adapter and Go broker
+buffer at most 256 observations while core startup completes. Core export queues
+hold 64 batches per destination and export calls have two-second deadlines. A final
+close event is retained separately from the adapter's normal backlog limit.
+Local listeners bind to loopback; authentication headers configure only remote export.
+Crashes, full queues, and interrupted shutdown can lose data.
 
-Captures share a two-second deadline, bounded value expansion, and a 128 KiB record
-limit. The service retains the newest 64 capture records. Per-run attempt counts
-survive recovery. Exported snapshot JSON is limited to 32 KiB; larger records can
-be captured successfully while export fails. Configure the receiver's attribute
-limits accordingly, for example Tempo `distributor.max_attribute_bytes: 65536`.
-
-Export uses a 256-span queue, batches of 64, a two-second transport timeout, and a
-three-second shutdown deadline. Overflow, receiver failure, crashes, and shutdown
-can lose spans. Capture outcomes (`captured`, `skipped`, `truncated`, `failed`) are
-separate from export status (`disabled`, `queued`, `sent`, `skipped`, `failed`).
-`sent` means the receiver accepted the export; it does not prove Tempo queryability.
+The native adapter does not add automatic continue tracepoints, expression capture,
+or Delve-specific origin lookup. Broker sessions support the existing Go recovery
+and inspection workflows independently of the native adapter.
 
 ## Verification
 
 ```sh
-go test ./internal/telemetry ./internal/broker
-python3 scripts/check-shared-service.py
-BROTE_CHECK_OTLP=1 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
-  python3 scripts/check-shared-service.py
-make vsix
-BROTE_HOST_SCENARIO=otlp node packages/vscode/test/host/shared-run.cjs
-BROTE_HOST_SCENARIO=f5 node packages/vscode/test/host/shared-run.cjs
+go test -race ./...
+npm run build && npm test
+go build -o bin/brote ./cmd/brote
+BROTE_CORE_INTEGRATION=1 node --test packages/client/test/core-tracing.test.cjs
 ```
 
-The real service test retrieves both traces from Tempo at localhost:3200 and
-checks exact selected values and parentage. The packaged VS Code test uses an
-isolated profile and real Go process. It combines CLI/UI tracepoints and an
-ordinary breakpoint, verifies five snapshots with values `7, 8, 8, 9, 9`, and
-checks no duplicate extension export. Results are written to
-`dist/shared-otlp-host-result.json`. It needs a working desktop, Go, Delve, VS Code,
-and local Tempo; it does not need a model login.
+The opt-in core suite starts Brote's embedded backend in isolated data directories
+and covers concurrent clients, native observations, real Delve broker capture,
+remote failure and service restart. CI checks Brote's integration boundary;
+Tempo's compaction and storage durability belong to Tempo's upstream test suite.
 
-Verified locally on macOS arm64 with Go 1.27.1, Delve 1.27.1, and VS Code 1.138.0.
-Remote extension hosts and Linux desktop workflows have not been verified here.
+### Real VS Code host
 
-The F5 scenario launches source, a selected Go test, and an executable using the
-packaged CLI. It verifies initial tracepoint/ordinary breakpoint ordering, CLI
-inspection of the same session, restart/new run, editor-only disconnect, explicit
-termination, and failed-build cleanup. Evidence is saved in
-`dist/shared-f5-host-result.json`.
+With Go, Delve, VS Code, and the Go extension installed (Tempo starts automatically):
+
+```sh
+BROTE_GO_EXTENSION=/absolute/path/to/golang.go-extension \
+BROTE_TEST_DLV=/absolute/path/to/dlv make test-vscode
+```
+
+On Linux also set `BROTE_CODE_BIN` to the VS Code executable. The test needs a
+working desktop/display, `go`, and `unzip`. It builds the VSIX, uses a temporary
+profile and a copy of the Go extension, and launches a real Go process through
+VS Code. It verifies the inspection tool, opens the native inline question
+composer, steps and continues, then retrieves both exported traces from Tempo.
+The captured local must equal `42`. Results are saved to
+`dist/vscode-host-result.json`; failed runs retain their isolated profile/logs.
+It does not install into your normal profile or require a model login. Generating
+an actual model answer still requires a separately configured provider.
+
+Core ownership, data locations, CLI/Pi query access and lifecycle details are documented in [embedded storage](embedded-tempo.md). Native DAP collection remains in the editor adapter; span construction, limits and export are in Go.
+
+## Shared Brote sessions
+
+Brote DAP sessions use broker-owned tracepoints and capture IDs, not the native
+adapter observer. `brote tracepoint add SESSION --file PATH --line N --values
+'{"total":"total"}'` configures a bounded capture; only an authorized continue
+executes it. `brote captures SESSION` reports capture/export outcomes. Local
+embedded Tempo stores these spans even when remote export fails. `brote traces`
+uses session:run record keys for shared sessions, retaining both runs after restart.
+The service exposes local and remote outcomes separately; a capture's aggregate
+exportStatus is failed if either configured destination failed. Native adapter
+observation bounds above remain separate from shared service capture limits.

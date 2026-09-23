@@ -4,7 +4,8 @@
 
 Brote connects VS Code to CLI-managed Go debugging sessions. Its packaged CLI
 transports DAP and semantic commands to the session service. The service owns
-Delve, breakpoint reconciliation, capture, continuation, and OTLP export.
+Delve, breakpoint reconciliation, capture and continuation. The shared Go tracing
+service owns embedded Tempo and optional remote OTLP export.
 
 ## Attach to a session
 
@@ -109,3 +110,16 @@ separately configured model; selecting one never grants execution authority.
 OTLP configuration belongs to the environment that starts the session. Closing
 VS Code does not stop export. See the repository's tracing guide for endpoints,
 status, bounds, and verification. Captures and exports contain application data.
+
+## Embedded trace storage
+
+The bundled Go tracing service stores captures in embedded Tempo automatically.
+**Brote: Session Traces** lists shared and native-adapter traces and opens saved JSON.
+Shared Brote sessions capture only in their broker; the extension does not create a
+second producer. Other native debug adapters retain read-only DAP trace observation
+through the same Go service. Their tracing does not grant Brote execution authority.
+Discussion workflows above use Brote sessions and Go-backed history.
+
+Local tracing requires no OTLP environment. Optional remote export is configured
+on the shared tracing service at startup; local storage continues on remote failure.
+See [embedded Tempo](../../docs/embedded-tempo.md) for query delay and durability limits.

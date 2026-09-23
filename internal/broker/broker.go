@@ -10,9 +10,12 @@ import (
 	"agentdebugger/internal/delve"
 	"agentdebugger/internal/session"
 	"agentdebugger/internal/telemetry"
+	"agentdebugger/internal/tracing"
 )
 
 type broker struct {
+	traces            *tracing.Recorder
+	traceSequence     int
 	editorConfigured  bool
 	trace             *telemetry.Session
 	exportError       string
