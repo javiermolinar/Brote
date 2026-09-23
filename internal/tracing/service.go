@@ -382,7 +382,9 @@ func (e *engine) handler(origin string) http.Handler {
 		var err error
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/health":
-			value = map[string]any{"service": "brote-tracing", "version": 1}
+			value = map[string]any{"service": "brote-tracing", "version": 1, "sharedSpans": true}
+		case r.Method == "POST" && r.URL.Path == "/api/trace-spans":
+			value, err = e.spanRequest(w, r)
 		case r.Method == "POST" && r.URL.Path == "/api/trace-events":
 			media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 			if media != "application/json" {

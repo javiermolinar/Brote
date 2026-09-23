@@ -14,8 +14,11 @@ import (
 	"time"
 
 	"agentdebugger/internal/backend"
+	"agentdebugger/internal/delve"
 	"agentdebugger/internal/editors/zed"
+	"agentdebugger/internal/protocol"
 	"agentdebugger/internal/session"
+	"agentdebugger/internal/telemetry"
 	"agentdebugger/internal/tracing"
 )
 
@@ -24,6 +27,9 @@ type Options struct {
 	Backend                            string
 	ID, Binary, Project, Delve, Thread string
 	BindingID, AgentName               string
+	AttachPID                          int
+	Service                            bool
+	EditorStartup                      bool
 	Recover                            bool
 	Args                               []string
 }
@@ -56,6 +62,15 @@ func validateLoopback(address string) error {
 
 // Serve runs one session broker until it is stopped or receives a shutdown signal.
 func Serve(options Options) (err error) {
+	if options.EditorStartup && (!options.Service || options.AttachPID > 0 || options.Recover) {
+		return fmt.Errorf("editor startup lease requires a new shared-service launch")
+	}
+	if options.AttachPID < 0 || (options.AttachPID > 0 && (!options.Service || len(options.Args) > 0)) {
+		return fmt.Errorf("process attach requires service mode and no program arguments")
+	}
+	if options.Service && options.Backend != "dap" {
+		return fmt.Errorf("shared service sessions require the DAP backend")
+	}
 	dir := filepath.Join(session.Root(), options.ID)
 	lock, e := session.Lock(dir)
 	if e != nil {
@@ -75,11 +90,15 @@ func Serve(options Options) (err error) {
 			}
 		}
 	}()
+	s.Attached = options.AttachPID > 0
 	var process *exec.Cmd
 	var settings *session.LaunchSettings
 	committed := false
 	defer func() {
 		if process != nil && process.Process != nil && !committed {
+			if s.RPC != "" {
+				_, _ = delve.Call(s.RPC, "Detach", obj{"Kill": !s.Attached}, 3*time.Second)
+			}
 			_ = process.Process.Kill()
 			_ = process.Wait()
 		}
@@ -110,45 +129,36 @@ func Serve(options Options) (err error) {
 		if e != nil {
 			return fmt.Errorf("read launch settings: %w", e)
 		}
-		log, e := os.OpenFile(filepath.Join(dir, "delve.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		settingsForRun := settings
+		if settingsForRun == nil {
+			settingsForRun = &session.LaunchSettings{}
+		}
+		settingsForRun.Args = append([]string{}, options.Args...)
+		settingsForRun.Delve = options.Delve
+		settings = settingsForRun
+		settings.Service = options.Service
+		if options.Service && settings.OTLP == nil && settings.OTLPError == "" {
+			config, exportErr := telemetry.FromEnvironment(settings.Environment(os.Environ()))
+			settings.OTLP = config
+			if exportErr != nil {
+				settings.OTLPError = exportErr.Error()
+			}
+		}
+		if e = session.Write(filepath.Join(s.Dir, "launch.json"), settings); e != nil {
+			return e
+		}
+		process, e = startTarget(&s, options, settings)
 		if e != nil {
 			return e
 		}
-		defer log.Close()
-		argv := append([]string{"exec", s.Binary, "--headless", "--listen=127.0.0.1:0", "--api-version=2", "--accept-multiclient", "--"}, options.Args...)
-		process = exec.Command(options.Delve, argv...)
-		process.Dir = s.Project
-		if settings != nil {
-			if settings.Cwd != "" {
-				process.Dir = settings.Cwd
-			}
-			process.Env = settings.Environment(process.Environ())
-		}
-		process.Stdout = log
-		process.Stderr = log
-		// Delve has its own session and a file-backed log, so a broker crash does not
-		// sever its stdout pipe or deliver a terminal signal to the target.
-		process.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-		if e = process.Start(); e != nil {
-			return e
-		}
-		s.DelvePID = process.Process.Pid
-		for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-			data, _ := os.ReadFile(filepath.Join(dir, "delve.log"))
-			for _, line := range strings.Split(string(data), "\n") {
-				if strings.HasPrefix(line, "API server listening at: ") {
-					s.RPC = strings.TrimSpace(strings.TrimPrefix(line, "API server listening at: "))
-					break
-				}
-			}
-			if s.RPC != "" {
-				break
-			}
-		}
-		if s.RPC == "" {
-			return fmt.Errorf("Delve did not start; see %s", filepath.Join(dir, "delve.log"))
-		}
 		s.Fingerprint = session.CaptureFingerprint(s.Binary, s.Project)
+	}
+	// A persisted active fact is not proof that the host survived recovery.
+	for id, c := range s.Consumers {
+		c.Host = nil
+		c.Challenge = ""
+		c.ChallengeExpires = ""
+		s.Consumers[id] = c
 	}
 	if s.Binding == nil {
 		s.Binding = &session.Binding{ID: session.NewID(16), Revision: 1, Name: "Agent"}
@@ -164,18 +174,36 @@ func Serve(options Options) (err error) {
 		s.Task.Reason = "broker recovered; resume debugging only at the user's request"
 	}
 	s.Version = 2
-	s.Token = ""
+	if !options.Recover && options.Service {
+		s.ServiceVersion = 1
+		s.RunID = session.NewID(16)
+		s.Token = session.NewID(32)
+	}
 	s.Thread, s.Codex = "", ""
 	if s.Owner == "codex" {
 		s.Owner = "agent"
 	}
-	b := &broker{changed: make(chan struct{}), s: s, rpcAddr: s.RPC, owner: s.Owner, generation: int(time.Now().UnixMilli()), done: make(chan struct{})}
+	b := &broker{process: process, changed: make(chan struct{}), s: s, rpcAddr: s.RPC, owner: s.Owner, generation: int(time.Now().UnixMilli()), done: make(chan struct{})}
+	b.seenCommands = map[string]bool{}
+	for _, id := range s.ExecutionCommands {
+		b.seenCommands[id] = true
+	}
 	if b.owner == "" {
 		b.owner = "agent"
 	}
 	if s.Backend == "dap" {
-		b.backend, e = backend.Open(s.RPC, s.BreakpointOwners, s.FunctionBreakpoints)
-		if errors.Is(e, backend.ErrRunning) && options.Recover {
+		if options.Recover {
+			settings, e = session.ReadLaunchSettings(s.Dir)
+			if e != nil {
+				return e
+			}
+		}
+		var mapping []protocol.PathMapping
+		if settings != nil {
+			mapping = settings.SubstitutePath
+		}
+		b.backend, e = backend.OpenWithMapping(s.RPC, s.BreakpointOwners, s.FunctionBreakpoints, mapping)
+		if errors.Is(e, backend.ErrRunning) && options.Recover && s.ServiceVersion == 0 {
 			if !session.ProcessExists(s.DelvePID) || !session.ProcessExists(s.TargetPID) {
 				return fmt.Errorf("recovery process identity unavailable")
 			}
@@ -184,7 +212,11 @@ func Serve(options Options) (err error) {
 			return e
 		}
 		if b.backend != nil {
-			defer b.backend.Close()
+			defer func() {
+				if b.backend != nil {
+					b.backend.Close()
+				}
+			}()
 		}
 
 	}
@@ -196,7 +228,15 @@ func Serve(options Options) (err error) {
 	if options.Recover && num(state["Pid"]) != s.TargetPID {
 		return fmt.Errorf("Delve process identity differs; refusing recovery")
 	}
+	if b.s.ServiceVersion > 0 {
+		if e = b.reconcileDefinitions(); e != nil {
+			return fmt.Errorf("restore definitions: %w", e)
+		}
+	}
 	b.s.TargetPID = num(state["Pid"])
+	if !options.Recover && options.AttachPID > 0 && b.s.TargetPID != options.AttachPID {
+		return fmt.Errorf("attached process identity differs")
+	}
 	if options.Recover && b.owner == "vscode" {
 		b.s.HandoverID = session.NewID(8)
 	}
@@ -245,54 +285,48 @@ func Serve(options Options) (err error) {
 			return fmt.Errorf("save launch settings: %w", err)
 		}
 	}
+	b.openTrace(settings)
+	if b.s.ServiceVersion == 0 {
+		b.traces = tracing.NewRecorder(b.s.ID, filepath.Base(b.s.Binary), "delve")
+		defer b.traces.Close()
+	}
 	// Publish only after the settings needed by Run again are safely archived.
 	if e = b.persist(); e != nil {
 		return e
 	}
-	b.traces = tracing.NewRecorder(b.s.ID, filepath.Base(b.s.Binary), "delve")
-	defer b.traces.Close()
 	b.record("broker.connected", "core", obj{"recovered": options.Recover})
 	if discussion, err := session.ReadDiscussion(b.s.ID); err != nil {
 		return err
 	} else if len(discussion.Threads) > 0 {
+		changed := false
+		for i := range discussion.Threads {
+			d := &discussion.Threads[i].Delivery
+			if d.Status == "sending" {
+				d.Status = "unknown"
+				d.Error = "broker restarted during send; inspect conversation before retrying"
+				changed = true
+			}
+		}
+		if changed {
+			if err := session.CommitDiscussion(&discussion); err != nil {
+				return err
+			}
+		}
 		b.historyDiscussion(discussion, "restored")
 	}
 	if stateStatus(state, false) == "paused" {
 		b.historyStop("entry")
 	}
-	if b.backend != nil {
-		go func() {
-			for event := range b.backend.Events {
-				b.mu.Lock()
-				switch str(event["event"]) {
-				case "continued":
-					b.moving = true
-					b.generation++
-					b.handleEpoch++
-				case "stopped":
-					b.moving = false
-					b.generation++
-					b.handleEpoch++
-					_ = b.emit("stopped", str(asObj(event["body"])["reason"]))
-				case "exited":
-					b.moving = false
-					b.generation++
-					b.handleEpoch++
-					_ = b.emit("target_exited", "")
-				}
-				if b.peer != nil && b.peer.back == nil {
-					_ = b.peer.send(event)
-				}
-				b.mu.Unlock()
-			}
-		}()
-	}
+	b.watchBackend(b.backend)
 
 	committed = true
 	go b.maintainTasks()
 	defer b.once.Do(func() { close(b.done) })
 	go func() { _ = server.Serve(httpLn) }()
 	go b.acceptDAP(dapListener)
+	if options.EditorStartup {
+		b.awaitEditorConfiguration(30 * time.Second)
+	}
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, os.Interrupt)
 	defer signal.Stop(sig)
@@ -300,7 +334,9 @@ func Serve(options Options) (err error) {
 	case <-b.done:
 	case <-sig:
 	}
+	_ = server.Close()
 	b.mu.Lock()
+	b.closing = true
 	if b.peer != nil {
 		b.peer.close()
 		b.peer = nil
@@ -316,9 +352,11 @@ func Serve(options Options) (err error) {
 	_ = b.persist()
 	stopped := b.s.Stopped
 	b.mu.Unlock()
-	if process != nil && stopped {
-		_ = process.Process.Kill()
-		_ = process.Wait()
+	b.captureWorkers.Wait()
+	b.trace.Close()
+	if b.process != nil && stopped {
+		_ = b.process.Process.Kill()
+		_ = b.process.Wait()
 	}
 	return nil
 }

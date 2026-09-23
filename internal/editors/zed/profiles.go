@@ -14,6 +14,9 @@ func Label(id string) string { return "Brote · " + id }
 
 // WriteConfig updates only this session's attach profile, preserving other entries.
 func WriteConfig(s session.Descriptor) (string, error) {
+	if s.ServiceVersion > 0 {
+		return "", fmt.Errorf("authenticated Brote sessions require the Brote DAP transport; direct Zed TCP attach is unavailable")
+	}
 	host, port, e := net.SplitHostPort(s.DAP)
 	if e != nil {
 		return "", e

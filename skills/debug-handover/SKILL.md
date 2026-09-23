@@ -10,7 +10,10 @@ even before a run exists; `debug_connect` also returns it. Use that absolute pat
 for the commands below, since Git installation does not add a global executable. Otherwise use
 `brote` on PATH (`agentdebugger` and `delve-llm-adapter` remain aliases). Release packages
 include the browser and require no compiler. Delve must be installed separately.
-Never compile the target implicitly.
+Never compile the target implicitly. New starts use the shared service. Use
+`--legacy` only for an explicitly requested old direct Zed/RPC workflow; add
+`--backend rpc` for RPC. Running old sessions retain their contract and cannot
+use shared-only operations. `run-again` preserves its stored launch mode.
 
 When the project has `.vscode/launch.json`, use `brote configs --project DIR` to
 discover its profiles before reconstructing launch arguments. Start a named Go
@@ -83,12 +86,11 @@ On a task event, read fresh state. Match task ID, binding ID/revision and unexpi
 
 **Pi:** for a chat request, call `debug_task` with `operation: start`, session and
 `instruction` containing the user's requested scope. For a delivered inspector
-task, use `operation: claim`, session and task. Both renew the lease during the
-active turn. Use `debug_execute` with the
+task, use `operation: claim`, session and task. Both associate the active host turn with Go-owned lease renewal. Use `debug_execute` with the
 same session/task and operation `continue`, `next`, `step`, `stepout` or `pause`.
 Finish with `debug_task` `complete` at a settled pause or exit; use `cancel` on failure.
-Pi also completes/cancels remaining claimed work when the turn settles and cancels
-on session shutdown. Do not substitute a bare shell continue for these tools.
+Pi reports settled/closed facts; Go completes or cancels the matching task.
+An idle listener never renews a lease. Do not substitute a bare shell continue for these tools.
 
 **Codex:** after starting a task, use the same CLI task contract. Heartbeat first
 when acknowledging a task delivered by the inspector:
@@ -127,13 +129,13 @@ do not resume to answer a comment.
 Acknowledge before investigating:
 
 ```sh
-brote comment delivery SESSION THREAD --question QUESTION --binding BINDING --revision REVISION --status thinking
+brote comment delivery SESSION THREAD --question QUESTION --binding BINDING --revision REVISION --attempt ATTEMPT --status thinking
 ```
 
 Write the answer to a UTF-8 file, then post it to the debugger:
 
 ```sh
-brote comment reply SESSION THREAD --question QUESTION --binding BINDING --revision REVISION --message-id QUESTION-answer --body-file /absolute/answer.md
+brote comment reply SESSION THREAD --question QUESTION --binding BINDING --revision REVISION --attempt ATTEMPT --message-id QUESTION-answer --body-file /absolute/answer.md
 ```
 
 Reuse the message ID on retry; replies are idempotent. Answer in the debugger
@@ -152,11 +154,31 @@ Prefer `state --summary`; avoid immediately repeating the snapshot returned by
 Keep routing IDs and acknowledgements out of normal replies unless diagnosing a
 connection or delivery failure.
 
+
+## Saved discussions and Pi captures
+
+Use the exact question, recipient revision and attempt from the canonical delivery
+message. A sender receipt is not recipient acknowledgement or a final answer.
+Uncertain sends require inspection and explicit retry; never blindly reinject.
+Provider questions have an explicit recipient separate from the execution binding.
+Do not silently switch destinations or start execution to answer them.
+
+`comment ask SESSION THREAD --context original --body-file PATH --offline` adds
+an original-evidence follow-up after exit. Offline reply/resolve/reopen/retry use
+the same Go records and never start Delve. Current evidence requires a live pause.
+Saved partial/truncated/error notes must be preserved in the answer's explanation.
+
+In Pi, use `debug_tracepoints` for list/create/update/delete, preserving the
+returned owner/ID/revision and scope. Use `debug_captures` for bounded outcomes,
+export status and program/debugger trace IDs. These tools do not resume execution;
+use an authorized `debug_task` and `debug_execute` for that.
+
 ## Saved traces
 
-Brote core captures debugger actions, stops and inspected values for sessions from
-Codex, Pi and editors automatically. `brote traces` lists saved program/debugger
-trace IDs and independent local/remote export status. `brote trace TRACE_ID` reads
-Tempo JSON through the core query API, including after the broker exits. An assigned
-ID or accepted export does not prove disk durability; query to verify availability.
-No separate Tempo process or collector needs to be launched by the agent.
+Brote core stores shared-session tracepoint captures and debugger actions in embedded
+Tempo. Native editor adapters submit bounded read-only observations to the same
+tracing service. `brote traces` lists saved program/debugger IDs and independent
+local/remote export status; `brote trace TRACE_ID` reads saved Tempo JSON after the
+broker exits. Shared records use session:run keys, so restart preserves earlier
+traces. An assigned ID or accepted export does not prove query availability or
+crash durability. Agents do not launch a separate Tempo process or collector.

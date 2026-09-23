@@ -17,6 +17,12 @@ func (p *dapPeer) translateArguments(args obj, generation int) error {
 	return nil
 }
 func (p *dapPeer) exportHandles(body obj, command string, generation int) {
+	// Drop stale references, but never recycle IDs within this connection.
+	for id, h := range p.handles {
+		if h.generation != generation {
+			delete(p.handles, id)
+		}
+	}
 	if p.handles == nil {
 		p.handles = map[int]dapHandle{}
 	}

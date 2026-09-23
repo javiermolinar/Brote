@@ -26,11 +26,12 @@ test('shared Go core routes client captures, resumes metadata and isolates remot
   await exec('go',['build','-gcflags=all=-N -l','-o',path.join(dir,'demo'),path.join(dir,'main.go')]);
   broker=await cli('start','--binary',path.join(dir,'demo'),'--project',dir,'--no-ui','--thread','','--name','Pi');
   const id=broker.id || broker.session?.id;assert.ok(id,JSON.stringify(broker));
-  await cli('break',id,'--file',path.join(dir,'main.go'),'--line','5');await cli('continue',id,'--human','--wait','10s');await cli('state',id);
-  let records;for(let i=0;i<100;i++){records=await cli('traces');if(records.some(r=>r.session===id&&Object.values(r.local).includes('Export accepted; query to verify')))break;await sleep(100);}
-  const brokerRecord=records.find(r=>r.session===id);assert.ok(brokerRecord,'broker automatically captured without an editor');
+  await cli('tracepoint','add',id,'--name','captured result','--values','{"total":"value"}','--file',path.join(dir,'main.go'),'--line','5');await cli('continue',id,'--human','--wait','10s');await cli('state',id);
+  let captures;for(let i=0;i<100;i++){captures=(await cli('captures',id)).captures;if(captures.length)break;await sleep(100);}assert.equal(captures[0]?.status,'captured');assert.equal(captures[0]?.values.total.value,'42');
+  let records;for(let i=0;i<100;i++){records=await cli('traces');if(records.some(r=>r.session.startsWith(id+':')&&Object.values(r.local).includes('Export accepted; query to verify')))break;await sleep(100);}
+  const brokerRecord=records.find(r=>r.session.startsWith(id+':'));assert.ok(brokerRecord,'broker tracepoint captured without an editor');
   await cli('end-session',id,'--confirmed');broker=undefined;
-  for(let i=0;i<100;i++){records=await cli('traces');if(records.find(r=>r.session===id)?.closed)break;await sleep(100);}
+  for(let i=0;i<100;i++){records=await cli('traces');if(records.find(r=>r.session.startsWith(id+':'))?.closed)break;await sleep(100);}
   const brokerTrace=await query(brokerRecord.program,'broker capture');assert.ok(JSON.stringify(brokerTrace).includes('main.main'));assert.ok(JSON.stringify(brokerTrace).includes('42'),'broker captures inspected local values');
   const active=await event({kind:'start',session:'active-restart',name:'active producer'});
   await event({kind:'record',session:'active-restart',command:'before restart'});
@@ -40,7 +41,7 @@ test('shared Go core routes client captures, resumes metadata and isolates remot
   assert.equal(resumed.program,active.program);assert.equal(resumed.closed,false);assert.equal(resumed.incomplete,true);assert.notEqual(resumed.run,active.run);
   await event({kind:'close',session:'active-restart'});
   // Brote owns metadata and producer resumption; Tempo owns block durability.
-  const saved=await cli('traces');assert.equal(saved.find(r=>r.session==='native-test').program,record.program);assert.equal(saved.find(r=>r.session===id).program,brokerRecord.program);
+  const saved=await cli('traces');assert.equal(saved.find(r=>r.session==='native-test').program,record.program);assert.equal(saved.find(r=>r.session.startsWith(id+':')).program,brokerRecord.program);
   const recovered=saved.find(r=>r.session==='active-restart');assert.equal(recovered.closed,true);assert.equal(recovered.incomplete,true);assert.ok(recovered.debuggerSpans>resumed.debuggerSpans,'resumed segment was closed and submitted');
   const paths=await fs.readdir(path.join(env.AGENTDEBUGGER_DATA_DIR,'tracing/sessions'));for(const name of paths)assert.ok(!(await fs.readFile(path.join(env.AGENTDEBUGGER_DATA_DIR,'tracing/sessions',name),'utf8')).includes('Basic secret'));
   await fs.mkdir('dist/embedded-tempo',{recursive:true});await fs.writeFile('dist/embedded-tempo/core-integration.json',JSON.stringify({native:record.program,broker:brokerRecord.program,dataDir:env.AGENTDEBUGGER_DATA_DIR,restarted:true,remoteFailureIsolated:true},null,2));

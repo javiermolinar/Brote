@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"agentdebugger/internal/protocol"
 	"agentdebugger/internal/session"
 	"path/filepath"
 	"testing"
@@ -154,5 +155,24 @@ func TestContinueThreadOnlyWithinInvestigation(t *testing.T) {
 	old, _ := session.ReadDiscussion("1111111111")
 	if len(old.Threads[0].Messages) != 1 {
 		t.Fatal("original evidence mutated")
+	}
+}
+
+func TestRetryDoesNotRedirectProviderToExecutionAgent(t *testing.T) {
+	b := deliveryFixture(t)
+	r := protocol.Recipient{Kind: "provider", ID: "model", Revision: 1, Name: "Model"}
+	d := session.Discussion{Session: b.s.ID, Threads: []session.CommentThread{{ID: "thread", Messages: []session.CommentMessage{{ID: "q", Author: "human", Body: "question"}}, Delivery: session.CommentDelivery{Question: "q", Status: "failed", Recipient: &r}}}}
+	if err := session.CommitDiscussion(&d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.comments(obj{"action": "retry", "thread": "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := session.ReadDiscussion(b.s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.DiscussionRecipient(got.Threads[0].Delivery) != r {
+		t.Fatal("retry changed provider destination")
 	}
 }

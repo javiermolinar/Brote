@@ -63,8 +63,8 @@ With the `code` command available on your PATH:
 curl -fsSL https://github.com/javiermolinar/Brote/releases/latest/download/install.sh | sh -s -- --editor vscode
 ```
 
-Requires VS Code 1.138 or later and the Go extension with Delve. Start your Go
-debugger with **F5**, pause, and choose **Ask Brote About Selection**. Pick an
+Requires VS Code 1.138 or later and Delve. Start a Brote **F5** configuration
+or use **Brote: Attach to Session**, pause, and choose **Ask Brote About Selection**. Pick an
 available model when prompted; answers appear in native comment threads.
 Use **Continue in Chat** for a longer discussion.
 
@@ -106,3 +106,12 @@ VS Code debugger ─── DAP ─── language adapter ─── program
 ```
 
 MIT licensed. Third-party notices are retained.
+
+### Shared debugger sessions
+
+New `brote start` launches use the shared Go session service. Pi, Codex, browser,
+and Brote VS Code launch/attach workflows share execution, definitions, immutable
+evidence and Go-backed discussions. Use `--legacy` only for direct Zed/RPC compatibility.
+VS Code inline discussions use Brote sessions; other native adapters retain automatic
+read-only tracing into the same embedded Tempo store. See [debugging](docs/debugging.md)
+and [ownership](docs/ownership.md) for the current boundaries.

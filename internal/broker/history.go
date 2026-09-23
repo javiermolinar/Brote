@@ -5,7 +5,6 @@ import (
 	"agentdebugger/internal/tracing"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"time"
 )
 
@@ -18,6 +17,14 @@ func (b *broker) record(kind, actor string, data any) {
 	b.traces.Event(tracing.Event{Kind: "record", Command: kind, Data: payload})
 	if b.history == nil {
 		return
+	}
+	if value, ok := data.(map[string]any); ok && b.s.RunID != "" {
+		copy := obj{}
+		for k, v := range value {
+			copy[k] = v
+		}
+		copy["run"] = b.s.RunID
+		data = copy
 	}
 	if err := b.history.Append(kind, actor, data); err != nil {
 		b.historyError = err.Error()
@@ -92,10 +99,15 @@ func (b *broker) historyInspection(v obj) {
 	b.record("inspection.captured", "observer", obj{"stop_id": b.stopID, "context_id": fmt.Sprint(num(v["goroutine"])), "snapshot": ref})
 }
 func (b *broker) historyAction(a, result obj, err error) {
+	outcome := "accepted"
+	if err != nil {
+		outcome = "failed"
+	}
+	b.trace.Action(str(a["action"]), outcome)
 	if b.history == nil {
 		return
 	}
-	data := obj{"stop_id": b.stopID, "request": pick(a, "action", "file", "line", "function", "condition", "hitCondition", "breakpoint", "expression", "frame", "depth", "count", "note", "status", "event"), "result": result}
+	data := obj{"stop_id": b.stopID, "request": pick(a, "commandId", "action", "file", "line", "function", "condition", "hitCondition", "breakpoint", "expression", "frame", "depth", "count", "note", "status", "event"), "result": result}
 	if gid := num(a["goroutine"]); gid != 0 {
 		data["context_id"] = fmt.Sprint(gid)
 	}
@@ -120,7 +132,7 @@ func (b *broker) historyDiscussion(d session.Discussion, action string) {
 	}
 	// Keep original discussion IDs and captured contexts; the archive copy also
 	// remains readable through the existing offline comment command.
-	if err := session.Write(filepath.Join(b.history.Dir, "discussion.json"), d); err != nil {
+	if err := session.ArchiveDiscussion(d.Session, b.history.Dir); err != nil {
 		b.historyError = err.Error()
 	}
 	ref, err := b.history.Snapshot(d)

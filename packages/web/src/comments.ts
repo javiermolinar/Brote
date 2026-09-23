@@ -1,18 +1,19 @@
+import {evidenceNotes} from '../../client/src/evidence';
 import {createClient} from '../../client/src/index';
 import type {CommentThread as Thread} from '../../client/src/models';
-interface State {id?:string;project?:string;historical?:boolean;agentConnected?:boolean;cursor?:number;generation:number;status:string;frame:number;goroutine?:number;capabilities?:{comments?:boolean;replyContexts?:boolean};binding?:{id:string;name:string};source?:{file:string;line:number}}
+interface State {run?:string;id?:string;project?:string;historical?:boolean;agentConnected?:boolean;cursor?:number;generation:number;status:string;frame:number;goroutine?:number;capabilities?:{comments?:boolean;replyContexts?:boolean};binding?:{id:string;name:string};source?:{file:string;line:number}}
 type Request = <T>(path:string,body?:Record<string,unknown>)=>Promise<T>;
 const el=(tag:string,text?:string,cls?:string)=>{const e=document.createElement(tag);if(text)e.textContent=text;if(cls)e.className=cls;return e;};
 function progress(thread:Thread,connected?:boolean):{text:string;busy:boolean} {
- const n=thread.delivery,name=n.binding?.name||'Agent';
+ const n=thread.delivery,name=n.recipient?.name||n.binding?.name||'Agent';
  if(thread.resolved)return {text:'Resolved',busy:false};
  if(n.status==='answered')return {text:`${name} replied`,busy:false};
  if(connected===false&&['pending','sending','queued'].includes(n.status))return {text:`Saved · ${name} offline`,busy:false};
- if(!n.binding)return {text:'No agent connected · connect an agent, then retry',busy:false};
+ if(!n.binding&&!n.recipient&&['pending','sending','queued'].includes(n.status))return {text:'No agent connected · connect an agent, then retry',busy:false};
  const labels:Record<string,string>={pending:`Waiting to send to ${name}…`,sending:`Sending to ${name}…`,queued:`Delivered to ${name} · waiting for acknowledgement…`,thinking:`${name} is thinking…`,failed:`Could not deliver to ${name}`,unknown:'Delivery uncertain · check the agent conversation'};
  return {text:(labels[n.status]||n.status)+(n.error?' · '+n.error:''),busy:['pending','sending','queued','thinking'].includes(n.status)};
 }
-export function createComments(request:Request,navigate:(file:string,line:number)=>Promise<void>){
+export function createComments(request:Request,navigate:(file:string,line:number)=>Promise<void>,token?:string){
  const list=document.getElementById('commentList')!,pane=document.getElementById('source')!;
  const host=document.getElementById('threadHost');
  const panel=el('section',undefined,'commentThread');panel.hidden=true;
@@ -75,7 +76,7 @@ export function createComments(request:Request,navigate:(file:string,line:number
    let bubble=row.querySelector<HTMLButtonElement>('.commentGutter');
    if(!matches.length){bubble?.remove();return;}
    if(!bubble){bubble=document.createElement('button');bubble.className='commentGutter';bubble.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-6 4V6a2 2 0 0 1 2-2Z"/></svg>';row.append(bubble);}
-   const active=matches.find(t=>!t.resolved)||matches[0],status=state?.historical?{text:'Saved discussion',busy:false}:progress(active,state?.agentConnected);
+   const active=matches.find(t=>!t.resolved)||matches[0],status=progress(active,state?.agentConnected);
    bubble.title=bubble.ariaLabel=`Open comments on line ${line} · ${status.text}`;bubble.classList.toggle('awaitingAgent',status.busy);
    bubble.onclick=()=>void open(matches.find(t=>!t.resolved)||matches[0]);
   });
@@ -100,7 +101,7 @@ export function createComments(request:Request,navigate:(file:string,line:number
   bubbles();
   const nextListKey=JSON.stringify(threads.map(t=>[t.id,t.resolved,t.messages.length,t.delivery.status,state?.agentConnected]));
   if(nextListKey!==listKey){listKey=nextListKey;list.replaceChildren();
-  for(const t of threads){const button=el('button',`${t.resolved?'✓':'◌'} ${t.file.split('/').pop()}:${t.line} · ${t.messages[0]?.body.slice(0,70)}`,'commentListItem');const status=state?.historical?{text:'Saved discussion',busy:false}:progress(t,state?.agentConnected),hint=el('span',status.text,'commentProgress');hint.classList.toggle('awaitingAgent',status.busy);button.append(hint);button.onclick=()=>void open(t);list.append(button);}
+  for(const t of threads){const button=el('button',`${t.resolved?'✓':'◌'} ${t.file.split('/').pop()}:${t.line} · ${t.messages[0]?.body.slice(0,70)}`,'commentListItem');const status=progress(t,state?.agentConnected),hint=el('span',status.text,'commentProgress');hint.classList.toggle('awaitingAgent',status.busy);button.append(hint);button.onclick=()=>void open(t);list.append(button);}
   if(!threads.length)list.append(el('p',state?.historical?'No saved discussions.':'Select code or click a variable to ask the agent.','empty'));
   }
   if(!anchor){position();return;}
@@ -109,15 +110,16 @@ export function createComments(request:Request,navigate:(file:string,line:number
   if(selected){
    const evidence=selected.messages.find(m=>m.id===evidenceID&&m.context)||selected.messages.find(m=>m.context);
    const saved=evidence?.context||selected.context;
-   context.textContent=`${anchor.file.split('/').pop()}:${anchor.line} · Captured ${new Date(saved.capturedAt||evidence?.created||selected.created).toLocaleString()}${evidence?.run?' · Run '+(runNames[evidence.run]||evidence.run):''} · saved evidence`;context.title=anchor.file;
+   context.textContent=`${anchor.file.split('/').pop()}:${anchor.line} · Captured ${new Date(saved.capturedAt||evidence?.created||selected.created).toLocaleString()}${evidence?.evidence?.executionRun?' · Execution '+evidence.evidence.executionRun:evidence?.run?' · Session '+(runNames[evidence.run]||evidence.run):' · execution run unknown'} · saved evidence`;context.title=anchor.file;
    captured.hidden=false;
    const frame=saved.frames?.[saved.frame||0];
-   capturedValues.textContent=[...(saved.frames||[]).map((f,i)=>`#${i} ${f.function?.name||'?'} ${f.file?.split('/').pop()||''}:${f.line||''}`),'',...[...(frame?.Arguments||[]),...(frame?.Locals||[])].map(v=>`${v.name} = ${v.value??'…'} (${v.type})`),'',...(saved.anchorSource?.lines||[])].join('\n');
+   capturedValues.textContent=saved.nativeEvidence?JSON.stringify(saved.nativeEvidence,null,2):[...(saved.frames||[]).map((f,i)=>`#${i} ${f.function?.name||'?'} ${f.file?.split('/').pop()||''}:${f.line||''}`),'',...[...(frame?.Arguments||[]),...(frame?.Locals||[])].map(v=>`${v.name} = ${v.value??'…'} (${v.type})`),'',...(saved.anchorSource?.lines||[])].join('\n');
+   const notes=evidenceNotes(saved);if(notes.length)capturedValues.textContent+='\n\nEvidence limitations:\n'+notes.join('\n');
    const nextKey=JSON.stringify([selected.messages,runNames]);
    if(nextKey!==key){key=nextKey;messages.replaceChildren();for(const m of selected.messages){const item=el('div',undefined,'commentMessage');item.classList.toggle('agent',m.author!=='human');item.append(el('strong',m.author==='human'?'You':m.author),el('p',m.body),el('small',`${m.run ? 'Run '+(runNames[m.run]||m.run)+' · ' : ''}${m.context?.capturedAt?'Snapshot '+new Date(m.context.capturedAt).toLocaleTimeString():new Date(m.created||selected!.created).toLocaleTimeString()}`));if(m.context){const show=el('button','View captured pause') as HTMLButtonElement;show.type='button';show.onclick=()=>{evidenceID=m.id;draw();};item.append(show);}messages.append(item);}}
-   const n=selected.delivery,status=progress(selected,state?.agentConnected);if(state?.historical){status.text='Saved discussion · run is no longer connected';status.busy=false;}if(delivery.textContent!==status.text)delivery.textContent=status.text;delivery.classList.toggle('awaitingAgent',status.busy);
+   const n=selected.delivery,status=progress(selected,state?.agentConnected);if(state?.historical){status.text='Saved discussion · '+status.text;status.busy=false;}if(delivery.textContent!==status.text)delivery.textContent=status.text;delivery.classList.toggle('awaitingAgent',status.busy);
 
-   send.textContent='Reply';send.disabled=pending||!available||(!previous.some(t=>t.id===selected!.id)&&!selected.resolved&&n.status!=='answered');
+   send.textContent='Reply';send.disabled=pending||!available||((!!state?.historical||!previous.some(t=>t.id===selected!.id))&&!selected.resolved&&n.status!=='answered');
    resolve.hidden=false;resolve.textContent=selected.resolved?'Reopen':'Resolve';resolve.disabled=pending||!available;
    retry.hidden=selected.resolved||!['pending','failed','unknown'].includes(n.status);retry.disabled=pending||!available;
   }else{
@@ -125,18 +127,18 @@ export function createComments(request:Request,navigate:(file:string,line:number
    delivery.textContent='Read-only question · does not authorize execution';send.textContent='Ask agent';send.disabled=pending||!available||state?.status!=='paused';resolve.hidden=retry.hidden=true;
   }
   if(errorText){delivery.textContent=errorText;delivery.classList.remove('awaitingAgent');}
-  form.hidden=!!state?.historical;replyContext.hidden=!selected;replyContext.options[0].disabled=state?.status!=='paused'||!!state?.historical||!state?.capabilities?.replyContexts;if(replyContext.options[0].disabled)replyContext.value='original';replyContext.options[0].textContent='Current pause · Run '+(runNames[state?.id||'']||state?.id||'current');input.disabled=pending||send.disabled;position();
+  form.hidden=false;replyContext.hidden=!selected;replyContext.options[0].disabled=state?.status!=='paused'||!!state?.historical||!state?.capabilities?.replyContexts;if(replyContext.options[0].disabled)replyContext.value='original';replyContext.options[0].textContent='Current pause · Run '+(runNames[state?.id||'']||state?.id||'current');input.disabled=pending||send.disabled;position();
  }
  async function load(){const sequence=++loadSequence;try{const result=await request<{discussion:{threads:Thread[]}}>('comments');if(sequence!==loadSequence)return;liveThreads=result.discussion.threads||[];threads=mergeThreads([...previous,...liveThreads]);draw();const requested=new URLSearchParams(location.search).get('thread');if(requested&&!deepLinkOpened){const t=threads.find(t=>t.id===requested);if(t){deepLinkOpened=true;void open(t);}}}catch(error){fail(error);}}
  async function open(t:Thread){collapsed=false;if(selected?.id!==t.id){evidenceID='';if(selected)drafts.set(selected.id,input.value);input.value=drafts.get(t.id)||'';}selected=t;const url=new URL(location.href);url.searchParams.set('thread',t.id);history.replaceState(null,'',url.pathname+url.search);anchor={file:t.file,line:t.line,expression:t.expression};key='';try{await navigate(t.file,t.line);}catch(error){fail(error);}draw();panel.scrollIntoView({block:'nearest'});}
  async function mutate(body:Record<string,unknown>){pending=true;errorText='';draw();try{const result=await request<{thread:Thread;eventError?:string}>('comments',body);selected=result.thread;drafts.delete(result.thread.id);input.value='';await load();if(result.eventError)fail('Saved, but event delivery failed. Reconnect the agent to reconcile pending questions.');}catch(error){fail(error);}finally{pending=false;draw();}}
- form.onsubmit=e=>{e.preventDefault();if(!anchor||!input.value.trim()||send.disabled)return;const old=previous.find(t=>t.id===selected?.id&&!liveThreads.some(c=>c.id===t.id));void mutate(selected?{action:old?'continue-thread':'ask',previousRun:old?.run,thread:selected.id,body:input.value,contextMode:replyContext.value,generation:state?.generation,goroutine:state?.goroutine,frame:state?.frame}:{action:'create',...anchor,body:input.value,generation:capture?.generation,goroutine:capture?.goroutine,frame:capture?.frame});};
+ form.onsubmit=e=>{e.preventDefault();if(!anchor||!input.value.trim()||send.disabled)return;const old=state?.historical?undefined:previous.find(t=>t.id===selected?.id&&!liveThreads.some(c=>c.id===t.id));void mutate(selected?{action:old?'continue-thread':'ask',previousRun:old?.run,thread:selected.id,body:input.value,contextMode:replyContext.value,run:state?.run,generation:state?.generation,goroutine:state?.goroutine,frame:state?.frame}:{action:'create',...anchor,body:input.value,run:capture?.run,generation:capture?.generation,goroutine:capture?.goroutine,frame:capture?.frame});};
  close.onclick=()=>{collapsed=true;const url=new URL(location.href);url.searchParams.delete('thread');history.replaceState(null,'',url.pathname+url.search);draw();};resolve.onclick=()=>{if(selected)void mutate({action:selected.resolved?'reopen':'resolve',thread:selected.id});};retry.onclick=()=>{if(selected&&confirm('Retry this question? If delivery was uncertain, check the agent conversation first to avoid a duplicate.'))void mutate({action:'retry',thread:selected.id});};
  return {
-  update(next:State){state=next;available=!!next.capabilities?.comments&&!next.historical;document.getElementById('commentsPanel')!.hidden=!available&&!threads.length;
+  update(next:State){state=next;available=!!next.capabilities?.comments||!!next.historical;document.getElementById('commentsPanel')!.hidden=!available&&!threads.length;
    if(next.historical){stopStream?.();stopStream=undefined;initialized=false;}
-   if(available&&!initialized){initialized=true;void load();if(typeof EventSource!=='undefined'){
-    const api=createClient({baseURL:location.origin,session:new URLSearchParams(location.search).get('session')||undefined});
+   if(available&&!next.historical&&!initialized){initialized=true;void load();if(typeof EventSource!=='undefined'){
+    const api=createClient({baseURL:location.origin,token,session:new URLSearchParams(location.search).get('session')||undefined});
     stopStream=api.subscribe(next.cursor||0,event=>{if(['question.created','reply.added','thread.updated','thread.resolved'].includes(event.kind))void load();},()=>{stopStream?.();initialized=false;},()=>void load());
 
    }}

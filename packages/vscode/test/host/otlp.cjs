@@ -20,7 +20,6 @@ exports.run=async()=>{
   const result=await vscode.lm.invokeTool('brote_inspect',{input:{}},new vscode.CancellationTokenSource().token);
   const evidence=JSON.parse(result.content.map(c=>c.value).join(''));assert.equal(evidence.frame.name,'main.work');
   assert.ok(evidence.scopes.some(s=>s.variables?.some(v=>v.name==='total' && v.value==='42')),JSON.stringify(evidence));
-  await vscode.commands.executeCommand('brote.ask');
   await session.customRequest('next',{threadId:stopped.body.threadId});await awaitEvent('stopped',2);
   await session.customRequest('continue',{threadId:stopped.body.threadId});await awaitEvent('terminated');await delay(1000);
   let record;for(let i=0;i<100;i++){record=brote.exports.traces().find(record=>record.session===session.id&&record.closed);if(record)break;await delay(500);}assert.ok(record,'core session finished and trace IDs available');

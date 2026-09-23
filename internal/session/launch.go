@@ -1,6 +1,8 @@
 package session
 
 import (
+	"agentdebugger/internal/protocol"
+	"agentdebugger/internal/telemetry"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,8 +13,14 @@ import (
 // LaunchSettings is kept in a private file, not the public session metadata or
 // event stream: environment overrides may contain credentials.
 type LaunchSettings struct {
-	Cwd string             `json:"cwd,omitempty"`
-	Env map[string]*string `json:"env,omitempty"`
+	Service        bool                   `json:"service,omitempty"`
+	OTLP           *telemetry.Config      `json:"otlp,omitempty"`
+	OTLPError      string                 `json:"otlpError,omitempty"`
+	Args           []string               `json:"args,omitempty"`
+	Delve          string                 `json:"delve,omitempty"`
+	SubstitutePath []protocol.PathMapping `json:"substitutePath,omitempty"`
+	Cwd            string                 `json:"cwd,omitempty"`
+	Env            map[string]*string     `json:"env,omitempty"`
 }
 
 func ReadLaunchSettings(dir string) (*LaunchSettings, error) {

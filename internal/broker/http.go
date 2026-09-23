@@ -1,7 +1,9 @@
 package broker
 
 import (
+	"agentdebugger/internal/protocol"
 	"encoding/json"
+	"errors"
 	"mime"
 	"net/http"
 	"os"
@@ -15,13 +17,24 @@ import (
 )
 
 func (b *broker) handler() http.Handler {
+	origin := b.s.HTTP
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		write := func(code int, v any) { w.WriteHeader(code); _ = json.NewEncoder(w).Encode(v) }
-		if origin := r.Header.Get("Origin"); origin != "" && origin != b.s.HTTP {
+		if requestOrigin := r.Header.Get("Origin"); requestOrigin != "" && requestOrigin != origin {
 			write(403, obj{"error": "foreign origin rejected"})
+			return
+		}
+		if !b.admitHTTP(w, r) {
+			return
+		}
+		if r.URL.Path == "/api/health" && r.Method == "GET" {
+			b.mu.Lock()
+			result := obj{"id": b.s.ID, "run": b.s.RunID, "serviceVersion": b.s.ServiceVersion, "version": b.s.Version, "status": "connected"}
+			b.mu.Unlock()
+			write(200, result)
 			return
 		}
 		if r.Method == "POST" {
@@ -29,6 +42,18 @@ func (b *broker) handler() http.Handler {
 			if err != nil || media != "application/json" {
 				write(415, obj{"error": "application/json required"})
 				return
+			}
+		}
+		if b.s.ServiceVersion > 0 {
+			switch r.URL.Path {
+			case "/api/workspace", "/api/sessions", "/api/runs/start":
+				write(403, obj{"error": "workspace operations require the local CLI, not a session credential", "code": "unsupported_operation", "version": protocol.Version})
+				return
+			case "/api/saved-run":
+				if r.URL.Query().Get("id") != b.s.ID {
+					write(403, obj{"error": "session identity mismatch", "code": "identity_mismatch", "version": protocol.Version})
+					return
+				}
 			}
 		}
 		if r.URL.Path == "/api/workspace" && r.Method == "GET" {
@@ -43,7 +68,8 @@ func (b *broker) handler() http.Handler {
 		if r.URL.Path == "/api/saved-run" && r.Method == "GET" {
 			v, e := session.SavedRun(r.URL.Query().Get("id"))
 			if e != nil {
-				write(409, obj{"error": e.Error()})
+				response := obj{"error": e.Error()}
+				write(409, response)
 			} else {
 				write(200, v)
 			}
@@ -111,6 +137,13 @@ func (b *broker) handler() http.Handler {
 				write(400, obj{"error": "session ID and explicit confirmation required"})
 				return
 			}
+			b.mu.Lock()
+			ownID, serviceVersion := b.s.ID, b.s.ServiceVersion
+			b.mu.Unlock()
+			if serviceVersion > 0 && input.ID != ownID {
+				write(403, obj{"error": "session credential cannot end another session"})
+				return
+			}
 			result, err := session.End(r.Context(), input.ID)
 			if err != nil {
 				write(409, obj{"error": err.Error()})
@@ -131,7 +164,7 @@ func (b *broker) handler() http.Handler {
 		if r.URL.Path == "/api/comments" {
 			var input obj
 			if r.Method == "POST" {
-				if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 65536)).Decode(&input); err != nil || input == nil {
+				if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, session.MaxAnswerBytes+16384)).Decode(&input); err != nil || input == nil {
 					write(400, obj{"error": "invalid comment request"})
 					return
 				}
@@ -154,6 +187,13 @@ func (b *broker) handler() http.Handler {
 			gid, _ := strconv.Atoi(r.URL.Query().Get("goroutine"))
 			frame, _ := strconv.Atoi(r.URL.Query().Get("frame"))
 			v, e = b.snapshot(gid, frame, r.URL.Query().Get("brief") == "1")
+		case r.URL.Path == "/api/v1" && r.Method == "POST":
+			var request serviceRequest
+			dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 65536))
+			dec.DisallowUnknownFields()
+			if e = dec.Decode(&request); e == nil {
+				v, e = b.service(request)
+			}
 		case r.URL.Path == "/api/action" && r.Method == "POST":
 			var a obj
 			dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 65536))
@@ -165,7 +205,16 @@ func (b *broker) handler() http.Handler {
 			return
 		}
 		if e != nil {
-			write(409, obj{"error": e.Error()})
+			response := obj{"error": e.Error()}
+			if b.s.ServiceVersion > 0 && (r.URL.Path == "/api/v1" || r.URL.Path == "/api/action") {
+				response["version"] = 1
+				response["code"] = "invalid_request"
+				var structured *protocol.Error
+				if errors.As(e, &structured) {
+					response["code"] = structured.Code
+				}
+			}
+			write(409, response)
 			return
 		}
 		write(200, v)
@@ -198,7 +247,7 @@ func (b *broker) handler() http.Handler {
 		_, _ = w.Write(data)
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if "http://"+r.Host != b.s.HTTP {
+		if "http://"+r.Host != origin {
 			http.Error(w, "unexpected host", 403)
 			return
 		}

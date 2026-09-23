@@ -1,9 +1,9 @@
 package cli
 
 import (
+	"agentdebugger/internal/session"
 	"bufio"
 	"context"
-	"agentdebugger/internal/session"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -19,12 +19,15 @@ import (
 
 // stream follows a broker stream once. Callers reconnect with the last cursor.
 func stream(ctx context.Context, s session.Descriptor, cursor uint64, binding string, receive func(session.Event) error) error {
-	if !strings.HasPrefix(s.HTTP, "http://127.0.0.1:") {
-		return fmt.Errorf("expected loopback broker")
+	if err := session.LocalEndpoint(s.HTTP); err != nil {
+		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", s.HTTP+"/api/events?cursor="+strconv.FormatUint(cursor, 10)+"&binding="+url.QueryEscape(binding), nil)
 	if err != nil {
 		return err
+	}
+	if s.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+s.Token)
 	}
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
@@ -67,6 +70,8 @@ func eventsCommand(args []string, wait bool) (any, error) {
 		return nil, fmt.Errorf("session ID required")
 	}
 	f := flag.NewFlagSet("events", flag.ContinueOnError)
+	managed := f.Bool("managed", false, "service-owned delivery and host facts over NDJSON")
+	consumer := f.String("consumer", "", "stable host consumer ID")
 	cursor := f.Uint64("cursor", 0, "last event ID")
 	binding := f.String("binding", "", "bound client ID")
 	timeout := f.Duration("timeout", 20*time.Second, "bounded wait timeout")
@@ -79,6 +84,12 @@ func eventsCommand(args []string, wait bool) (any, error) {
 	}
 	if *binding == "" && s.Binding != nil {
 		*binding = s.Binding.ID
+	}
+	if *managed {
+		if wait || *consumer == "" {
+			return nil, fmt.Errorf("managed events require --consumer and cannot use await-control")
+		}
+		return nil, managedEvents(s, *consumer, *binding, os.Stdin, os.Stdout)
 	}
 	ctx := context.Background()
 	cancel := func() {}

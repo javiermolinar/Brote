@@ -97,7 +97,7 @@ export interface ActionResult extends Partial<Evaluation> { Breakpoint?: {file:s
 
 export interface CommentThread {
  id:string;file:string;line:number;expression?:string;created:string;resolved:boolean;
- context:{generation?:number;frame?:number;goroutine?:number;capturedAt?:string;anchorSource?:{lines:string[]};frames?:{function?:{name:string};file?:string;line?:number;Locals?:{name:string;value?:string;type:string}[];Arguments?:{name:string;value?:string;type:string}[]}[]};
- messages:{id:string;author:string;body:string;created:string;run?:string;context?:CommentThread["context"]}[];
- delivery:{question:string;status:string;error?:string;binding?:{id:string;name:string}};
+ context:{run?:string;pauseEpoch?:number;nativeEvidence?:Record<string,unknown>;inspectionError?:string;truncated?:boolean;generation?:number;frame?:number;goroutine?:number;capturedAt?:string;anchorSource?:{lines:string[]};frames?:{function?:{name:string};file?:string;line?:number;Locals?:{name:string;value?:string;type:string}[];Arguments?:{name:string;value?:string;type:string}[]}[]};
+ messages:{evidence?:{id:string;session?:string;executionRun?:string;pauseEpoch?:number};id:string;author:string;body:string;created:string;run?:string;context?:CommentThread["context"]}[];
+ delivery:{recipient?:{kind:string;id:string;name?:string;revision:number};question:string;status:string;error?:string;binding?:{id:string;name:string}};
 }

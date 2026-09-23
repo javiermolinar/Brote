@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"agentdebugger/internal/protocol"
 	"agentdebugger/internal/session"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,9 @@ import (
 func (b *broker) comments(a obj) (obj, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.commentsLocked(a)
+}
+func (b *broker) commentsLocked(a obj) (obj, error) {
 	d, err := session.ReadDiscussion(b.s.ID)
 	if err != nil {
 		return nil, err
@@ -21,6 +25,25 @@ func (b *broker) comments(a obj) (obj, error) {
 		return obj{"discussion": d}, nil
 	}
 	action := str(a["action"])
+	if (action == "create" || ((action == "ask" || action == "continue-thread") && str(a["contextMode"]) == "current")) && str(a["run"]) != "" && str(a["run"]) != b.s.RunID {
+		return nil, fmt.Errorf("execution run changed; recapture evidence")
+	}
+
+	var recipient *protocol.Recipient
+	if raw := a["recipient"]; raw != nil {
+		data, _ := json.Marshal(raw)
+		var r protocol.Recipient
+		if err := json.Unmarshal(data, &r); err != nil {
+			return nil, err
+		}
+		if err := r.Check(); err != nil {
+			return nil, err
+		}
+		recipient = &r
+		if (action == "create" || action == "ask" || action == "retry") && r.Kind == "agent" && !sameRecipient(r, agentRecipient(b.s.Binding)) {
+			return nil, fmt.Errorf("agent binding changed")
+		}
+	}
 	body := strings.TrimSpace(str(a["body"]))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if action == "continue-thread" {
@@ -71,7 +94,7 @@ func (b *broker) comments(a obj) (obj, error) {
 		}
 		action = "ask"
 	}
-	if action == "create" || action == "ask" || action == "reply" {
+	if action == "create" || action == "ask" {
 		if body == "" || len(body) > 16000 {
 			return nil, fmt.Errorf("comment must contain 1–16000 bytes")
 		}
@@ -122,9 +145,10 @@ func (b *broker) comments(a obj) (obj, error) {
 			return nil, fmt.Errorf("line outside source")
 		}
 		start, end := max(1, line-4), min(len(lines), line+4)
-		context = pick(context, "generation", "goroutine", "frame", "frames", "source", "sourceIdentity", "state", "breakpoints", "watches")
+		context = pick(context, "run", "pauseEpoch", "generation", "goroutine", "frame", "frames", "source", "sourceIdentity", "state", "breakpoints", "watches", "inspectionError", "error", "partial", "truncated", "limits", "traceIds", "exportError")
 		context["anchorSource"] = obj{"file": file, "line": line, "start": start, "lines": lines[start-1 : end]}
 		context["capturedAt"] = now
+		context["session"] = b.s.ID
 		context["binaryIdentity"] = b.s.Fingerprint
 		expression := str(a["expression"])
 		if expression != "" {
@@ -154,6 +178,7 @@ func (b *broker) comments(a obj) (obj, error) {
 			return nil, fmt.Errorf("thread message limit reached")
 		}
 		context := t.Context
+		var evidence *session.EvidenceIdentity
 		if action == "ask" && str(a["contextMode"]) == "current" {
 			if num(a["generation"]) != b.generation {
 				return nil, fmt.Errorf("pause changed; refresh before replying")
@@ -165,14 +190,16 @@ func (b *broker) comments(a obj) (obj, error) {
 			if fresh["status"] != "paused" {
 				return nil, fmt.Errorf("pause the program before capturing current context")
 			}
-			context = pick(fresh, "generation", "goroutine", "frame", "frames", "source", "sourceIdentity", "state", "breakpoints", "watches")
+			context = pick(fresh, "run", "pauseEpoch", "generation", "goroutine", "frame", "frames", "source", "sourceIdentity", "state", "breakpoints", "watches", "inspectionError", "error", "partial", "truncated", "limits", "traceIds", "exportError")
 			context["capturedAt"] = now
+			context["session"] = b.s.ID
 			encoded, _ := json.Marshal(context)
 			if len(encoded) > 1024*1024 {
 				return nil, fmt.Errorf("captured context exceeds 1 MiB")
 			}
 		} else if action == "ask" && len(t.Messages) > 0 && t.Messages[0].Context != nil {
 			context = t.Messages[0].Context
+			evidence = t.Messages[0].Evidence
 		}
 		// Older documents stored only thread-level context. Preserve it before
 		// replacing the latest-question view consumed by existing agent adapters.
@@ -183,78 +210,54 @@ func (b *broker) comments(a obj) (obj, error) {
 			}
 		}
 		t.Context = context
+		if recipient == nil && action == "ask" && t.Delivery.Recipient != nil {
+			r := *t.Delivery.Recipient
+			recipient = &r
+		}
 		id := session.NewID(8)
-		t.Messages = append(t.Messages, session.CommentMessage{ID: id, Author: "human", Body: body, Created: now, Context: context, Run: b.s.ID})
+		t.Messages = append(t.Messages, session.CommentMessage{ID: id, Author: "human", Body: body, Created: now, Context: context, Run: b.s.ID, Evidence: evidence})
 		t.Resolved = false
-		t.Delivery = session.CommentDelivery{Question: id, Status: "pending", Binding: copyBinding(b.s.Binding)}
+		t.Delivery = session.CommentDelivery{Question: id, Status: "pending", Binding: copyBinding(b.s.Binding), Recipient: recipient}
 		kind = "question.created"
-	case "reply", "delivery":
-		if t.Resolved || t.Delivery.Question != str(a["question"]) || !matchesCommentBinding(b.s.Binding, t.Delivery.Binding, a) {
+	case "reply", "delivery", "answer-failed", "resolve", "reopen", "retry", "claim":
+		var request session.DiscussionRequest
+		data, _ := json.Marshal(a)
+		if err := json.Unmarshal(data, &request); err != nil {
+			return nil, err
+		}
+		recipient := session.DiscussionRecipient(t.Delivery)
+		if (action == "reply" || action == "delivery" || action == "answer-failed") && recipient.Kind == "agent" && (!sameRecipient(recipient, agentRecipient(b.s.Binding)) || recipient.ID != str(a["binding"]) || recipient.Revision != uint64(num(a["revision"]))) {
 			return nil, fmt.Errorf("question or agent binding is obsolete")
 		}
-		if action == "reply" {
-			// A retry with the same reply key must never duplicate a posted answer.
-			key := str(a["messageId"])
-			if key == "" || len(key) > 128 {
-				return nil, fmt.Errorf("reply messageId required (maximum 128 bytes)")
-			}
-			for _, m := range t.Messages {
-				if m.ID == key {
-					if m.Body == body && m.Question == t.Delivery.Question {
-						return obj{"thread": t}, nil
-					}
-					return nil, fmt.Errorf("reply key already used")
-				}
-			}
-			if t.Delivery.Status == "answered" {
-				return nil, fmt.Errorf("question already answered")
-			}
-			t.Messages = append(t.Messages, session.CommentMessage{ID: key, Author: b.s.Binding.Name, Body: body, Created: now, Question: t.Delivery.Question})
-			t.Delivery.Status = "answered"
-			t.Delivery.Error = ""
+		if action == "retry" && request.Recipient == nil && b.s.Binding != nil && recipient.Kind != "provider" {
+			r := agentRecipient(b.s.Binding)
+			request.Recipient = &r
+		}
+		if t, err = session.ApplyDiscussion(&d, request); err != nil {
+			return nil, err
+		}
+		switch action {
+		case "reply":
 			kind = "reply.added"
-		} else {
-			status := str(a["status"])
-			previous := t.Delivery.Status
-			// Agent acknowledgements can beat the listener's delivery receipt.
-			if (previous == "thinking" || previous == "answered") && (status == "queued" || status == "failed" || status == "unknown" || status == "thinking") {
-				return obj{"thread": t}, nil
-			}
-			if !((status == "thinking" && (previous == "sending" || previous == "queued" || previous == "unknown")) || (status == "sending" && previous == "pending") || ((status == "queued" || status == "failed" || status == "unknown") && previous == "sending")) {
-				return nil, fmt.Errorf("invalid delivery transition %s -> %s", previous, status)
-			}
-			t.Delivery.Status = status
-			t.Delivery.Error = str(a["error"])
-			if len(t.Delivery.Error) > 1024 {
-				t.Delivery.Error = t.Delivery.Error[:1024]
-			}
+		case "resolve":
+			kind = "thread.resolved"
+		case "retry":
+			kind = "question.created"
 		}
-	case "resolve":
-		t.Resolved = true
-		kind = "thread.resolved"
-	case "reopen":
-		t.Resolved = false
-	case "retry":
-		if t.Resolved || (t.Delivery.Status != "unknown" && t.Delivery.Status != "failed" && t.Delivery.Status != "pending") {
-			return nil, fmt.Errorf("only undelivered questions can be retried")
-		}
-		t.Delivery.Status = "pending"
-		t.Delivery.Error = ""
-		t.Delivery.Binding = copyBinding(b.s.Binding)
-		kind = "question.created"
+
 	default:
 		return nil, fmt.Errorf("unknown comment action")
 	}
 	if encoded, e := json.Marshal(d); e != nil {
 		return nil, e
-	} else if len(encoded) > 16*1024*1024 {
-		return nil, fmt.Errorf("discussion exceeds 16 MiB; start another investigation")
+	} else if len(encoded) > session.MaxDiscussionBytes {
+		return nil, fmt.Errorf("discussion exceeds 32 MiB; start another investigation")
 	}
-	if err = session.WriteDiscussion(d); err != nil {
+	if err = session.CommitDiscussion(&d); err != nil {
 		return nil, err
 	}
 	b.historyDiscussion(d, action)
-	result := obj{"thread": t}
+	result := session.DiscussionResult(b.s.ID, t, action)
 	// The document is authoritative. Reconnecting adapters reconcile pending
 	// questions even if the bounded event journal expired or this event fails.
 	if err = b.emit(kind, t.ID); err != nil {

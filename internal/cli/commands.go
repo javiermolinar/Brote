@@ -17,21 +17,38 @@ func usage() string {
 	return `Brote — persistent Go / Delve sessions
 
   brote start --binary PATH --project DIR [--title TITLE] [--investigation ID] [--no-ui] -- [program args]
+  brote start --pid PID --binary PATH --project DIR  (attach an existing process)
+  brote start --legacy --binary PATH [--backend rpc]  (explicit legacy/Zed compatibility)
   brote configs [--project DIR] [--launch-file PATH]
   brote start --config NAME [--project DIR] [--launch-file PATH] [--file PATH] [--build] -- [extra args]
   brote ui  (persistent investigation workspace)
   brote run-again ID  (new run with saved executable and arguments)
   brote setup --agent codex|pi [--editor vscode]
+  brote events ID --managed --consumer NAME --binding ID  (Go-managed delivery and host facts)
   brote events ID [--cursor N] [--binding ID]  (JSONL stream)
   brote await-control ID [--cursor N] [--timeout 20s]
   brote event-status ID --event N --revision N --status acknowledged
   brote end-session ID --confirmed  (explicit human termination)
   brote comment list SESSION
-  brote comment reply SESSION THREAD --question ID --binding ID --revision N --body-file PATH --message-id KEY
+  brote comment create SESSION --file PATH --line N --body-file PATH [--recipient-kind agent|provider --recipient-id ID]
+  brote comment ask SESSION THREAD --body-file PATH --context original|current
+  brote comment delivery SESSION THREAD --question ID --binding ID --revision N --attempt ID --status thinking
+  brote comment reply SESSION THREAD --question ID --binding ID --revision N --attempt ID --body-file PATH --message-id KEY
+  brote comment retry|resolve|reopen SESSION THREAD [--offline]
+  brote comment index WORKSPACE | comment import WORKSPACE --body-file PATH
   brote task-start ID --binding BINDING --revision N --instruction "Investigate the retries"
   brote task-execute ID --task TASK_ID --binding BINDING --operation next [--wait 30s]
   brote task-heartbeat|task-complete ID --task TASK_ID --binding BINDING
   brote task-cancel ID --human
+  brote dap ID  (authenticated editor DAP transport over stdio)
+  brote tracepoint add SESSION --file PATH --line N --name LABEL --values '{"alias":"expression"}'
+  brote tracepoint update SESSION --id POINT --revision N [--enabled=false] [--capture-limit 100]
+  brote tracepoint remove SESSION --id POINT --revision N
+  brote tracepoint list SESSION  (breakpoint accepts the same CRUD commands)
+  brote breakpoint add SESSION --function main.work
+  brote captures|capabilities SESSION
+  brote goroutines SESSION [--start N] [--count 64]
+  brote stack SESSION [--goroutine N] [--start N] [--count 64]
   brote traces  (saved trace IDs and export status for all adapters)
   brote trace TRACE_ID  (stored Tempo trace JSON)
   brote sessions
@@ -54,8 +71,13 @@ func usage() string {
   brote pause ID
   brote handover ID [--editor browser|zed|vscode] [--no-open]
   brote reclaim ID
+  brote restart|detach ID --human  (shared-service sessions)
   brote stop ID
 
+New starts use the shared service. --legacy or --service=false opts out; run-again
+retains the stored launch mode. Shared sessions reject direct Zed/RPC handover.
+Discussion recipients never acquire execution authority. --offline writes saved
+history without starting a debugger; current context requires a live pause.
 All commands print JSON. Source launch configurations require --build; --binary
 and exec configurations never compile the target. Closing Zed or the panel
 does not stop the program. A user's debugging request authorizes that task;
@@ -69,6 +91,15 @@ func Run(args []string) (any, error) {
 		return nil, nil
 	}
 	verb := args[0]
+	if verb == "tracepoint" || verb == "breakpoint" {
+		return definitionCommand(verb, args[1:])
+	}
+	if verb == "captures" || verb == "capabilities" || verb == "goroutines" || verb == "stack" {
+		return serviceReadCommand(verb, args[1:])
+	}
+	if verb == "dap" {
+		return nil, runDAP(args[1:])
+	}
 	if verb == "trace-serve" {
 		return nil, tracing.Serve()
 	}
@@ -171,7 +202,7 @@ func Run(args []string) (any, error) {
 		return taskExecute(args[1:])
 	}
 	if verb == "version" {
-		return obj{"version": Version, "protocol": 2, "capabilities": []string{"executionTasks", "taskStart", "taskDelivery", "taskExecute", "embeddedWebUI"}}, nil
+		return obj{"version": Version, "protocol": 2, "capabilities": []string{"executionTasks", "taskStart", "taskDelivery", "taskExecute", "embeddedWebUI", "sharedServiceV1", "tracepoints", "sessionOTLP", "vscodeF5"}}, nil
 	}
 	if verb == "events" || verb == "await-control" {
 		return eventsCommand(args[1:], verb == "await-control")
@@ -209,6 +240,10 @@ func Run(args []string) (any, error) {
 		return nil, e
 	}
 	f := flag.NewFlagSet(verb, flag.ContinueOnError)
+	commandID := f.String("command-id", "", "stable execution request identity for retry detection")
+	consumer := f.String("consumer", "", "managed host consumer")
+	instance := f.String("instance", "", "managed host instance")
+	turn := f.String("turn", "", "active host turn")
 	task := f.String("task", "", "current debugging task ID")
 	humanAction := f.Bool("human", false, "direct human debugger action or authorization")
 	instruction := f.String("instruction", "", "user-requested investigation scope")
@@ -220,6 +255,7 @@ func Run(args []string) (any, error) {
 	bp := f.Int("breakpoint", 0, "breakpoint ID")
 	gid := f.Int("goroutine", 0, "goroutine ID")
 	frame := f.Int("frame", 0, "frame index")
+	brief := f.Bool("brief", false, "state metadata without debugger inspection")
 	summary := f.Bool("summary", false, "compact stack and selected-frame values")
 	wait := f.Duration("wait", 0, "wait for pause")
 	noOpen := f.Bool("no-open", false, "do not open the editor")
@@ -231,6 +267,7 @@ func Run(args []string) (any, error) {
 	binding := f.String("binding", "", "client binding ID")
 	name := f.String("name", "Agent", "agent display name")
 	note := f.String("note", "", "handover note")
+	attempt := f.String("attempt", "", "current delivery attempt")
 	event := f.String("event", "", "event ID")
 	delivery := f.String("status", "acknowledged", "event delivery status")
 	revision := f.Uint64("revision", 0, "binding revision")
@@ -245,7 +282,7 @@ func Run(args []string) (any, error) {
 		return nil, fmt.Errorf("usage: task-start ID --binding BINDING --revision N --instruction REQUEST (record the user's debugging request as the agent)")
 	}
 	if verb == "state" {
-		v, err := api(s, "GET", fmt.Sprintf("/api/state?goroutine=%d&frame=%d", *gid, *frame), nil)
+		v, err := api(s, "GET", fmt.Sprintf("/api/state?goroutine=%d&frame=%d&brief=%d", *gid, *frame, map[bool]int{true: 1, false: 0}[*brief]), nil)
 		if *summary && err == nil {
 			v = summarizeState(v)
 		}
@@ -258,7 +295,9 @@ func Run(args []string) (any, error) {
 	if *binding == "" && s.Binding != nil {
 		*binding = s.Binding.ID
 	}
-	body := obj{"binding": *binding, "actor": "agent", "name": *name, "note": *note, "event": *event, "status": *delivery, "revision": *revision, "action": verb, "generation": state["generation"], "file": *file, "line": *line, "function": *fn, "condition": *cond, "hitCondition": *hit, "breakpoint": *bp, "open": !*noOpen}
+	body := obj{"attempt": *attempt, "binding": *binding, "actor": "agent", "name": *name, "note": *note, "event": *event, "status": *delivery, "revision": *revision, "action": verb, "generation": state["generation"], "file": *file, "line": *line, "function": *fn, "condition": *cond, "hitCondition": *hit, "breakpoint": *bp, "open": !*noOpen}
+	body["consumer"], body["instance"], body["turn"] = *consumer, *instance, *turn
+	body["commandId"] = *commandID
 	body["error"] = *note
 	body["task"], body["instruction"] = *task, *instruction
 	if *humanAction {
@@ -291,11 +330,18 @@ func Run(args []string) (any, error) {
 	}
 	if *wait > 0 {
 		for deadline := time.Now().Add(*wait); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-			v, e := api(s, "GET", "/api/state", nil)
+			v, e := api(s, "GET", "/api/state?brief=1", nil)
 			if e != nil {
 				return nil, e
 			}
 			if str(v["status"]) != "running" {
+				if pending, ok := v["capturePending"].(float64); ok && pending > 0 {
+					continue
+				}
+				v, e = api(s, "GET", "/api/state", nil)
+				if e != nil {
+					return nil, e
+				}
 				if *summary {
 					v = summarizeState(v)
 				}

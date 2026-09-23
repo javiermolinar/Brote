@@ -153,7 +153,7 @@ func resolve(config map[string]json.RawMessage, root, file string) (*Launch, err
 	}
 	// Reject unsupported semantics rather than silently launching a different
 	// program, skipping tasks or pretending to provide an interactive terminal.
-	allowed := strings.Fields("name type request mode program args cwd env envFile buildFlags dlvToolPath stopOnEntry console debugAdapter presentation internalConsoleOptions")
+	allowed := strings.Fields("name type request mode program args cwd env envFile buildFlags dlvToolPath stopOnEntry console debugAdapter presentation internalConsoleOptions substitutePath")
 	known := map[string]bool{}
 	for _, key := range allowed {
 		known[key] = true
@@ -246,6 +246,28 @@ func resolve(config map[string]json.RawMessage, root, file string) (*Launch, err
 		return nil, fmt.Errorf("cwd is not a directory: %s", cwd)
 	}
 	l := &Launch{Profile: p, Program: program, Settings: session.LaunchSettings{Cwd: cwd, Env: map[string]*string{}}}
+	if raw, ok := config["substitutePath"]; ok {
+		if err := json.Unmarshal(raw, &l.Settings.SubstitutePath); err != nil {
+			return nil, fmt.Errorf("substitutePath must be an array of from/to mappings: %w", err)
+		}
+		if len(l.Settings.SubstitutePath) > 32 {
+			return nil, fmt.Errorf("substitutePath permits at most 32 mappings")
+		}
+		for i := range l.Settings.SubstitutePath {
+			m := &l.Settings.SubstitutePath[i]
+			m.From, err = expand.string(m.From)
+			if err != nil {
+				return nil, err
+			}
+			m.To, err = expand.string(m.To)
+			if err != nil {
+				return nil, err
+			}
+			if !filepath.IsAbs(m.From) || m.To == "" {
+				return nil, fmt.Errorf("substitutePath requires an absolute local from path and nonempty target to path")
+			}
+		}
+	}
 	for key, dest := range map[string]*[]string{"args": &l.Args, "buildFlags": &l.BuildFlags} {
 		if raw, ok := config[key]; ok {
 			values, err := stringList(raw, true, expand)

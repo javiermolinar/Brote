@@ -11,15 +11,20 @@ import (
 )
 
 type dapPeer struct {
-	handles     map[int]dapHandle
-	nextHandle  int
-	sequence    int
-	front, back net.Conn
-	wmu         sync.Mutex
-	mu          sync.Mutex
-	pending     map[int]string
-	once        sync.Once
-	ready       bool // protected by the broker mutex
+	inspections      int
+	handles          map[int]dapHandle
+	nextHandle       int
+	sequence         int
+	front, back      net.Conn
+	wmu              sync.Mutex
+	mu               sync.Mutex
+	pending          map[int]string
+	once             sync.Once
+	launched         bool
+	configuredIntent uint64
+	setup            bool
+	stopOnEntry      bool
+	ready            bool // protected by the broker mutex
 }
 
 func (p *dapPeer) send(v obj) error {
@@ -67,12 +72,20 @@ func (b *broker) acceptDAP(ln net.Listener) {
 }
 
 func (b *broker) connectDAP(front net.Conn) {
-	if b.backend != nil {
+	var admitted bool
+	front, admitted = b.admitDAP(front)
+	if !admitted {
+		return
+	}
+	b.mu.Lock()
+	shared := b.backend != nil || b.s.ServiceVersion > 0
+	b.mu.Unlock()
+	if shared {
 		b.connectSharedDAP(front)
 		return
 	}
 	b.mu.Lock()
-	if b.peer != nil {
+	if b.peer != nil || b.closing || b.s.Stopped {
 		b.mu.Unlock()
 		_ = front.Close()
 		return

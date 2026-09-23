@@ -24,7 +24,7 @@ func (d *Delve) ReplaceBreakpoints(owner, file string, requested []any, function
 	}
 	for _, raw := range requested {
 		r := asObj(raw)
-		bp := obj{"kind": "source", "file": file, "line": r["line"], "Cond": r["condition"], "HitCond": r["hitCondition"], "client": owner, "name": r["name"]}
+		bp := obj{"kind": "source", "file": file, "line": r["line"], "requestedLine": r["line"], "Cond": r["condition"], "HitCond": r["hitCondition"], "client": owner, "name": r["name"]}
 		if functions {
 			bp["functionName"] = r["name"]
 			bp["kind"] = "function"
@@ -42,7 +42,7 @@ func (d *Delve) ReplaceBreakpoints(owner, file string, requested []any, function
 		if !same {
 			continue
 		}
-		args = append(args, obj{"line": bp["line"], "condition": bp["Cond"], "hitCondition": bp["HitCond"], "name": bp["functionName"]})
+		args = append(args, obj{"line": requestedLine(bp), "condition": bp["Cond"], "hitCondition": bp["HitCond"], "name": bp["functionName"]})
 		indexes = append(indexes, i)
 	}
 	command := "setBreakpoints"
@@ -85,7 +85,7 @@ func (d *Delve) createBreakpoint(a obj) (obj, error) {
 	if owner == "" {
 		owner = "agent"
 	}
-	request := obj{"line": bp["line"], "condition": bp["Cond"], "hitCondition": bp["HitCond"], "name": fn}
+	request := obj{"line": requestedLine(bp), "condition": bp["Cond"], "hitCondition": bp["HitCond"], "name": fn}
 	v, e := d.ReplaceBreakpoints(owner, file, []any{request}, fn != "")
 	if e != nil {
 		return nil, e
@@ -124,7 +124,7 @@ func (d *Delve) clearBreakpoint(id int) (obj, error) {
 		if num(bp["id"]) == id || str(bp["client"]) != str(selected["client"]) || (str(bp["kind"]) != str(selected["kind"]) || (str(selected["kind"]) != "function" && str(bp["file"]) != str(selected["file"]))) {
 			continue
 		}
-		requested = append(requested, obj{"line": bp["line"], "condition": bp["Cond"], "hitCondition": bp["HitCond"], "name": bp["functionName"]})
+		requested = append(requested, obj{"line": requestedLine(bp), "condition": bp["Cond"], "hitCondition": bp["HitCond"], "name": bp["functionName"]})
 	}
 	d.mu.Unlock()
 	_, e := d.ReplaceBreakpoints(str(selected["client"]), str(selected["file"]), requested, str(selected["kind"]) == "function")
@@ -156,4 +156,31 @@ func (d *Delve) FunctionBreakpoints() map[string]string {
 		}
 	}
 	return out
+}
+
+// RestoreBreakpoints replays each owner set after a new backend is created.
+func (d *Delve) RestoreBreakpoints(definitions []any) error {
+	type key struct {
+		owner, file string
+		functions   bool
+	}
+	groups := map[key][]any{}
+	for _, raw := range definitions {
+		bp := asObj(raw)
+		k := key{str(bp["client"]), str(bp["file"]), str(bp["kind"]) == "function"}
+		groups[k] = append(groups[k], obj{"line": requestedLine(bp), "condition": bp["Cond"], "hitCondition": bp["HitCond"], "name": bp["functionName"]})
+	}
+	for k, points := range groups {
+		if _, err := d.ReplaceBreakpoints(k.owner, k.file, points, k.functions); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func requestedLine(bp obj) any {
+	if bp["requestedLine"] != nil {
+		return bp["requestedLine"]
+	}
+	return bp["line"]
 }

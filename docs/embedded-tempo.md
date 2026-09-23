@@ -2,7 +2,7 @@
 
 Brote's Go core owns trace capture, span IDs, export, Tempo lifecycle and queries.
 Native VS Code submits DAP requests, responses, stops and bounded observations to
-Brote's API. Go brokers capture actions, stops and inspected values directly, so
+Brote's API. Shared Go brokers submit revision-checked tracepoint captures and debugger actions, so
 Codex and Pi use the same capability without an editor. The TypeScript extension
 contains no OpenTelemetry provider or Tempo lifecycle implementation.
 
@@ -105,3 +105,12 @@ Release packaging includes the pinned Tempo source, its license and notices, and
 Brote build materials. Original Brote source notices remain in place. Use normal Go
 build/test commands or `make vsix`. See [current validation](embedded-tempo-validation.md)
 for executed checks and limits.
+
+## Shared-session merge
+
+Shared debugger sessions use one broker producer and submit prebuilt spans to
+`trace-spans`; native adapters continue using `trace-events`. Both feed the same
+local/remote queues and Tempo instance. Shared records are keyed by `session:run`
+and retain their trace/capture IDs. No editor producer is installed for Brote DAP
+sessions. An older running trace service without shared-span support must be
+restarted; it is never silently killed to upgrade it.

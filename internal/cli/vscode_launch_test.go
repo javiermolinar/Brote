@@ -98,6 +98,9 @@ func main() {
 		time.Sleep(200 * time.Millisecond)
 	})
 	first := run("start", "--config", "Server", "--launch-file", launchPath, "--project", project, "--build", "--no-ui", "--", "extra")
+	if first["serviceVersion"] != float64(1) {
+		t.Fatalf("new source launch did not default to shared service: %v", first)
+	}
 	firstID := str(first["id"])
 	sessions = append(sessions, firstID)
 	check := func(id string) {
@@ -253,6 +256,9 @@ func TestUnselected(t *testing.T) {
 				return result
 			}
 			launched := run("start", "--project", project, "--config", name, "--file", file, "--build", "--no-ui", "--", "-test.count=1")
+			if launched["serviceVersion"] != float64(1) {
+				t.Fatalf("new test launch did not default to shared service: %v", launched)
+			}
 			id := str(launched["id"])
 			t.Cleanup(func() {
 				if s, err := session.Read(id); err == nil {

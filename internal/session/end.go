@@ -61,7 +61,7 @@ func End(ctx context.Context, id string) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("broker unavailable; recover the session before ending it: %w", err)
 	}
-	if state["id"] != s.ID {
+	if state["id"] != s.ID || (s.ServiceVersion > 0 && state["run"] != s.RunID) {
 		return nil, fmt.Errorf("broker identity changed; refusing to end session")
 	}
 	owner, ok := state["owner"].(string)
@@ -73,6 +73,9 @@ func End(ctx context.Context, id string) (map[string]any, error) {
 		actor = "human"
 	}
 	action := map[string]any{"action": "stop", "actor": actor, "generation": state["generation"]}
+	if s.ServiceVersion > 0 {
+		action["run"] = s.RunID
+	}
 	if binding, ok := state["binding"].(map[string]any); ok {
 		action["binding"] = binding["id"]
 	}

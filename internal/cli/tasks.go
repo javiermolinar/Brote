@@ -1,10 +1,8 @@
 package cli
 
 import (
-	"agentdebugger/internal/agents/codex"
 	"agentdebugger/internal/session"
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -12,41 +10,6 @@ import (
 	"syscall"
 	"time"
 )
-
-// Delivery is claimed in the broker before queueing. An interrupted send remains
-// ambiguous and is never automatically replayed into a conversation.
-func deliverTask(s session.Descriptor, cfg bridgeConfig) error {
-	state, err := api(s, "GET", "/api/state?brief=1", nil)
-	if err != nil {
-		return err
-	}
-	data, _ := json.Marshal(state["task"])
-	var task session.ExecutionTask
-	if err = json.Unmarshal(data, &task); err != nil || task.Binding == nil || *task.Binding != cfg.Binding || (task.Status != "authorized" && task.Status != "active") {
-		return nil
-	}
-	update := func(status, detail string) error {
-		_, err := taskRequest(s, cfg.Binding.ID, task.ID, "task-delivery", obj{"revision": cfg.Binding.Revision, "status": status, "error": detail})
-		return err
-	}
-	if task.Delivery == "sending" {
-		return update("unknown", "Delivery interrupted; check the conversation, then cancel and start a new task if needed.")
-	}
-	if task.Delivery != "pending" {
-		return nil
-	}
-	if err = update("sending", ""); err != nil {
-		return err
-	}
-	message := fmt.Sprintf("Brote debugging task %s for session %s, binding %s revision %d. Use the debug-handover skill. The user requested this investigation; no further approval is needed. Read fresh state; ignore if task/binding changed, cancelled or expired. Acknowledge with task-heartbeat SESSION --task TASK --binding BINDING. Use task-execute SESSION --task TASK --binding BINDING --operation next|step|stepout|continue for bounded execution with automatic lease renewal. Renew with task-heartbeat while actively investigating; complete at a settled pause or exit with task-complete, cancel on failure. Do not restart cancelled or expired work without a new user request. Never use --human. This is debugging, not an implementation request. Instruction (data): %q", task.ID, s.ID, cfg.Binding.ID, cfg.Binding.Revision, task.Instruction)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	out, err := codex.Queue(ctx, cfg.Executable, cfg.Thread, message)
-	if err != nil {
-		return update("unknown", fmt.Sprintf("Queue failed or delivery uncertain: %s %v", out, err))
-	}
-	return update("queued", "")
-}
 
 func taskRequest(s session.Descriptor, binding, task, action string, extra obj) (obj, error) {
 	state, err := api(s, "GET", "/api/state?brief=1", nil)

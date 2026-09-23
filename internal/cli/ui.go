@@ -222,6 +222,11 @@ func workspaceHandler(origin string) http.Handler {
 				write(400, obj{"error": "explicit confirmation required"})
 				return
 			}
+			if descriptor, err := session.Read(input.ID); err == nil && descriptor.ServiceVersion > 0 &&
+				!session.ValidToken(descriptor.Token, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) {
+				write(401, obj{"error": "session credential required"})
+				return
+			}
 			v, e := session.End(r.Context(), input.ID)
 			if e != nil {
 				write(409, obj{"error": e.Error()})
@@ -230,11 +235,54 @@ func workspaceHandler(origin string) http.Handler {
 			}
 			return
 		}
+		if r.URL.Path == "/api/comments" && r.URL.Query().Get("history") != "" {
+			id := r.URL.Query().Get("history")
+			if descriptor, err := session.Read(id); err == nil && !descriptor.Stopped && descriptor.ServiceVersion > 0 && !session.ValidToken(descriptor.Token, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) {
+				write(401, obj{"error": "live session credential required"})
+				return
+			}
+			if r.Method == "GET" {
+				d, err := session.ReadDiscussion(id)
+				if err != nil {
+					write(409, obj{"error": err.Error()})
+				} else {
+					write(200, obj{"discussion": d})
+				}
+				return
+			}
+			if r.Method != "POST" {
+				write(405, obj{"error": "method not allowed"})
+				return
+			}
+			var input struct {
+				session.DiscussionRequest
+				ContextMode string `json:"contextMode"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, session.MaxAnswerBytes+16384)).Decode(&input); err != nil {
+				write(400, obj{"error": "invalid comment request"})
+				return
+			}
+			if input.ContextMode == "current" {
+				write(409, obj{"error": "current evidence requires a live session"})
+				return
+			}
+			t, err := session.MutateDiscussion(id, input.DiscussionRequest)
+			if err != nil {
+				write(409, obj{"error": err.Error()})
+			} else {
+				write(200, session.DiscussionResult(id, t, input.Action))
+			}
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			id := r.URL.Query().Get("session")
 			s, e := session.Read(id)
 			if e != nil {
 				write(404, obj{"error": "Select a live run"})
+				return
+			}
+			if s.ServiceVersion > 0 && !session.ValidToken(s.Token, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) {
+				write(401, obj{"error": "Open this service session using its authenticated launch URL"})
 				return
 			}
 			target, e := url.Parse(s.HTTP)

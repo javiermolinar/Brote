@@ -148,7 +148,7 @@ func testRoundTrip(t *testing.T, worker bool) {
 	}
 	before, _ := os.ReadFile(binary)
 	digest := sha256.Sum256(before)
-	cmd = exec.Command(helper, "start", "--no-ui", "--binary", binary, "--project", project)
+	cmd = exec.Command(helper, "start", "--legacy", "--no-ui", "--binary", binary, "--project", project)
 	out, e := cmd.CombinedOutput()
 	if e != nil {
 		t.Fatalf("start: %s: %v", out, e)
@@ -621,7 +621,7 @@ func TestIntegrationRunningRecovery(t *testing.T) {
 		}
 		return v
 	}
-	id := str(run("start", "--no-ui", "--binary", binary, "--project", dir)["id"])
+	id := str(run("start", "--legacy", "--no-ui", "--binary", binary, "--project", dir)["id"])
 	t.Cleanup(func() {
 		s, e := session.Read(id)
 		if e == nil {

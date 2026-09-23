@@ -21,7 +21,7 @@ function node<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, cls?
   return element;
 }
 
-const token = location.hash.slice(1); // Only older broker URLs carry a token.
+const token = location.hash.slice(1); // Authenticated service launch URLs carry a private fragment.
 const previewSession = new URLSearchParams(location.search).get('session');
 let historicalID = new URLSearchParams(location.search).get('history');
 let historicalLoaded=false;
@@ -59,7 +59,7 @@ function message(id: string, text?: string): void {
 const api = createClient({baseURL: location.origin, token, session: previewSession || undefined});
 const request = <T>(path: string, body?: ActionRequest | Record<string, unknown>) => api.request<T>(path, body);
 
-const comments = createComments(request, (file,line)=>openSourceFile(file,line,true));
+const comments = createComments(<T>(route:string,body?:Record<string,unknown>)=>request<T>(route==='comments'&&historicalID?'comments?history='+encodeURIComponent(historicalID):route,body), (file,line)=>openSourceFile(file,line,true), token);
 const workspace = createWorkspace({request,runs:names=>comments.runs(names),history:items=>comments.history([...items,...ownHistory]),ended:()=>{if(snapshot){historicalID=snapshot.id;historicalLoaded=false;openSources.clear();activeFile='';displayedSource=undefined;sourceKey='';lastLocation='';renderKey='';const url=new URL(location.href);url.searchParams.delete('session');url.searchParams.set('history',historicalID);history.replaceState(null,'',url.pathname+url.search);void refresh();}}});
 $('newQuestion').onclick=()=>{const source=displayedSource||snapshot?.source;if(source)comments.start(source.file,navigationTarget?.line||source.line||source.start,undefined,true);};
 $('copyPath').onclick=()=>{if(displayedSource)void navigator.clipboard.writeText(displayedSource.file).then(()=>message('notice','Absolute source path copied.')).catch(()=>message('notice',displayedSource!.file));};

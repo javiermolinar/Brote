@@ -130,3 +130,15 @@ It does not install into your normal profile or require a model login. Generatin
 an actual model answer still requires a separately configured provider.
 
 Core ownership, data locations, CLI/Pi query access and lifecycle details are documented in [embedded storage](embedded-tempo.md). Native DAP collection remains in the editor adapter; span construction, limits and export are in Go.
+
+## Shared Brote sessions
+
+Brote DAP sessions use broker-owned tracepoints and capture IDs, not the native
+adapter observer. `brote tracepoint add SESSION --file PATH --line N --values
+'{"total":"total"}'` configures a bounded capture; only an authorized continue
+executes it. `brote captures SESSION` reports capture/export outcomes. Local
+embedded Tempo stores these spans even when remote export fails. `brote traces`
+uses session:run record keys for shared sessions, retaining both runs after restart.
+The service exposes local and remote outcomes separately; a capture's aggregate
+exportStatus is failed if either configured destination failed. Native adapter
+observation bounds above remain separate from shared service capture limits.

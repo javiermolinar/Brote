@@ -45,6 +45,7 @@ type Event struct {
 	Data        json.RawMessage   `json:"data,omitempty"`
 }
 type Record struct {
+	External      bool              `json:"external,omitempty"`
 	Incomplete    bool              `json:"incomplete,omitempty"`
 	Interrupted   bool              `json:"interrupted,omitempty"`
 	ProgramSpans  int               `json:"programSpans"`
@@ -144,6 +145,12 @@ var commands = map[string]bool{"launch": true, "attach": true, "pause": true, "d
 
 func (c *capture) event(e Event) []ptrace.Span {
 	if c.Closed {
+		return nil
+	}
+	if c.External {
+		if e.Kind == "close" {
+			c.Closed = true
+		}
 		return nil
 	}
 	now := e.At

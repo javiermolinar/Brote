@@ -167,6 +167,7 @@ def package_release(args):
             shutil.copytree(ROOT / 'packages/vscode/dist', ext / 'dist')
             copy_runtime(binary, ext / 'runtime' / 'brote')
             copy_brand(ext / 'assets')
+            shutil.copy2(ROOT / 'packages/vscode/assets/tracepoint.svg', ext / 'assets/tracepoint.svg')
             copy_integration_readme(ROOT / 'packages/vscode/README.md', ext / 'README.md')
             shutil.copy2(ROOT / 'LICENSE', ext / 'LICENSE')
             copy_tempo_materials(ext, source_archive)

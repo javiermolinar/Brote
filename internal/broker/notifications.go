@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"agentdebugger/internal/delivery"
 	"agentdebugger/internal/session"
 	"fmt"
 	"strconv"
@@ -19,13 +20,13 @@ func (b *broker) emit(kind, note string) error {
 		v := *b.s.Binding
 		binding = &v
 	}
-	event := session.Event{ID: b.s.Cursor, Kind: kind, Owner: b.owner, Binding: binding, Note: note, Created: time.Now().UTC().Format(time.RFC3339Nano)}
+	event := session.Event{RunID: b.s.RunID, Generation: b.generation, PauseEpoch: b.handleEpoch, ID: b.s.Cursor, Kind: kind, Owner: b.owner, Binding: binding, Note: note, Created: time.Now().UTC().Format(time.RFC3339Nano)}
 	b.s.Events = append(append([]session.Event(nil), b.s.Events...), event)
 	if len(b.s.Events) > 256 {
 		b.s.Events = b.s.Events[len(b.s.Events)-256:]
 	}
 	if kind == "control_returned" {
-		b.s.Notification = &session.Notification{ID: strconv.FormatUint(event.ID, 10), Kind: kind, Status: "pending", Created: event.Created}
+		b.s.Notification = &session.Notification{ID: strconv.FormatUint(event.ID, 10), Kind: kind, Status: "pending", Created: event.Created, Note: note, Run: b.s.RunID}
 	}
 	if err := b.persist(); err != nil {
 		b.s = old
@@ -63,16 +64,30 @@ func (b *broker) eventStatus(a obj) (obj, error) {
 		return nil, fmt.Errorf("event or binding is obsolete")
 	}
 	status := str(a["status"])
-	allowed := status == "acknowledged" || (status == "sending" && n.Status == "pending") || ((status == "queued" || status == "failed" || status == "unknown") && n.Status == "sending")
-	if !allowed {
-		return nil, fmt.Errorf("invalid delivery transition %s -> %s", n.Status, status)
+	if n.Attempt != nil && str(a["attempt"]) != n.Attempt.ID {
+		return nil, fmt.Errorf("delivery attempt required")
+	}
+	next, err := delivery.Transition(n.Status, status)
+	// Legacy recipients may acknowledge a visible pending handback directly.
+	if err != nil && status == "acknowledged" && n.Status == "pending" && n.Attempt == nil {
+		next, err = status, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if next != status {
+		return obj{"notification": n}, nil
 	}
 	copy := *n
-	copy.Status = status
+	copy.Status = next
 	copy.Error = str(a["error"])
 	if len(copy.Error) > 1024 {
 		copy.Error = copy.Error[:1024]
 	}
 	b.s.Notification = &copy
-	return obj{"notification": copy}, b.persist()
+	if err := b.persist(); err != nil {
+		b.s.Notification = n
+		return nil, err
+	}
+	return obj{"notification": copy}, nil
 }
