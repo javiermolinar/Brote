@@ -144,6 +144,15 @@ Attach requires shared service mode and accepts no build or program arguments.`,
 		}
 		set("comment "+verb, syntax, namedFlags(commentFlagNames(verb)), example)
 	}
+	set("annotation create", "SESSION --id ID (--body TEXT | --body-file PATH) [options]", `  --capture ID           Persisted capture ID; omit for program root
+  --targets-file PATH    JSON target array for explicit comparisons
+  --conversation-file PATH JSON conversation target
+  --author TEXT          Author (default agent)
+  --label TEXT           Optional label
+  --comparison-key KEY   Optional comparison identity
+  --revision N           Starts at 1; reuse ID/revision/content on retry
+SESSION is the exact service session from query traces. Success means local save; inspect export statuses.`, "SESSION --id note-1 --capture CAPTURE --body 'Observed total is 42'")
+	set("annotation list", "SESSION", "Read latest saved annotations targeting the exact trace service session; never starts a debugger.", "SESSION")
 	set("comment status", "SESSION THREAD open|resolved [--offline]", "  --offline            Write saved discussion without contacting target", "SESSION THREAD resolved --offline")
 	set("system setup", "[--agent codex|pi] [--editor vscode] [--bundle DIR]", "  --agent codex|pi     Install/repair selected agent\n  --editor vscode      Install/repair editor\n  --bundle DIR         Extracted release\nWithout component options, repair recorded installation choices. First setup requires a component selection.", "--agent codex --editor vscode")
 	set("system status", "", "Read installation status without changing it.", "")

@@ -35,26 +35,42 @@ const accepted = "Export accepted; query to verify"
 const failed = "Export failed or incomplete"
 
 type batch struct {
-	session string
-	traces  ptrace.Traces
-	barrier chan struct{}
+	metadata string
+	session  string
+	traces   ptrace.Traces
+	barrier  chan struct{}
 }
 type engine struct {
-	mu            sync.Mutex
-	dir           string
-	captures      map[string]*capture
-	local, remote chan batch
-	workers       sync.WaitGroup
-	queries       http.Handler
-	remoteError   bool
-	last          time.Time
+	metadataFlight map[string]bool
+	mu             sync.Mutex
+	dir            string
+	captures       map[string]*capture
+	local, remote  chan batch
+	workers        sync.WaitGroup
+	queries        http.Handler
+	remoteError    bool
+	last           time.Time
 }
 
 func recordPath(dir, id string) string {
 	h := sha256.Sum256([]byte(id))
 	return filepath.Join(dir, "sessions", hex.EncodeToString(h[:])+".json")
 }
-func (e *engine) save(c *capture) error { return session.Write(recordPath(e.dir, c.Session), c.Record) }
+func (e *engine) save(c *capture) error {
+	if c.ProgramRoots == nil {
+		c.ProgramRoots = map[string]bool{}
+	}
+	if c.DebuggerRoots == nil {
+		c.DebuggerRoots = map[string]bool{}
+	}
+	if c.Run != "" {
+		c.ProgramRoots[c.Run] = true
+	}
+	if c.Root != "" {
+		c.DebuggerRoots[c.Root] = true
+	}
+	return session.Write(recordPath(e.dir, c.Session), c.Record)
+}
 func newEngine(dir string, push consumer.Traces, queries http.Handler) (*engine, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "sessions"), 0700); err != nil {
 		return nil, err
@@ -142,6 +158,30 @@ func (e *engine) worker(queue chan batch, destination string, push func(context.
 			cancel()
 			e.mu.Lock()
 			c := e.captures[b.session]
+			if c != nil && b.metadata != "" {
+				receipt := c.Metadata[b.metadata]
+				status := "accepted"
+				if err != nil {
+					status = "failed"
+				}
+				if destination == "local" {
+					receipt.Local = status
+				} else {
+					receipt.Remote = status
+				}
+				c.Metadata[b.metadata] = receipt
+				delete(e.metadataFlight, b.session+"/"+b.metadata+"/"+destination)
+				if e.save(c) != nil {
+					if destination == "local" {
+						receipt.Local = "failed"
+					} else {
+						receipt.Remote = "failed"
+					}
+					c.Metadata[b.metadata] = receipt
+				}
+				e.mu.Unlock()
+				continue
+			}
 			if c != nil {
 				statuses := c.Local
 				if destination == "remote" {
@@ -178,6 +218,36 @@ func (e *engine) submit(c *capture, spans ptrace.Traces) {
 			for k := 0; k < ss.Spans().Len(); k++ {
 				if ss.Spans().At(k).TraceID() == traceID(c.Program) {
 					c.ProgramSpans++
+					span := ss.Spans().At(k)
+					if id, ok := span.Attributes().Get("program.capture.id"); ok && id.Str() != "" {
+						if c.Captures == nil {
+							c.Captures = map[string]string{}
+						}
+						c.Captures[id.Str()] = span.SpanID().String()
+						detail := CaptureDetail{Created: span.StartTimestamp().AsTime()}
+						if v, ok := span.Attributes().Get("code.file.path"); ok {
+							detail.File = v.Str()
+						}
+						if v, ok := span.Attributes().Get("code.line.number"); ok {
+							detail.Line = int(v.Int())
+						}
+						if v, ok := span.Attributes().Get("program.snapshot.json"); ok {
+							var snapshot struct {
+								Source struct {
+									File string `json:"file"`
+									Line int    `json:"line"`
+								} `json:"source"`
+							}
+							if json.Unmarshal([]byte(v.Str()), &snapshot) == nil && snapshot.Source.File != "" {
+								detail.File = snapshot.Source.File
+								detail.Line = snapshot.Source.Line
+							}
+						}
+						if c.CaptureDetails == nil {
+							c.CaptureDetails = map[string]CaptureDetail{}
+						}
+						c.CaptureDetails[id.Str()] = detail
+					}
 				} else {
 					c.DebuggerSpans++
 				}
@@ -382,7 +452,13 @@ func (e *engine) handler(origin string) http.Handler {
 		var err error
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/health":
-			value = map[string]any{"service": "brote-tracing", "version": 1, "sharedSpans": true}
+			value = map[string]any{"service": "brote-tracing", "version": 1, "sharedSpans": true, "traceMetadata": true}
+		case (r.Method == "POST" || r.Method == "GET") && r.URL.Path == "/api/annotations":
+			value, err = e.annotationRequest(w, r)
+		case r.Method == "POST" && r.URL.Path == "/api/trace-metadata/sync":
+			value, err = e.sourceRequest(w, r)
+		case r.Method == "POST" && r.URL.Path == "/api/trace-metadata":
+			value, err = e.metadataRequest(w, r)
 		case r.Method == "POST" && r.URL.Path == "/api/trace-spans":
 			value, err = e.spanRequest(w, r)
 		case r.Method == "POST" && r.URL.Path == "/api/trace-events":
@@ -484,7 +560,10 @@ func Serve() error {
 		defer os.Remove(filepath.Join(dir, "endpoint.json"))
 		done := make(chan error, 1)
 		go func() { done <- server.Serve(ln) }()
-		ticker := time.NewTicker(15 * time.Second)
+		e.syncSources()
+		e.syncAnnotations()
+		e.retryMetadata()
+		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 	loop:
 		for {
@@ -495,6 +574,9 @@ func Serve() error {
 				serveErr = err
 				break loop
 			case <-ticker.C:
+				e.syncSources()
+				e.syncAnnotations()
+				e.retryMetadata()
 				e.mu.Lock()
 				idle := time.Since(e.last) > time.Minute
 				active := false

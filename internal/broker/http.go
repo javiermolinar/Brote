@@ -161,6 +161,15 @@ func (b *broker) handler() http.Handler {
 			}
 			return
 		}
+		if r.URL.Path == "/api/annotations" || r.URL.Path == "/api/annotation-evidence" {
+			result, err := b.annotationRequest(w, r)
+			if err != nil {
+				write(409, obj{"error": err.Error()})
+			} else {
+				write(200, result)
+			}
+			return
+		}
 		if r.URL.Path == "/api/comments" {
 			var input obj
 			if r.Method == "POST" {

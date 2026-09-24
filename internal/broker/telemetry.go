@@ -54,6 +54,7 @@ func (b *broker) exportCapture(record *captureRecord) {
 		return
 	}
 	record.ExportStatus = b.trace.Capture(record.ID, record.Name, record.Sequence, record.Goroutine, record.Snapshot, record.Values, created)
+	record.ProgramSpanID = b.trace.CaptureSpanID(record.ID)
 }
 func (b *broker) captureView() []captureRecord {
 	result := append([]captureRecord{}, b.captures...)

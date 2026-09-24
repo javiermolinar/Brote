@@ -35,6 +35,7 @@ export interface Breakpoint {
 
 export interface TraceRecord {session:string;name:string;program:string;debugger:string;local:Record<string,string>;remote?:Record<string,string>;closed:boolean;incomplete?:boolean}
 export interface Snapshot {
+ run?:string;
  traces?:{record:TraceRecord;error?:string};
  snapshotUnavailable?:boolean;historical?:boolean;runEnded?:boolean;capturedAt?:string;
  debugger?:{adapter:string;protocol:string;pid?:number;status:string;mode:string};
@@ -101,3 +102,6 @@ export interface CommentThread {
  messages:{evidence?:{id:string;session?:string;executionRun?:string;pauseEpoch?:number};id:string;author:string;body:string;created:string;run?:string;context?:CommentThread["context"]}[];
  delivery:{recipient?:{kind:string;id:string;name?:string;revision:number};question:string;status:string;error?:string;binding?:{id:string;name:string}};
 }
+
+export interface EvidenceTarget {session:string;traceId:string;spanId:string;captureId?:string}
+export interface Annotation {session:string;id:string;revision:number;author:string;body:string;created:string;label?:string;comparisonKey?:string;targets:EvidenceTarget[];conversation?:EvidenceTarget;conversationThread?:string;conversationRun?:string;export?:{local:string;remote:string;error?:string}[]}

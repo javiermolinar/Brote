@@ -3,9 +3,12 @@ package cli
 import (
 	"agentdebugger/internal/protocol"
 	"agentdebugger/internal/session"
+	"agentdebugger/internal/tracing"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 )
 
 func commentCommand(args []string) (any, error) { return commentCommandMode(args, false) }
@@ -115,7 +118,9 @@ func commentCommandMode(args []string, strict bool) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return session.DiscussionResult(id, thread, verb), nil
+		result := session.DiscussionResult(id, thread, verb)
+		syncDiscussionTrace(id, result)
+		return result, nil
 	}
 	if verb == "create" || ((verb == "ask" || verb == "continue-thread") && *contextMode == "current") {
 		state, e := api(s, "GET", "/api/state?brief=1", nil)
@@ -136,4 +141,16 @@ func commentCommandMode(args []string, strict bool) (any, error) {
 		}
 	}
 	return result, err
+}
+
+func syncDiscussionTrace(id string, result map[string]any) {
+	if d, err := session.ReadDiscussion(id); err == nil && d.TraceOwner != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		statuses, exportErr := tracing.SyncDiscussion(ctx, id)
+		result["traceMetadata"] = statuses
+		if exportErr != nil {
+			result["exportError"] = exportErr.Error()
+		}
+	}
 }

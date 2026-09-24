@@ -3,6 +3,7 @@ package broker
 import (
 	"agentdebugger/internal/protocol"
 	"agentdebugger/internal/session"
+	"agentdebugger/internal/tracing"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -77,6 +78,9 @@ func (b *broker) commentsLocked(a obj) (obj, error) {
 						return nil, fmt.Errorf("thread limit reached")
 					}
 					for i := range thread.Messages {
+						if thread.Messages[i].Run == "" {
+							thread.Messages[i].Run = previous
+						}
 						if thread.Messages[i].Context == nil && thread.Messages[i].Author == "human" {
 							thread.Messages[i].Context = thread.Context
 							thread.Messages[i].Run = previous
@@ -145,7 +149,7 @@ func (b *broker) commentsLocked(a obj) (obj, error) {
 			return nil, fmt.Errorf("line outside source")
 		}
 		start, end := max(1, line-4), min(len(lines), line+4)
-		context = pick(context, "run", "pauseEpoch", "generation", "goroutine", "frame", "frames", "source", "sourceIdentity", "state", "breakpoints", "watches", "inspectionError", "error", "partial", "truncated", "limits", "traceIds", "exportError")
+		context = pick(context, "run", "pauseEpoch", "generation", "goroutine", "frame", "frames", "source", "sourceIdentity", "state", "breakpoints", "watches", "inspectionError", "error", "partial", "truncated", "limits", "traceIds", "traces", "exportError")
 		context["anchorSource"] = obj{"file": file, "line": line, "start": start, "lines": lines[start-1 : end]}
 		context["capturedAt"] = now
 		context["session"] = b.s.ID
@@ -190,7 +194,7 @@ func (b *broker) commentsLocked(a obj) (obj, error) {
 			if fresh["status"] != "paused" {
 				return nil, fmt.Errorf("pause the program before capturing current context")
 			}
-			context = pick(fresh, "run", "pauseEpoch", "generation", "goroutine", "frame", "frames", "source", "sourceIdentity", "state", "breakpoints", "watches", "inspectionError", "error", "partial", "truncated", "limits", "traceIds", "exportError")
+			context = pick(fresh, "run", "pauseEpoch", "generation", "goroutine", "frame", "frames", "source", "sourceIdentity", "state", "breakpoints", "watches", "inspectionError", "error", "partial", "truncated", "limits", "traceIds", "traces", "exportError")
 			context["capturedAt"] = now
 			context["session"] = b.s.ID
 			encoded, _ := json.Marshal(context)
@@ -251,6 +255,15 @@ func (b *broker) commentsLocked(a obj) (obj, error) {
 		return nil, e
 	} else if len(encoded) > session.MaxDiscussionBytes {
 		return nil, fmt.Errorf("discussion exceeds 32 MiB; start another investigation")
+	}
+	if b.trace != nil {
+		d.TraceOwner = &session.TraceOwner{Session: b.s.ID + ":" + b.s.RunID, Debugger: b.s.TraceIDs.Debugger, Program: b.s.TraceIDs.Program, Root: b.s.TraceIDs.DebuggerRoot, Run: b.s.TraceIDs.ProgramRoot}
+	} else if b.traces != nil {
+		if state, ok := b.traces.Status().(map[string]any); ok {
+			if r, ok := state["record"].(tracing.Record); ok && r.Debugger != "" {
+				d.TraceOwner = &session.TraceOwner{Session: r.Session, Debugger: r.Debugger, Program: r.Program, Root: r.Root, Run: r.Run}
+			}
+		}
 	}
 	if err = session.CommitDiscussion(&d); err != nil {
 		return nil, err

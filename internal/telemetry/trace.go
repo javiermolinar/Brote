@@ -50,6 +50,7 @@ type Session struct {
 	root, run               trace.Span
 	rootContext, runContext context.Context
 	session, runID          string
+	captureSpans            map[string]string
 	threads                 map[int]trace.Span
 	mu                      sync.Mutex
 	closed                  bool
@@ -74,7 +75,7 @@ func newSession(exporter sdk.SpanExporter, session, runID, name string, saved ID
 	provider := func(service string, ids ids) *sdk.TracerProvider {
 		return sdk.NewTracerProvider(sdk.WithIDGenerator(ids), sdk.WithSpanProcessor(q), sdk.WithResource(resource.NewSchemaless(attribute.String("service.name", service), attribute.String("debugger.adapter.type", "go"))), sdk.WithRawSpanLimits(sdk.SpanLimits{AttributeCountLimit: 128, AttributeValueLengthLimit: 65536, EventCountLimit: 8, LinkCountLimit: 4, AttributePerEventCountLimit: 16, AttributePerLinkCountLimit: 8}))
 	}
-	s := &Session{q: q, session: session, runID: runID, threads: map[int]trace.Span{}, debugger: provider("brote", d).Tracer("brote.debugger"), program: provider(name, p).Tracer("brote.program")}
+	s := &Session{q: q, session: session, runID: runID, threads: map[int]trace.Span{}, captureSpans: map[string]string{}, debugger: provider("brote", d).Tracer("brote.debugger"), program: provider(name, p).Tracer("brote.program")}
 	s.rootContext, s.root = s.debugger.Start(context.Background(), "debugger.session", trace.WithAttributes(s.common()...))
 	s.runContext, s.run = s.program.Start(context.Background(), "run "+name, trace.WithAttributes(append(s.common(), attribute.String("program.span.type", "run"))...), trace.WithLinks(trace.Link{SpanContext: s.root.SpanContext()}))
 	s.IDs = IDs{Debugger: d.t.String(), DebuggerRoot: d.s.String(), Program: p.t.String(), ProgramRoot: p.s.String()}
@@ -142,6 +143,7 @@ func (s *Session) Capture(id, name string, sequence uint64, gid int, snapshot, v
 		name = "capture"
 	}
 	_, span := s.program.Start(trace.ContextWithSpan(s.runContext, parent), name, trace.WithTimestamp(created), trace.WithAttributes(attrs...))
+	s.captureSpans[id] = span.SpanContext().SpanID().String()
 	span.End(trace.WithTimestamp(created))
 	return s.q.Status(id)
 }
@@ -176,4 +178,14 @@ func (s *Session) Close() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_ = s.q.Shutdown(ctx)
+}
+
+// CaptureSpanID returns the actual span identity assigned to a captured observation.
+func (s *Session) CaptureSpanID(id string) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.captureSpans[id]
 }

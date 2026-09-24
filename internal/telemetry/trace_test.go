@@ -59,6 +59,9 @@ func TestTraceParentageValuesAndDelivery(t *testing.T) {
 	if capture == nil || !capture.StartTime().Equal(capture.EndTime()) {
 		t.Fatal("snapshot represented as function duration")
 	}
+	if s.CaptureSpanID("capture") != capture.SpanContext().SpanID().String() {
+		t.Fatal("capture reference differs from exported span")
+	}
 	parent := byID[capture.Parent().SpanID().String()]
 	if parent == nil || byID[parent.Parent().SpanID().String()] == nil {
 		t.Fatal("missing observation hierarchy")

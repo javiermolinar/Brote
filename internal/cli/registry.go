@@ -100,6 +100,9 @@ func commandRegistry() *command {
 	}
 	add("debug task execute", "Execute within a task", taskExecute)
 	add("query traces", "List or retrieve saved traces", queryTraces)
+	for _, verb := range []string{"create", "list"} {
+		add("annotation "+verb, verb+" explicit annotations", func(a []string) (any, error) { return annotationCommand(verb, a) })
+	}
 	for _, verb := range []string{"list", "create", "ask", "reply", "retry", "delivery", "index", "import"} {
 		add("comment "+verb, verb+" discussion", comments(verb))
 	}

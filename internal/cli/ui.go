@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"agentdebugger/internal/session"
+	"agentdebugger/internal/tracing"
 	inspector "agentdebugger/packages/web"
 )
 
@@ -235,6 +236,57 @@ func workspaceHandler(origin string) http.Handler {
 			}
 			return
 		}
+
+		if (r.URL.Path == "/api/annotations" || r.URL.Path == "/api/annotation-evidence") && r.URL.Query().Get("history") != "" {
+			id := r.URL.Query().Get("history")
+			if r.URL.Path == "/api/annotation-evidence" && r.Method != "GET" {
+				write(405, obj{"error": "method not allowed"})
+				return
+			}
+			if _, err := session.FindHistory(id); err != nil {
+				write(404, obj{"error": "saved run unavailable"})
+				return
+			}
+			if descriptor, err := session.Read(id); err == nil && !descriptor.Stopped && descriptor.ServiceVersion > 0 && !session.ValidToken(descriptor.Token, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) {
+				write(401, obj{"error": "live session credential required"})
+				return
+			}
+			var result any
+			var err error
+			if r.URL.Path == "/api/annotation-evidence" && r.Method == "GET" {
+				result, err = tracing.EvidenceFor(r.Context(), id)
+			} else {
+				owner := r.URL.Query().Get("traceSession")
+				var in tracing.AnnotationRequest
+				if r.Method == "POST" {
+					decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10))
+					decoder.DisallowUnknownFields()
+					if decoder.Decode(&in) != nil {
+						write(400, obj{"error": "invalid annotation request"})
+						return
+					}
+					owner = in.Session
+				} else if r.Method != "GET" {
+					write(405, obj{"error": "method not allowed"})
+					return
+				}
+				if owner != id && !strings.HasPrefix(owner, id+":") {
+					write(409, obj{"error": "annotation session identity mismatch"})
+					return
+				}
+				if r.Method == "POST" {
+					result, err = tracing.Annotate(r.Context(), in)
+				} else {
+					result, err = tracing.Annotations(r.Context(), owner)
+				}
+			}
+			if err != nil {
+				write(409, obj{"error": err.Error()})
+			} else {
+				write(200, result)
+			}
+			return
+		}
 		if r.URL.Path == "/api/comments" && r.URL.Query().Get("history") != "" {
 			id := r.URL.Query().Get("history")
 			if descriptor, err := session.Read(id); err == nil && !descriptor.Stopped && descriptor.ServiceVersion > 0 && !session.ValidToken(descriptor.Token, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) {
@@ -270,7 +322,9 @@ func workspaceHandler(origin string) http.Handler {
 			if err != nil {
 				write(409, obj{"error": err.Error()})
 			} else {
-				write(200, session.DiscussionResult(id, t, input.Action))
+				result := session.DiscussionResult(id, t, input.Action)
+				syncDiscussionTrace(id, result)
+				write(200, result)
 			}
 			return
 		}

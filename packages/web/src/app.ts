@@ -1,6 +1,7 @@
 import {initializePanelResizing} from './layout';
 import {createWorkspace} from './workspace';
 import { createComments } from './comments';
+import {createAnnotations} from './annotations';
 import hljs from 'highlight.js/lib/core';
 import go from 'highlight.js/lib/languages/go';
 
@@ -65,6 +66,7 @@ const api = createClient({baseURL: location.origin, token, session: previewSessi
 const request = <T>(path: string, body?: ActionRequest | Record<string, unknown>) => api.request<T>(path, body);
 
 const comments = createComments(<T>(route:string,body?:Record<string,unknown>)=>request<T>(route==='comments'&&historicalID?'comments?history='+encodeURIComponent(historicalID):route,body), (file,line)=>openSourceFile(file,line,true), token);
+const annotations=createAnnotations(<T>(route:string,body?:Record<string,unknown>)=>request<T>(historicalID?route+(route.includes('?')?'&':'?')+'history='+encodeURIComponent(historicalID):route,body));
 const workspace = createWorkspace({request,runs:names=>comments.runs(names),history:items=>comments.history([...items,...ownHistory]),ended:()=>{if(snapshot){historicalID=snapshot.id;historicalLoaded=false;openSources.clear();fullSources.clear();activeFile='';displayedSource=undefined;sourceKey='';lastLocation='';renderKey='';const url=new URL(location.href);url.searchParams.delete('session');url.searchParams.set('history',historicalID);history.replaceState(null,'',url.pathname+url.search);void refresh();}}});
 $('newQuestion').onclick=()=>{const source=displayedSource||snapshot?.source;if(source)comments.start(source.file,navigationTarget?.line||source.line||source.start,undefined,true);};
 $('copyPath').onclick=()=>{if(displayedSource)void navigator.clipboard.writeText(displayedSource.file).then(()=>message('notice','Absolute source path copied.')).catch(()=>message('notice',displayedSource!.file));};
@@ -426,7 +428,7 @@ async function refresh(): Promise<void> {
     else snapshot = await request<Snapshot>(`state?goroutine=${goroutine}&frame=${frame}`);
     if (disconnected) { disconnected = false; message('error', ''); }
     render(snapshot);
-    comments.update(snapshot);
+    comments.update(snapshot);annotations.update(snapshot);
     if(snapshot.historical)comments.history(ownHistory);
     workspace.update(snapshot);
   } catch (error) {
@@ -435,7 +437,7 @@ async function refresh(): Promise<void> {
     if(historicalID){
       historicalLoaded=true;
       snapshot={id:historicalID,historical:true,snapshotUnavailable:true,status:'exited',state:{},frame:0,generation:0,owner:'browser',zedConnected:false,project:'',binary:'',label:''};
-      renderKey='';render(snapshot);comments.update(snapshot);workspace.update(snapshot);
+      renderKey='';render(snapshot);comments.update(snapshot);annotations.update(snapshot);workspace.update(snapshot);
       message('error','Saved snapshot unavailable. Run details and saved discussions remain accessible.');
       const retry=node('button','Retry saved evidence');retry.onclick=()=>{historicalLoaded=false;void refresh();};$('source').append(retry);
       return;

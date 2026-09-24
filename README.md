@@ -111,7 +111,11 @@ first-class workflow: capture debugger state as traces and compare runs. The bun
 runtime is managed by Brote; its internal listeners bind only to loopback.
 
 The Go core captures and stores traces for VS Code, Codex and Pi through one Brote API.
-Use `brote query traces` and `brote query traces TRACE_ID` to inspect saved evidence.
+Use `brote query traces` to find the returned `debugger` or `program` trace ID,
+then `brote query traces TRACE_ID` to open it ([details](docs/tracing.md)).
+
+- The Brote session trace contains debugger actions and conversations, for following an investigation.
+- The program trace contains captured stacks/values and explicitly added annotations, for inspecting behavior and comparing runs. Captures are observations, not a complete execution profile.
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` in Brote's environment to export debugger
 actions and captured program state to Tempo, Grafana Cloud, or another OTLP/HTTP

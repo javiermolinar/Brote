@@ -3,6 +3,7 @@ package session
 import (
 	"agentdebugger/internal/delivery"
 	"agentdebugger/internal/protocol"
+	"agentdebugger/internal/traceinfo"
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
@@ -23,6 +24,7 @@ type EvidenceIdentity struct {
 	PauseEpoch   int    `json:"pauseEpoch,omitempty"`
 }
 type CommentMessage struct {
+	Trace     *traceinfo.Record   `json:"trace,omitempty"`
 	Evidence  *EvidenceIdentity   `json:"evidence,omitempty"`
 	Recipient *protocol.Recipient `json:"recipient,omitempty"`
 	Context   map[string]any      `json:"context,omitempty"`
@@ -55,6 +57,7 @@ type CommentThread struct {
 	Delivery   CommentDelivery  `json:"delivery"`
 }
 type Discussion struct {
+	TraceOwner    *TraceOwner     `json:"traceOwner,omitempty"`
 	Version       int             `json:"version,omitempty"`
 	Revision      uint64          `json:"revision,omitempty"`
 	Investigation string          `json:"investigation,omitempty"`
@@ -174,6 +177,17 @@ func CommitDiscussion(d *Discussion) error {
 	next.Revision++
 	if err := normalizeEvidence(&next); err != nil {
 		return err
+	}
+	if err := prepareConversationTraces(current, &next); err != nil {
+		return err
+	}
+	if err := normalizeEvidence(&next); err != nil {
+		return err
+	}
+	if next.TraceOwner != nil && next.TraceOwner.Valid() {
+		if err := registerTraceSource(next.Session); err != nil {
+			return err
+		}
 	}
 	path, err := discussionPath(d.Session)
 	if err != nil {

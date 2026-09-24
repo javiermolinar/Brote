@@ -108,6 +108,7 @@ type Definition struct {
 	CaptureLimit int               `json:"captureLimit,omitempty"`
 }
 type CaptureOutcome struct {
+	ProgramSpanID string `json:"programSpanId,omitempty"`
 	Identity
 	ID              string `json:"id"`
 	DefinitionID    string `json:"definitionId"`

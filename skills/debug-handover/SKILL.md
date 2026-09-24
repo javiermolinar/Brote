@@ -163,6 +163,23 @@ re-list on a stale revision. Do not remove another client's points. In Pi, use
 `debug_tracepoints` for list/create/update/delete and `debug_captures` for outcomes
 and trace IDs; preserve the same owner, revision and scope.
 
+## Trace-Driven Debugging and Development
+
+Recover the earlier conversation and optional annotations, record the question,
+hypothesis and expected observable change, capture a baseline, then make only an
+authorized change and capture a comparable run. Compare recorded values before
+reporting a conclusion; distinguish interpretations from observations and preserve
+unresolved questions in the conversation. Discussion never grants execution or
+implementation authority.
+
+Conversations belong in the Brote debugger trace. Explicit annotations belong in
+the program trace and can link to captures and their originating conversation.
+`brote annotation create SERVICE_SESSION --id ID --capture CAPTURE_ID --body-file PATH`
+is available when a durable note is requested or deliberately useful; it is not
+a default step. Never synthesize baseline, regression or fixed labels. Read
+[the TDDD workflow](references/tddd.md) for a worked comparison, exact evidence
+identities, saved runs, optional cross-run notes, retries, and export visibility.
+
 ## Debugger comment questions
 
 A comment event is read-only discussion, not a new implementation request. Read

@@ -26,7 +26,7 @@ test('stepping retains last pause, expansions and stable source; stale controls 
  w.HTMLDialogElement.prototype.close=function(){this.open=false;};
  d.querySelector('#openFile').click();await flush();
  d.querySelector('.fileResult').click();await flush();
- assert.equal(d.querySelectorAll('[role=tab]').length,2);
+ assert.equal(d.querySelectorAll('#fileTabs [role=tab]').length,2);
  assert.match(d.querySelector('#filename').textContent,/other.go/);
  assert.match(d.querySelector('#frameName').textContent,/main.process/,'browsing must preserve locals scope');
  tick();await flush();assert.match(d.querySelector('#filename').textContent,/other.go/,'polling must not steal active tab');
@@ -231,4 +231,31 @@ test('paused excerpts expand to the full file and polling preserves browsing pos
  assert.equal(loads,1);
  d.querySelector('#followSource').click();
  assert.equal(d.querySelectorAll('.sourceCodeLine').length,200,'Current frame retains the complete file');
+});
+
+test('saved annotation tab and draft survive investigation history refreshes',async t=>{
+ const html=await readFile('packages/web/public/index.html','utf8');
+ const js=await build({entryPoints:['packages/web/src/app.ts'],bundle:true,write:false,format:'iife',logLevel:'silent'});
+ const dom=new JSDOM(html,{url:'http://127.0.0.1:1234/?history=0123456789',runScripts:'outside-only'});t.after(()=>dom.window.close());
+ const w=dom.window,d=w.document,flush=()=>new Promise(r=>setTimeout(r,0));
+ const target={session:'0123456789:run',traceId:'a'.repeat(32),spanId:'b'.repeat(16),captureId:'capture'};
+ const thread={id:'thread',file:'main.go',line:19,created:'2026-09-24T10:00:00Z',context:{},messages:[{id:'q',author:'human',body:'Why 42?'}],delivery:{question:'q',status:'answered'}};
+ const state={id:'0123456789',historical:true,runEnded:true,generation:1,status:'exited',state:{},project:'/demo',binary:'/demo/bin',frame:0,frames:[],discussion:{threads:[thread]}};
+ w.setInterval=()=>1;w.HTMLElement.prototype.scrollIntoView=function(){};
+ w.fetch=async(url,options)=>{assert.equal(options.method,'GET','browsing and editing a draft must not write annotations');const path=new URL(url,w.location).pathname;let data;
+  if(path==='/api/saved-run'||path==='/api/state')data=state;
+  else if(path==='/api/workspace')data={investigations:[{id:state.id,title:'Test',project:'/demo',runs:[{id:state.id,status:'ended',binary:state.binary}]}]};
+  else if(path==='/api/annotation-evidence')data=[target];
+  else if(path==='/api/annotations')data=[];
+  else if(path==='/api/comments')data={discussion:{threads:[thread]}};
+  else data={sessions:[]};return {ok:true,json:async()=>structuredClone(data)};
+ };
+ w.eval(js.outputFiles[0].text);await flush();await flush();d.querySelector('#annotationTab').click();await flush();await flush();
+ [...d.querySelectorAll('#annotationPanel button')].find(b=>b.textContent==='Add annotation').click();d.querySelector('#annotationBody').value='Keep this draft';
+ d.querySelector('#refreshSessions').click();await flush();await flush();
+ assert.equal(d.querySelector('#annotationTab').getAttribute('aria-selected'),'true');
+ assert.equal(d.querySelector('#annotationPanel').hidden,false);
+ assert.equal(d.querySelector('#discussionPane').hidden,true,'history rendering must not override tab ownership');
+ assert.equal(d.querySelector('#annotationBody').value,'Keep this draft');
+ d.querySelector('#discussionTab').click();assert.equal(d.querySelector('#discussionPane').hidden,false);
 });

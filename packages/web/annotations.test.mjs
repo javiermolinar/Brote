@@ -1,0 +1,20 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {JSDOM} from 'jsdom';
+import {build} from 'esbuild';
+const flush=()=>new Promise(r=>setTimeout(r,0));
+test('explicit annotations retain evidence and retries, prevent duplicate saves, and reload mixed authors',async t=>{
+ const js=await build({entryPoints:['packages/web/src/annotations.ts'],bundle:true,write:false,format:'iife',globalName:'Annotations',logLevel:'silent'});
+ const dom=new JSDOM('<div id="evidenceTabs"><button id="discussionTab"></button><button id="annotationTab"></button></div><section id="discussionPane"><section id="commentsPanel"></section></section><section id="annotationPanel" hidden></section>',{url:'http://127.0.0.1',runScripts:'outside-only'});t.after(()=>dom.window.close());const w=dom.window,d=w.document;w.eval(js.outputFiles[0].text+';window.A=Annotations;');
+ const root={session:'broker:run',traceId:'a'.repeat(32),spanId:'b'.repeat(16)},capture={...root,spanId:'c'.repeat(16),captureId:'capture-1'};
+ let saved=[],posts=[],fail=true,finish;const api=async(path,body)=>{if(path==='annotation-evidence')return [root,capture];if(!body)return saved;posts.push(body);await new Promise(r=>finish=r);if(fail)throw Error('offline');const a={...body,created:'2026-09-24T10:00:00Z',export:[{local:'pending',remote:'failed'}]};saved=[a];return a;};
+ const ui=w.A.createAnnotations(api);ui.update({id:'broker',run:'run',source:{file:'main.go',line:19}});ui.open();await flush();await flush();assert.equal(posts.length,0);d.querySelector('#commentsPanel').hidden=false;assert.equal(d.querySelector('#discussionPane').hidden,true,'discussion refresh cannot reveal the inactive tab');
+ const picker=d.querySelector('select');picker.value='1';picker.dispatchEvent(new w.Event('change'));await flush();await flush();
+ const button=text=>[...d.querySelectorAll('button')].find(b=>b.textContent===text);
+ button('Add annotation').click();assert.equal(d.querySelector('details').open,false);const input=d.querySelector('textarea');assert.equal(button('Save annotation').disabled,true);
+ input.value='<img> observed 42';input.dispatchEvent(new w.Event('input'));button('Save annotation').click();button('Save annotation').click();assert.equal(posts.length,1);assert.equal(posts[0].targets[0].captureId,'capture-1');finish();await flush();assert.equal(input.value,'<img> observed 42');assert.match(d.querySelector('[role=status]').textContent,/offline/);
+ fail=false;button('Save annotation').click();assert.equal(posts[1].id,posts[0].id);finish();await flush();await flush();assert.match(d.querySelector('.annotationNote').textContent,/Saved locally.*local pending, remote failed/);assert.equal(d.querySelector('.annotationNote img'),null);assert.match(d.querySelector('#annotationTab').textContent,/\(1\)/);
+ saved.push({...saved[0],id:'agent',author:'agent',conversationThread:'thread',conversationRun:'broker'});button('Refresh').click();await flush();await flush();assert.equal(d.querySelectorAll('.annotationNote').length,2);assert.match(d.querySelector('.annotationNote a').href,/history=broker&thread=thread/);
+ button('Add annotation').click();input.value='cancelled';button('Cancel').click();assert.equal(posts.length,2);ui.open();await flush();assert.equal(d.querySelectorAll('.annotationNote').length,2);
+ d.querySelector('#discussionTab').click();assert.equal(d.querySelector('#annotationPanel').hidden,true);
+});

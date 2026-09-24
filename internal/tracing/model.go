@@ -44,25 +44,35 @@ type Event struct {
 	Selections  map[string]string `json:"selections,omitempty"`
 	Data        json.RawMessage   `json:"data,omitempty"`
 }
+type CaptureDetail struct {
+	File    string    `json:"file,omitempty"`
+	Line    int       `json:"line,omitempty"`
+	Created time.Time `json:"created"`
+}
 type Record struct {
-	External      bool              `json:"external,omitempty"`
-	Incomplete    bool              `json:"incomplete,omitempty"`
-	Interrupted   bool              `json:"interrupted,omitempty"`
-	ProgramSpans  int               `json:"programSpans"`
-	DebuggerSpans int               `json:"debuggerSpans"`
-	LastSeen      time.Time         `json:"lastSeen"`
-	Sequence      int               `json:"sequence"`
-	Session       string            `json:"session"`
-	Name          string            `json:"name"`
-	Adapter       string            `json:"adapter"`
-	Program       string            `json:"program"`
-	Debugger      string            `json:"debugger"`
-	Local         map[string]string `json:"local"`
-	Remote        map[string]string `json:"remote,omitempty"`
-	Closed        bool              `json:"closed"`
-	Started       time.Time         `json:"started"`
-	Run           string            `json:"run"`
-	Root          string            `json:"root"`
+	CaptureDetails map[string]CaptureDetail   `json:"captureDetails,omitempty"`
+	ProgramRoots   map[string]bool            `json:"programRoots,omitempty"`
+	DebuggerRoots  map[string]bool            `json:"debuggerRoots,omitempty"`
+	Metadata       map[string]MetadataReceipt `json:"metadata,omitempty"`
+	Captures       map[string]string          `json:"captures,omitempty"`
+	External       bool                       `json:"external,omitempty"`
+	Incomplete     bool                       `json:"incomplete,omitempty"`
+	Interrupted    bool                       `json:"interrupted,omitempty"`
+	ProgramSpans   int                        `json:"programSpans"`
+	DebuggerSpans  int                        `json:"debuggerSpans"`
+	LastSeen       time.Time                  `json:"lastSeen"`
+	Sequence       int                        `json:"sequence"`
+	Session        string                     `json:"session"`
+	Name           string                     `json:"name"`
+	Adapter        string                     `json:"adapter"`
+	Program        string                     `json:"program"`
+	Debugger       string                     `json:"debugger"`
+	Local          map[string]string          `json:"local"`
+	Remote         map[string]string          `json:"remote,omitempty"`
+	Closed         bool                       `json:"closed"`
+	Started        time.Time                  `json:"started"`
+	Run            string                     `json:"run"`
+	Root           string                     `json:"root"`
 }
 type pending struct {
 	span      ptrace.Span
@@ -290,6 +300,7 @@ func (c *capture) snapshot(e Event) []ptrace.Span {
 	sp.SetEndTimestamp(sp.StartTimestamp())
 	a := sp.Attributes()
 	a.PutStr("program.span.type", "snapshot")
+	a.PutStr("program.capture.id", sp.SpanID().String())
 	a.PutInt("program.thread.id", int64(o.Thread))
 	c.sequence++
 	c.Sequence = c.sequence
