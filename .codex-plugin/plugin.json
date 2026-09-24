@@ -1,6 +1,6 @@
 {
   "name": "brote",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Your LLM debugger companion. Inspect live programs and discuss captured evidence.",
   "author": {
     "name": "Local developer"
